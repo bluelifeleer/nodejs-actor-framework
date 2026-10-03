@@ -1,0 +1,19 @@
+# runtime data (see ACTOR_DATA_DIR / ACTOR_LOG_DIR in config.js)
+data/
+msg_store/
+*.log
+dlq.jsonl
+metrics.log
+actor.log
+
+# secrets
+.actor-token
+
+# deps
+node_modules/
+
+# os / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

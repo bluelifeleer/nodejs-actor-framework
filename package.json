@@ -1,0 +1,31 @@
+{
+  "name": "nodejs-actor-framework",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js worker_threads Actor framework: OTP-style supervision, priority mailboxes with backpressure, retry + dead-letter queue, ack-based persistence, metrics, tracing, gossip clustering, pub/sub and a framed TCP gateway.",
+  "main": "actor-main.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node actor-main.js",
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.js",
+    "gen-test-certs": "./scripts/gen-test-certs.sh"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "classic-level": "^3.0.0"
+  },
+  "keywords": [
+    "actor",
+    "worker_threads",
+    "supervisor",
+    "otp",
+    "gossip",
+    "pubsub",
+    "protobuf",
+    "tls",
+    "leveldb"
+  ]
+}
