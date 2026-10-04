@@ -17,3 +17,6 @@ node_modules/
 *.swp
 .idea/
 .vscode/
+
+# regenerable openssl CA state (see scripts/gen-test-certs.sh)
+packages/core/test/fixtures/tls/*-db/

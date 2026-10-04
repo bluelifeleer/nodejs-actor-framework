@@ -1,0 +1,14 @@
+{
+  // 开发/校验配置：不产出、不检查 .js（迁移期），只校验类型声明与类型测试
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "packages/core/src/**/*.d.ts",
+    "test/types/**/*.ts", "test/types/**/*.mts"
+  ]
+}

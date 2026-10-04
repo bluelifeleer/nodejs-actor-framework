@@ -1,0 +1,26 @@
+{
+  "name": "nodejs-actor-framework",
+  "version": "1.0.0",
+  "description": "Node.js Actor framework: in-process actor kernel with supervision, persistence and worker isolation, plus optional cluster/observability plugins.",
+  "license": "MIT",
+  "author": "bluelife <thebubblelife@163.com>",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "optionalDependencies": {
+    "classic-level": "^3.0.0"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "actor",
+    "actors",
+    "actor-model",
+    "supervision",
+    "concurrency",
+    "worker-threads"
+  ]
+}

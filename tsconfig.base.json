@@ -1,0 +1,21 @@
+{
+  // M0.1 基线配置：强制"Node 能直接运行"的 TS 子集（无构建即可跑源码与测试）
+  // 依据 docs/design/m0/01-ts-monorepo-toolchain.md 的实测结论：
+  //   - Node 24 直接跑 .ts（类型剥离），但 enum/namespace/参数属性/装饰器不支持
+  //   - node_modules 里的 .ts 不会被剥离 → 发布仍需 tsc 编译
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": []
+  }
+}

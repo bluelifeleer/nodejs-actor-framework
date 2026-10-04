@@ -1,31 +1,21 @@
 {
-  "name": "nodejs-actor-framework",
-  "version": "1.0.0",
+  "name": "nodejs-actor-framework-monorepo",
+  "version": "0.0.0",
   "private": true,
-  "description": "Node.js worker_threads Actor framework: OTP-style supervision, priority mailboxes with backpressure, retry + dead-letter queue, ack-based persistence, metrics, tracing, gossip clustering, pub/sub and a framed TCP gateway.",
-  "main": "actor-main.js",
-  "license": "MIT",
+  "description": "Monorepo root: packages/* hold the published packages, root holds the demo app, examples and integration tests.",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
   },
   "scripts": {
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/core/test/*.test.js' 'test/*.test.js'",
+    "typecheck": "tsc -p tsconfig.json",
     "start": "node actor-main.js",
-    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/*.test.js",
     "gen-test-certs": "./scripts/gen-test-certs.sh"
   },
-  "dependencies": {},
-  "optionalDependencies": {
-    "classic-level": "^3.0.0"
-  },
-  "keywords": [
-    "actor",
-    "worker_threads",
-    "supervisor",
-    "otp",
-    "gossip",
-    "pubsub",
-    "protobuf",
-    "tls",
-    "leveldb"
-  ]
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
 }
