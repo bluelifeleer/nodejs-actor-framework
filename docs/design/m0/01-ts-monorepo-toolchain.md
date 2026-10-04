@@ -279,7 +279,9 @@ ActorNotFoundError, PersistenceError, EscalationError
 **类型债务（诚实记录）**：45 个文件原本是 JS，转到 `.ts` 后就进入类型检查视野，而它们几乎
 没有类型标注，当前 `strict` 下 **1982 个错误**、放宽后 **1239 个**。因此：
 
-- `npm run typecheck` 仍是**严格且必须通过**的（只含 `.d.ts` 与类型测试）；
+- `npm run typecheck` 仍是**严格且必须通过**的，但目前只覆盖**声明面**（`.d.ts`）：
+  类型测试一旦以显式 `.ts` 引用实现，会把整个未标注的实现拉进严格程序（实测 1200+ 错误），
+  所以 `test/types/**` 与 `src/**/*.ts` 暂时都排除在外，补齐标注后一并恢复；
 - 新增 `tsconfig.migration.json` + `npm run typecheck:migration`（`strict:false`）用于转换期"只抓语法与明显错误"，
   它是**信息性**的，不当作门（否则常红无意义）；
 - 收口计划：逐文件补类型标注 → 把文件从迁移检查器挪回 strict 检查，债务数字（1239）作为进度指标。
