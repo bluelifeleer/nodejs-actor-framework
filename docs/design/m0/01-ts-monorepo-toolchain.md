@@ -226,6 +226,43 @@ ActorNotFoundError, PersistenceError, EscalationError
 
 待转换清单（根侧，18 个文件约 120 处构造）：`actor-main.js`、`examples/*.js`（8）、`examples/actors/*.js`（2）、`test/*.test.js`（7）、`tools/migrate-store.js`。执行顺序建议：`examples/actors/*` → `examples/*` → `tools` → 根 `test/*` → `actor-main.js`，每批跑全量保持绿。
 
+
+### 9.6 路线 B 在 core 的落地：侦察结果与已开始的转换
+
+**根侧已全部 ESM**（见提交 `7d06a22`）。core 侧先做侦察，量化风险：
+
+| 构造 | 数量 | 迁移策略 |
+|---|---|---|
+| 顶层 `const X = require(...)` | 全部 | → 静态 `import` |
+| **动态 `require`（函数内）** | 10 处 | 见下（分四类） |
+| `module.exports = {..}` | 46 处 | → `export {..}` + `export default {..}` |
+| `module.exports.X = Y` | 5 处 | → `export { Y as X }`（已在导出列表中的直接删） |
+
+10 处动态 `require` 的分类与处理：
+
+| 类别 | 位置 | 处理 |
+|---|---|---|
+| **打破循环依赖** | `actor/actor-cell.js:183,644`、`actor/system.js:142`（懒加载 `worker/worker-delegate`） | **保留懒加载**，用 `createRequire(import.meta.url)`；改成静态 import 会引入循环 |
+| **可选依赖** | `store/backends/level-store.js:42`（`classic-level`） | 同上（可选依赖必须保持"用到才加载"） |
+| **按路径加载用户模块** | `ops/telnet-console.js:246`、`worker/worker-host.js:126` | 同上（路径运行时才确定，必须动态） |
+| **可静态化** | `ops/ws-server.js:397`（`tls`/`net` 二选一） | → 静态 import（无循环） |
+| 注释里的示例代码 | `index.js:6`、`plugins/index.js:7`、`actor/restart-strategy.js:9` | 仅更新文案 |
+
+结论：core 的转换风险可控——**只有 5 处需要 `createRequire`**，其余都能静态化。
+
+**已开始的转换（过渡期 `.ts`，CJS 语法）**：`actor/restart-strategy.ts`、`actor/token-bucket.ts`
+（`export type` + `module.exports`；引用方写显式 `.ts`）。这次 PoC 与 §9.3 那次失败的转换是同一批文件——
+**现在 281/281 全绿通过**，反证了当时的失败来自崩溃重启的竞态缺陷，与类型转换无关。
+
+**剩余步骤**（core 约 45 个文件）：
+
+1. 批量转 `.ts`（过渡期 CJS 语法）→ 跑全量；
+2. 切 ESM 语法（`module.exports` → `export`、`require` → `import`，5 处保留 `createRequire`）+ `packages/core/package.json` 加 `"type": "module"`；
+3. 包内 16 个测试文件转 `.ts`（`node --test` 直接跑，无构建）；
+4. 双产物构建（`tsconfig.esm/cjs` + `rewriteRelativeImportExtensions`）替换手写的 `index.mjs`，并做发布验证（临时工程 install + `require`/`import` 双路径）。
+
+每一步沿用本次做法：**codemod + dry-run + 残留检查 + 全量回归**，任一时点保持绿。
+
 ## 10. 本节待确认
 
 | # | 事项 | 建议 |

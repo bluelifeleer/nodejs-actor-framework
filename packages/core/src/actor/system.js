@@ -9,7 +9,7 @@ const { defineActor } = require('./actor');
 const { FilePersistence, MemoryPersistence } = require('../store/persistence');
 const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote');
 const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors');
-const RestartStrategy = require('./restart-strategy');
+const RestartStrategy = require('./restart-strategy.ts');
 
 const DEFAULT_ACTOR_OPTIONS = {
   mailbox: { maxSize: 1000, overflow: 'reject' },

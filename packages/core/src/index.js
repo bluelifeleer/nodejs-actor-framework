@@ -31,7 +31,7 @@ const { MemoryPersistence, FilePersistence } = require('./store/persistence');
 const Mailbox = require('./actor/mailbox');
 const ChildSupervisor = require('./actor/guardian');
 const errors = require('./actor/errors');
-const RestartStrategy = require('./actor/restart-strategy');
+const RestartStrategy = require('./actor/restart-strategy.ts');
 const plugins = require('./plugins');
 
 module.exports = {

@@ -13,7 +13,7 @@ const { loadConfig, ensureDirs } = require('../src/config');
 const Trace = require('../src/obs/trace');
 const { MessageStore } = require('../src/store/message-store');
 const { DeadLetterQueue: DLQ } = require('../src/store/dead-letter-queue');
-const TokenBucket = require('../src/actor/token-bucket');
+const TokenBucket = require('../src/actor/token-bucket.ts');
 const metrics = require('../src/obs/metrics');
 const { Counters } = require('../src/obs/metrics');
 

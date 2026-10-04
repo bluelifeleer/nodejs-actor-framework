@@ -1,14 +1,14 @@
 'use strict';
 
 const Mailbox = require('./mailbox');
-const TokenBucket = require('./token-bucket');
+const TokenBucket = require('./token-bucket.ts');
 const ChildSupervisor = require('./guardian');
 const ActorContext = require('./actor-context');
 const { ActorRef } = require('./actor-ref');
 const { defineActor } = require('./actor');
 const { resolvePersistence } = require('../store/persistence');
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors');
-const RestartStrategy = require('./restart-strategy');
+const RestartStrategy = require('./restart-strategy.ts');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
