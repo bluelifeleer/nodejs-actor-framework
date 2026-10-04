@@ -1,6 +1,6 @@
 'use strict';
 
-const RestartStrategy = require('./restart-strategy.ts');
+const RestartStrategy = require('./restart-strategy.mts');
 
 /**
  * Supervision decisions for one actor's children.
