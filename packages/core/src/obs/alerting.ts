@@ -376,8 +376,8 @@ class AlertManager extends EventEmitter {
       return { types: {}, help: {}, samples: [], ...result };
     }
     if (this.source.url) {
-      const text = await scrape(String(this.source.url), this.source.timeoutMs === undefined ? 3000 : this.source.timeoutMs);
-      return parsePrometheusText(text);
+      const text = await scrape(String(this.source.url), Number(this.source.timeoutMs ?? 3000));
+      return parsePrometheusText(String(text));
     }
     throw new Error('AlertManager needs source.url or source.snapshot');
   }
