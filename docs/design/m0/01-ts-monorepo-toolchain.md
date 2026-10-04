@@ -295,6 +295,36 @@ ActorNotFoundError, PersistenceError, EscalationError
 `createRequire`：`actor-cell`/`system`（循环依赖）、`level-store`（可选依赖）、`telnet-console`/`worker-host`
 （按路径加载）、`config`），再转包内 16 个测试文件，最后做双产物构建替换手写的 `index.mjs`。
 
+
+### 9.8 路线 B 的执行教训：src 与包内测试必须同批切换
+
+两次尝试把 `packages/core` 切成 ESM 都在**翻转 `"type": "module"` 后**失败（第二次 27 个用例
+全部加载失败），根因与修正后的方案如下：
+
+**根因**：`"type": "module"` 是**包级**设置，作用于该包下所有 `.js`——不只是 `src/**`，
+还有 `test/*.test.js`（16 个）、`test/helpers.js`、`test/fixtures/actors/*.js`。它们仍是 CJS 写法，
+一翻转就全部非法。因此"src 切 ESM"与"包内测试切 ESM"**是一次原子操作，不能拆成两步**。
+
+**修正后的执行顺序**（同一提交内完成）：
+
+1. codemod 改写 `src/**` + `test/**` + `test/fixtures/**`（`tools/codemods/cjs-to-esm-core.py`，
+   已能处理 import/export/`__dirname`/动态 require 的 `createRequire` 前导）；
+2. 校验 `grep -rn "module.exports\|require(" packages/core --include="*.js"` 为空；
+3. 才翻转 `"type": "module"`；
+4. 立刻跑全量测试 + 严格 typecheck；红则整批回退（不要带着红状态继续）。
+
+**第二次尝试的额外失败签名**（供下一轮直接排查）：
+
+- `ERR_UNKNOWN_BUILTIN_MODULE` —— 某个 `node:` 前缀模块名被改错（codemod 对
+  `require('timers/promises')` 这类**子路径内置模块**没有特殊处理）；
+- `ERR_MODULE_NOT_FOUND` —— 相对导入缺显式扩展名（`src/*.ts` 之间需要 `.ts`，
+  `test/*.js` 之间需要 `.js`，不能一律补 `.ts`）；
+- `SyntaxError: Duplicate export of ...` —— `module.exports = { X }` 与 `module.exports.X = X`
+  同时存在时的重复具名导出（新版 codemod 已去重，但需回归确认）。
+
+**当前状态**：`packages/core` 仍为 CJS，全量 281/281、严格 typecheck 0 错误；codemod 与本文档
+一并入库（`tools/codemods/`），下一轮可直接从第 1 步继续。
+
 ## 10. 本节待确认
 
 | # | 事项 | 建议 |
