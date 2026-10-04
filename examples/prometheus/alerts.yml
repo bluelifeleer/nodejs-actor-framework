@@ -1,0 +1,79 @@
+# Prometheus 告警规则（配合框架自带的 /metrics 端点）
+#
+#   scrape_configs:
+#     - job_name: actor-framework
+#       scrape_interval: 5s
+#       static_configs:
+#         - targets: ['10.0.0.1:9464', '10.0.0.2:9464']
+#
+#   rule_files:
+#     - alerts.yml
+#
+# 阈值都是示例值，按你的容量改。`for:` 用来避免瞬时抖动误报。
+groups:
+  - name: actor-framework
+    rules:
+      # 邮箱积压：处理速度跟不上（先看是哪个 actor 积压，再看是不是慢下游）
+      - alert: ActorMailboxBacklog
+        expr: sum(actor_mailbox_depth_total) > 1000
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Actor 邮箱积压 {{ $value }} 条"
+          runbook: "看 /metrics 的 actor_mailbox_depth{actor=...} 找出具体 Actor；常见原因：下游慢、CPU 隔离不足、被超大消息打爆"
+
+      # 单个 Actor 积压：比总量更能定位问题
+      - alert: SingleActorMailboxBacklog
+        expr: actor_mailbox_depth > 500
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Actor {{ $labels.actor }} 积压 {{ $value }} 条"
+
+      # 限流频繁：要么被刷，要么阈值配小了
+      - alert: ActorThrottledFlood
+        expr: sum(rate(actor_messages_throttled_total[1m])) > 50
+        for: 2m
+        labels:
+          severity: info
+        annotations:
+          summary: "限流触发 {{ $value }}/s"
+          runbook: "按 actor 标签定位来源连接；确认是攻击就封 IP，是正常流量就调大 rateLimit"
+
+      # 死信：消息真的丢了，需要人工处理
+      - alert: ActorDeadLetters
+        expr: increase(actor_dead_lettered_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "5 分钟内新增死信 {{ $value }} 条"
+          runbook: "读 system.readDeadLetters()（装了 deadLetters 插件就是落盘的），修数据后重放"
+
+      # 反复重启：可能有连续崩溃或 OOM
+      - alert: ActorCrashLoop
+        expr: actor_supervisor_restarts_in_window > 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "监督者窗口内重启 {{ $value }} 次"
+
+      # 隔离 Actor 的输出：确认重活确实在 worker 里、且没有异常退出
+      - alert: NoIsolatedActors
+        expr: actor_isolated_actors == 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "没有 worker 隔离的 Actor（如与预期不符，检查 isolation 配置）"
+
+      # 进程级：RSS 逼近容器上限
+      - alert: ActorNodeMemoryHigh
+        expr: actor_process_resident_memory_bytes > 1.5e9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点常驻内存 {{ $value | humanize1024 }}B"

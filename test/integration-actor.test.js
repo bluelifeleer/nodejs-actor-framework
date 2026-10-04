@@ -1,21 +1,32 @@
 'use strict';
 
+/**
+ * Node-level integration: the demo node is now *composition* (system + plugins),
+ * so these tests check the wiring, not the actor semantics (those live in
+ * test/unit-actor-*.test.js).
+ */
+
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const { setupTempEnv, cleanup, waitFor, delay } = require('./helpers');
+const { setupTempEnv, cleanup, waitFor } = require('../packages/core/test/helpers');
 
-const tempDir = setupTempEnv('actor-int');
+const tempDir = setupTempEnv('actor-node');
 
-const { bootstrap } = require('../actor-main');
+const { bootstrap, describe } = require('../actor-main');
+const { AskTimeoutError, ActorStoppedError } = require('nodejs-actor-framework');
+
+const WORKER_PLAYER = './packages/core/test/fixtures/actors/worker-player.js';
 
 let ctx;
 
 before(async () => {
   ctx = await bootstrap({
-    telnet: { enabled: true, port: 0 },
-    gateway: { enabled: false },
+    nodeId: 'node-under-test',
+    telnet: { enabled: false },
+    gateway: { enabled: true, host: '127.0.0.1', port: 0 },
     gossip: { enabled: false },
-    bootActors: ['a1', 'a2'],
+    metrics: { exporter: { enabled: true, host: '127.0.0.1', port: 0 } },
+    bootActors: ['player_001'],
   });
 });
 
@@ -24,167 +35,172 @@ after(async () => {
   cleanup(tempDir);
 });
 
-const restartsOf = (actorId) => {
-  const child = ctx.supervisor.info().children.find((c) => c.id === actorId);
-  return child ? child.restarts : -1;
-};
+test('bootstrap brings up a node on the framework model', async () => {
+  assert.ok(ctx.system, 'the node exposes an ActorSystem');
+  assert.deepStrictEqual(ctx.system.listActors(), ['player_001']);
+  assert.deepStrictEqual(ctx.booted, ['player_001']);
 
-async function eventually(actorId, payload, predicate, message) {
-  return waitFor(
-    async () => {
-      try {
-        const result = await ctx.actorManager.send(actorId, payload, 1000);
-        return predicate(result) ? result : false;
-      } catch {
-        return false;
-      }
-    },
-    { message, timeout: 8000 },
-  );
-}
+  // Plugins are installed; cluster is absent because gossip is disabled.
+  const installed = [...ctx.system.installed.keys()];
+  assert.ok(installed.includes('pubsub'));
+  assert.ok(installed.includes('tracing'));
+  assert.ok(installed.includes('deadLetters'));
+  assert.ok(installed.includes('rateLimit'));
+  assert.ok(installed.includes('metrics'));
+  assert.strictEqual(ctx.system.cluster, null, 'gossip disabled means no cluster plugin');
 
-test('bootstrap brings up a node with supervised actors', () => {
-  assert.deepStrictEqual(ctx.actorManager.listActors().sort(), ['a1', 'a2']);
-  assert.strictEqual(ctx.supervisor.info().children.length, 2);
-  assert.ok(ctx.ports.console > 0, 'console listened on an ephemeral port');
-  assert.ok(ctx.registry.has('a1'));
-  assert.deepStrictEqual(ctx.warnings, []);
+  assert.ok(ctx.ports.gateway > 0, 'the gateway is serving actors');
+  assert.ok(ctx.ports.metrics > 0, 'the metrics endpoint is up');
+  assert.strictEqual(ctx.ports.console, null, 'the console is disabled here');
+  assert.strictEqual(ctx.storeBackend, 'file');
+  assert.match(describe(ctx), /node-under-test/);
 });
 
 test('messages reach actors and replies come back', async () => {
-  assert.deepStrictEqual(await ctx.actorManager.send('a1', { type: 'debug:getState' }), { hp: 100 });
-  assert.strictEqual(await ctx.actorManager.send('a1', { type: 'hurt', damage: 5 }), 95);
-  assert.strictEqual(await ctx.actorManager.send('a1', { type: 'hurt', damage: 5, priority: 2 }), 90);
-});
-
-test('an invalid priority is coerced instead of crashing the worker or the process', async () => {
-  const hp = await ctx.actorManager.send('a1', { type: 'hurt', damage: 1 }, 2000, 7);
-  assert.ok(Number.isFinite(hp));
-  assert.deepStrictEqual(await ctx.actorManager.send('a1', { type: 'debug:getState' }), { hp });
-});
-
-test('metrics collected inside the worker are visible to the main process', async () => {
-  // Regression: metrics used to be trapped in the worker, so `metrics dump`
-  // always returned {}. Snapshot the number, not the live object.
-  const beforeHandled = (ctx.metrics.get('a1') || { handled: 0 }).handled;
-  await ctx.actorManager.send('a1', { type: 'hurt', damage: 1 });
-  await waitFor(() => {
-    const m = ctx.metrics.get('a1');
-    return m && m.handled > beforeHandled;
-  }, { message: 'metrics delta to arrive' });
-
-  const snapshot = ctx.metrics.dump({ persist: false });
-  assert.ok(snapshot.a1.received >= 1);
-  assert.ok(snapshot.a1.handled >= 1);
-  assert.ok(snapshot.a1.batches >= 1);
-  assert.strictEqual(typeof snapshot.a1.avgLatencyMs, 'number');
+  const ref = ctx.system.ref('player_001');
+  assert.strictEqual(await ref.ask({ type: 'hurt', damage: 10 }), 90);
+  assert.strictEqual(await ref.ask({ type: 'hurt', damage: 5 }), 85);
+  assert.strictEqual(ctx.system.inspect('player_001').state.hp, 85);
 });
 
 test('an unexpected crash is restarted by the supervisor', async () => {
-  // Regression: handleChildCrash was never called, so nothing ever restarted.
-  const before_ = restartsOf('a1');
-  assert.strictEqual(ctx.actorManager.crashActor('a1'), true);
+  const ref = ctx.system.ref('player_001');
+  await ref.ask({ type: 'hurt', damage: 20 });
+  const before = ctx.system.inspect('player_001');
+  assert.ok(before.state.hurtTotal >= 20, 'damage accumulated before the crash');
 
-  await waitFor(() => restartsOf('a1') > before_, { message: 'supervisor restart', timeout: 8000 });
-  await eventually('a1', { type: 'debug:getState' }, (state) => state && state.hp !== undefined, 'restarted actor to answer');
-  assert.strictEqual(ctx.supervisor.info().running, true);
-});
+  await assert.rejects(() => ref.ask({ type: 'debug:crash' }), /crash requested via console/);
+  await waitFor(() => ctx.system.inspect('player_001').restarts === before.restarts + 1, {
+    message: 'the supervised restart',
+  });
 
-test('a worker crash never takes the main process down', async () => {
-  // The old code had no worker.on('error'), so any worker failure was fatal.
-  assert.ok(ctx.actorManager.hasActor('a2'));
-  assert.ok(ctx.actorManager.hasActor('a1'));
-  assert.strictEqual(process.exitCode, undefined);
-});
-
-test('a worker uncaught exception is contained and the actor comes back', async () => {
-  ctx.actorManager.createActor('boomer');
-  await ctx.hotReload.hotUpdate(
-    'boomer',
-    "async function (msg) { if (msg.explode) { process.nextTick(() => { throw new Error('kaboom'); }); } return 'ok'; }",
-  );
-
-  const before_ = restartsOf('boomer');
-  await ctx.actorManager.send('boomer', { type: 't', explode: true }).catch(() => {});
-
-  await waitFor(() => restartsOf('boomer') > before_, { message: 'restart after uncaught exception', timeout: 8000 });
-
-  // Other actors are unaffected, and the process is alive.
-  assert.strictEqual(await ctx.actorManager.send('a1', { type: 'debug:getState' }).then(() => true), true);
+  assert.strictEqual(await ref.ask({ type: 'hurt', damage: 1 }), 99, 'the new incarnation is usable');
+  assert.strictEqual(ctx.system.inspect('player_001').state.hurtTotal, 1, 'and started fresh');
 });
 
 test('kill is intentional: no restart, and it is deregistered', async () => {
-  ctx.actorManager.createActor('doomed');
-  assert.ok(ctx.registry.has('doomed'));
-  assert.strictEqual(await ctx.actorManager.destroyActor('doomed'), true);
-  await delay(300);
-  assert.strictEqual(ctx.actorManager.hasActor('doomed'), false);
-  assert.strictEqual(ctx.supervisor.hasChild('doomed'), false, 'the child was removed, so a re-spawn is possible');
-  assert.strictEqual(ctx.registry.has('doomed'), false);
-  assert.strictEqual(await ctx.actorManager.destroyActor('doomed'), false);
+  const ref = ctx.system.ref('player_001');
+  await ref.stop();
+  await waitFor(() => ctx.system.resolve('player_001') === null, { message: 'the actor to be deregistered' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.strictEqual(ctx.system.listActors().includes('player_001'), false);
+  assert.strictEqual(ctx.system.resolve('player_001'), null);
 });
 
-test('monitors are notified when the target dies', async () => {
-  // Regression: monitors were never registered, so this never fired.
-  ctx.actorManager.createActor('watcher');
-  ctx.actorManager.createActor('victim');
-  await ctx.hotReload.hotUpdate(
-    'watcher',
-    "async function (msg) { if (msg.type === 'monitor:notifyDead') { this.state.dead = msg.deadActorId; this.state.reason = msg.reason; return 'noted'; } if (msg.type === 'debug:getState') { return this.state; } return { ok: true }; }",
-  );
-  await ctx.actorManager.monitor('watcher', 'victim');
-  ctx.actorManager.crashActor('victim');
+test('sending to a stopped actor fails clearly instead of hanging', async () => {
+  const orphan = ctx.system.cells.get('player_001');
+  assert.strictEqual(orphan, undefined, 'the cell is gone, so resolve() cannot hand out a stale ref');
 
-  const state = await eventually(
-    'watcher',
-    { type: 'debug:getState' },
-    (s) => s && s.dead === 'victim',
-    'monitor notification',
-  );
-  assert.strictEqual(state.dead, 'victim');
-  assert.strictEqual(state.reason, 'crash');
-});
-
-test('sending to an unknown actor rejects clearly', async () => {
-  await assert.rejects(() => ctx.actorManager.send('ghost', { type: 'x' }, 500), /not found/);
-});
-
-test('hot reload applies the documented arrow form and keeps the actor alive', async () => {
-  ctx.actorManager.createActor('hot1');
-  const res = await ctx.hotReload.hotUpdate(
-    'hot1',
-    'async (msg) => { if (msg.type === "hurt") { this.state.hp -= msg.damage * 2; return this.state.hp; } return this.state; }',
-  );
-  assert.deepStrictEqual(res, { installed: true, name: 'anonymous' });
-
-  // Regression: an arrow function could not see `this`, which previously
-  // crashed the whole process.
-  assert.strictEqual(await ctx.actorManager.send('hot1', { type: 'hurt', damage: 10 }), 80);
-  await ctx.hotReload.hotUpdate('hot1', 'async (msg) => { this.state.hp = 42; return this.state.hp; }');
-  assert.strictEqual(await ctx.actorManager.send('hot1', { type: 'anything' }), 42);
-});
-
-test('a rejected hot reload leaves the previous handler in place', async () => {
-  await assert.rejects(() => ctx.hotReload.hotUpdate('hot1', '"not a function"'), /hot reload failed/);
-  assert.strictEqual(await ctx.actorManager.send('hot1', { type: 'anything' }), 42);
-  assert.strictEqual(ctx.actorManager.hasActor('hot1'), true);
-});
-
-test('hot reload is refused for unknown actors', async () => {
-  await assert.rejects(() => ctx.hotReload.hotUpdate('nobody', 'async () => 1'), /not found/);
+  const other = await ctx.system.spawn(async () => 'ok', { id: 'ephemeral' });
+  await other.stop();
+  await assert.rejects(() => other.ask('x', 200), (err) => err instanceof ActorStoppedError);
 });
 
 test('control calls time out instead of hanging forever', async () => {
-  ctx.actorManager.createActor('slow');
+  await ctx.system.spawn(() => new Promise(() => {}), { id: 'never-answers' });
   await assert.rejects(
-    () => ctx.actorManager.control('slow', { type: 'no-such-control' }, 500),
-    /unknown control message/,
+    () => ctx.system.ref('never-answers').ask('x', 120),
+    (err) => err instanceof AskTimeoutError,
   );
+  await ctx.system.ref('never-answers').stop();
 });
 
-test('actor ids are validated before a worker is created', () => {
-  assert.throws(() => ctx.actorManager.createActor('../evil'), /invalid actorId/);
-  assert.throws(() => ctx.actorManager.createActor('bad id'), /invalid actorId/);
-  assert.throws(() => ctx.actorManager.createActor(''), /invalid actorId/);
-  assert.throws(() => ctx.actorManager.createActor('a1'), /already exists/);
+test('metrics collected from actors are visible to the main process', async () => {
+  const ref = await ctx.system.spawn(async () => 'ok', { id: 'measured' });
+  await ref.ask('a');
+  await ref.ask('b');
+  await waitFor(() => {
+    ctx.system.collectMetrics();
+    return (ctx.metrics.get('measured') || {}).handled === 2;
+  }, { message: 'counters to be collected' });
+  assert.strictEqual(ctx.metrics.get('measured').received, 2);
+});
+
+test('worker isolation is per actor and an isolated crash does not take the node down', async () => {
+  const isolated = await ctx.system.spawn(WORKER_PLAYER, { id: 'isolated', isolation: 'worker' });
+  assert.strictEqual(ctx.system.inspect('isolated').isolation, 'worker');
+
+  await isolated.ask({ type: 'hurt', damage: 5 });
+  await assert.rejects(() => isolated.ask({ type: 'boom' }), /worker boom/);
+  await waitFor(() => ctx.system.inspect('isolated').restarts === 1, { message: 'the isolated restart' });
+
+  // The process is still alive and the inline node keeps serving.
+  assert.strictEqual(await isolated.ask({ type: 'hurt', damage: 0 }), 100);
+  assert.strictEqual(await ctx.system.ref('measured').ask('c'), 'ok');
+  await isolated.stop();
+});
+
+test('dead letters are readable through the node', async () => {
+  const flaky = await ctx.system.spawn(async () => {
+    throw new Error('node-level failure');
+  }, { id: 'flaky-node', failure: 'retry', maxRetry: 0 });
+
+  await assert.rejects(() => flaky.ask('doomed'), /node-level failure/);
+  await waitFor(async () => (await ctx.system.readDeadLetters()).some((e) => e.actorId === 'flaky-node'), {
+    message: 'the dead letter to be recorded',
+  });
+
+  const letters = await ctx.system.readDeadLetters();
+  const entry = letters.find((e) => e.actorId === 'flaky-node');
+  assert.match(entry.reason, /node-level failure/);
+  await ctx.system.clearDeadLetters();
+  assert.deepStrictEqual(await ctx.system.readDeadLetters(), []);
+});
+
+test('hot reload is refused with an explanation instead of being silently ignored', async () => {
+  const legacy = await bootstrap({
+    nodeId: 'hotreload-node',
+    telnet: { enabled: false },
+    gateway: { enabled: false },
+    gossip: { enabled: false },
+    metrics: { exporter: { enabled: false } },
+    hotReload: { enabled: true },
+    bootActors: [],
+  });
+  try {
+    assert.ok(
+      legacy.warnings.some((w) => /no runtime code eval/.test(w)),
+      `expected a warning about hot reload, got: ${JSON.stringify(legacy.warnings)}`,
+    );
+    assert.deepStrictEqual(legacy.system.listActors(), []);
+  } finally {
+    await legacy.close();
+  }
+});
+
+test('graceful shutdown stops actors, closes the gateway and is idempotent', async () => {
+  const node = await bootstrap({
+    nodeId: 'shutdown-node',
+    telnet: { enabled: false },
+    gateway: { enabled: true, host: '127.0.0.1', port: 0 },
+    gossip: { enabled: false },
+    metrics: { exporter: { enabled: false } },
+    bootActors: ['victim'],
+  });
+  assert.ok(node.ports.gateway > 0);
+
+  await node.close();
+  assert.strictEqual(node.system.stopped, true);
+  assert.deepStrictEqual(node.system.listActors(), []);
+  assert.strictEqual(node.system.server, null, 'the gateway socket is closed');
+  await node.close(); // must not throw
+});
+
+test('a disabled gateway still runs the node', async () => {
+  const node = await bootstrap({
+    nodeId: 'no-gateway',
+    telnet: { enabled: false },
+    gateway: { enabled: false },
+    gossip: { enabled: false },
+    metrics: { exporter: { enabled: false } },
+    bootActors: ['solo'],
+  });
+  try {
+    assert.strictEqual(node.ports.gateway, null);
+    assert.strictEqual(node.system.server, null);
+    assert.deepStrictEqual(node.system.listActors(), ['solo']);
+    assert.strictEqual(await node.system.ref('solo').ask({ type: 'hurt', damage: 3 }), 97);
+  } finally {
+    await node.close();
+  }
 });

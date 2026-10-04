@@ -1,175 +1,289 @@
 'use strict';
 
+/**
+ * Console-level integration against the framework node.
+ *
+ * The console only speaks the framework's public API, so these tests double as
+ * a check that the public surface is usable from outside (`resolve`, `tell`,
+ * `ask`, `state`, `stats`, `readDeadLetters`, pubsub, cluster).
+ */
+
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const { setupTempEnv, cleanup, telnet, telnetRaw } = require('./helpers');
+const { setupTempEnv, cleanup, telnet, telnetRaw } = require('../packages/core/test/helpers');
 
 const tempDir = setupTempEnv('actor-console');
 
 const { bootstrap } = require('../actor-main');
-const { TelnetConsole } = require('../telnet-console');
+const { TelnetConsole } = require('../packages/core/src/ops/telnet-console');
 
 let ctx;
+let bareCtx;
+let authCtx;
+let peerCtx;
 
 before(async () => {
+  // Only the main node needs the metrics exporter: the other three exist to test
+  // degradation and auth, and four exporters + gossip nodes make the suite slow
+  // enough to be flaky under load.
+  const light = {
+    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null },
+    metrics: { exporter: { enabled: false } },
+    bootActors: [],
+  };
+
   ctx = await bootstrap({
-    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: '' },
+    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null },
+    metrics: { exporter: { enabled: true, host: '127.0.0.1', port: 0 } },
+    bootActors: ['player_001'],
+    nodeId: 'console-node',
+    gateway: { enabled: true, host: '127.0.0.1', port: 0 },
+    gossip: { enabled: true, host: '127.0.0.1', advertiseHost: '127.0.0.1', port: 0, intervalMs: 100 },
+  });
+
+  bareCtx = await bootstrap({
+    ...light,
+    nodeId: 'console-bare',
     gateway: { enabled: false },
     gossip: { enabled: false },
-    bootActors: ['player_001'],
+    bootActors: [],
+  });
+
+  authCtx = await bootstrap({
+    ...light,
+    nodeId: 'console-auth',
+    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: 's3cr3t-token' },
+    gateway: { enabled: false },
+    gossip: { enabled: false },
+  });
+
+  // A second gossip node, seeded to the first, to drive discovery via the console.
+  peerCtx = await bootstrap({
+    ...light,
+    nodeId: 'console-peer',
+    gateway: { enabled: true, host: '127.0.0.1', port: 0 },
+    gossip: {
+      enabled: true,
+      host: '127.0.0.1',
+      advertiseHost: '127.0.0.1',
+      port: 0,
+      intervalMs: 100,
+      seeds: [{ host: '127.0.0.1', port: ctx.ports.gossip }],
+    },
   });
 });
 
 after(async () => {
-  await ctx.close();
+  for (const node of [peerCtx, authCtx, bareCtx, ctx]) if (node) await node.close();
   cleanup(tempDir);
 });
 
 const run = (...lines) => telnet(ctx.ports.console, lines);
+const runBare = (...lines) => telnet(bareCtx.ports.console, lines);
 
-test('console: banner and help list the available commands', async () => {
+test('console: banner and help list the framework commands', async () => {
   const out = await run('help');
-  assert.match(out, /Actor Framework Console/);
-  assert.match(out, /hotreload/);
-  assert.match(out, /crash \[actorId\]/);
+  assert.match(out, /Actor Framework Console \(framework model\)/);
+  assert.match(out, /actors \| inspect \[path\] \| state \[path\] \| system/);
+  assert.match(out, /tell \[path\] json \| ask \[path\] json/);
+  assert.match(out, /cluster info/);
+  assert.doesNotMatch(out, /hotreload/, 'the eval-based command is gone');
 });
 
-test('console: a valid hurt message reports the new hp and priority', async () => {
-  const out = await run('hurt player_001 10 0');
-  assert.match(out, /OK hp=90 priority=0\(HIGH\)/);
+test('console: hurt reports the new hp', async () => {
+  const out = await run('hurt player_001 10');
+  assert.match(out, /OK hp=90/);
 });
 
 test('console: non-numeric damage is rejected (no NaN state poisoning)', async () => {
-  // Regression: `hurt player_001 abc` used to set hp to NaN silently.
-  const out = await run('hurt player_001 abc 1');
+  const out = await run('hurt player_001 abc');
   assert.match(out, /ERR:damage must be a finite number/);
-  const state = await run('getState player_001');
-  assert.match(state, /state:\{"hp":90\}/);
+  assert.match(await run('getState player_001'), /"hp":90/);
 });
 
-test('console: an out-of-range priority is rejected (no worker crash)', async () => {
-  // Regression: priority 5 used to throw in the mailbox and kill the process.
-  const out = await run('hurt player_001 10 5');
-  assert.match(out, /ERR:priority must be 0, 1 or 2/);
-  assert.match(await run('getState player_001'), /state:\{"hp":90\}/);
+test('console: the removed priority argument is explained, not ignored', async () => {
+  const out = await run('hurt player_001 10 0');
+  assert.match(out, /ERR:priority was removed/);
+  assert.match(out, /single FIFO per actor/);
+  assert.match(await run('getState player_001'), /"hp":90/, 'state untouched');
 });
 
-test('console: malformed actor ids are rejected', async () => {
-  assert.match(await run('getState ../etc/passwd'), /ERR:actorId must match/);
-  assert.match(await run('spawn bad/id'), /ERR:actorId must match/);
-  assert.match(await run('hurt'), /ERR:actorId is required/);
+test('console: malformed actor paths are rejected', async () => {
+  assert.match(await run('getState ../etc/passwd'), /ERR:actor path must match/);
+  assert.match(await run('actors'), /actors:\[/, 'the session survives a rejected path');
+  assert.match(await run('spawn bad\\path'), /ERR:actor path must match/);
+  assert.match(await run('hurt'), /ERR:actor path is required/);
 });
 
 test('console: an empty line keeps the session open', async () => {
-  // Regression: an empty line used to end the connection.
   const out = await run('', 'actors');
-  assert.match(out, /actors:\["player_001"/);
+  assert.match(out, /actors:\["player_001"\]/, 'the session survived the empty line');
 });
 
 test('console: several commands in one TCP packet are all executed', async () => {
-  // Regression: each chunk was treated as exactly one command.
-  const out = await telnetRaw(ctx.ports.console, 'actors\nsup info\nregistry list\n');
-  assert.match(out, /actors:/);
-  assert.match(out, /sup:\{/);
-  assert.match(out, /registry:\{/);
+  const out = await telnetRaw(ctx.ports.console, 'actors\nsystem\nhelp\n');
+  assert.match(out, /actors:\["player_001"\]/);
+  assert.match(out, /system:\{/);
+  assert.match(out, /Actor Framework Console/);
 });
 
 test('console: unknown commands are reported, not fatal', async () => {
-  assert.match(await run('frobnicate'), /unknown command: frobnicate/);
+  const out = await run('nope', 'actors');
+  assert.match(out, /unknown command: nope/);
+  assert.match(out, /actors:\["player_001"\]/);
 });
 
 test('console: introspection commands work', async () => {
-  assert.match(await run('sup info'), /"strategy":"one_for_one"/);
-  assert.match(await run('registry list'), /player_001/);
-  assert.match(await run('dlq size'), /DLQ size:\d+/);
-  assert.match(await run('metrics dump'), /metrics:\{/);
-  assert.match(await run('actors'), /actors:\[/);
-  assert.match(await run('gossip info'), /gossip:\{"enabled":false\}/);
+  const actors = await run('actors');
+  assert.match(actors, /actors:\["player_001"\]/);
+
+  const inspect = await run('inspect player_001');
+  assert.match(inspect, /inspect:\{/);
+  assert.match(inspect, /"isolation":"inline"/);
+  assert.match(inspect, /"counters":\{/);
+
+  const state = await run('state player_001');
+  assert.match(state, /state:\{"hp":90/);
+
+  const system = await run('system');
+  assert.match(system, /system:\{/);
+  assert.match(system, /"name":"console-node"/);
+  assert.match(system, /"plugins":/);
+
+  const sup = await run('sup info');
+  assert.match(sup, /sup:\{"root":/);
+  assert.match(sup, /"path":"player_001"/);
+});
+
+test('console: tell and ask take JSON; malformed JSON is rejected', async () => {
+  assert.match(await run('tell player_001 {"type":"debug:getState"}'), /accepted/);
+  const reply = await run('ask player_001 {"type":"hurt","damage":1}');
+  assert.match(reply, /reply:89/);
+
+  const bad = await run('ask player_001 {not json}');
+  assert.match(bad, /ERR:payload must be valid JSON/);
+  const missing = await run('tell player_001');
+  assert.match(missing, /ERR:payload must be JSON/);
 });
 
 test('console: spawn, crash and kill behave as documented', async () => {
-  assert.match(await run('spawn temp_actor'), /spawn temp_actor ok/);
-  assert.match(await run('actors'), /temp_actor/);
-  assert.match(await run('crash temp_actor'), /supervisor will restart/);
-  assert.match(await run('kill temp_actor'), /will NOT be restarted/);
-  assert.match(await run('drop temp_actor'), /drop temp_actor ok/);
+  assert.match(await run('spawn arena/bob'), /spawn arena\/bob ok \(isolation=inline\)/);
+  assert.match(await run('actors'), /arena\/bob/);
+  assert.match(await run('spawn arena/bob'), /ERR:actor arena\/bob already exists/);
+
+  // A module path spawn with worker isolation.
+  assert.match(
+    await run('spawn encoder ./examples/actors/encoder.js worker'),
+    /spawn encoder ok \(isolation=worker\)/,
+  );
+  assert.match(await run('state encoder'), /"jobs":0/);
+
+  const crash = await run('crash arena/bob');
+  assert.match(crash, /crash arena\/bob -> crash requested via console for arena\/bob/);
+  assert.match(crash, /the supervisor will restart it/);
+
+  assert.match(await run('kill arena/bob'), /kill arena\/bob ok/);
+  assert.match(await run('getState arena/bob'), /ERR:actor arena\/bob not found/);
+
+  // The isolated actor was restarted after its crash and is still usable.
+  assert.match(await run('ask encoder {"type":"encode","text":"hi"}'), /reply:"aGk="/);
+  await run('kill encoder');
 });
 
-test('console: metrics reported to the console are real, not {}', async () => {
-  const state = await run('metrics dump');
-  const json = state.slice(state.indexOf('metrics:') + 'metrics:'.length).trim().split('\n')[0];
-  const snapshot = JSON.parse(json);
-  assert.ok(snapshot.player_001, 'the actor has metrics');
-  assert.ok(snapshot.player_001.received >= 1);
-  assert.ok(snapshot.player_001.handled >= 1);
-});
-
-test('console: the quoted hot reload form from the README works', async () => {
-  const code = '"async (msg) => { if (msg.type === \'hurt\') { this.state.hp -= 1; return this.state.hp; } return this.state; }"';
-  const out = await run(`hotreload player_001 ${code}`);
-  assert.match(out, /hot reload player_001: \{"installed":true/);
-  assert.match(await run('hurt player_001 1 1'), /OK hp=89/);
-  assert.match(await run('getState player_001'), /state:\{"hp":89\}/);
-});
-
-test('console: a broken hot reload is reported and the actor survives', async () => {
-  const out = await run('hotreload player_001 "not a function"');
-  assert.match(out, /ERR:hot reload failed/);
-  assert.match(await run('getState player_001'), /state:\{"hp":89\}/);
-  assert.match(await run('actors'), /player_001/);
+test('console: metrics dump reports real counters', async () => {
+  await ctx.system.ref('player_001').ask({ type: 'hurt', damage: 1 });
+  const out = await run('metrics dump');
+  assert.match(out, /metrics:\{/);
+  assert.match(out, /"player_001":\{/);
+  assert.match(out, /"received":\d+/);
+  assert.doesNotMatch(out, /metrics:\{\}/);
 });
 
 test('console: pub/sub commands work end to end', async () => {
-  assert.match(await run('pub sub game/notice player_001'), /subscribe game\/notice -> player_001/);
-  assert.match(await run('pub topics'), /topics:\["game\/notice"\]/);
-  const published = await run('pub pub game/notice {"msg":"server open"}');
-  assert.match(published, /publish result:\[\{"actorId":"player_001","ok":true/);
-  assert.match(await run('pub unsub game/notice player_001'), /unsub game\/notice/);
+  assert.match(await run('pub sub news player_001'), /subscribe news -> player_001/);
+  assert.match(await run('pub topics'), /topics:\["news"\]/);
+  assert.match(await run('pub subs news'), /subscribers:\["player_001"\]/);
+
+  const published = await run('pub pub news {"text":"hello"}');
+  assert.match(published, /publish result:\[\{"path":"player_001","ok":true\}\]/);
+
+  assert.match(await run('pub unsub news player_001'), /unsub news -> player_001/);
+  assert.match(await run('pub topics'), /topics:\[\]/);
 });
 
-test('console: invalid JSON payloads are rejected', async () => {
-  assert.match(await run('pub pub topic {not json}'), /ERR:payload must be valid JSON/);
+test('console: dlq commands report and clear dead letters', async () => {
+  const flaky = await ctx.system.spawn(async () => {
+    throw new Error('console dlq failure');
+  }, { id: 'console-flaky', failure: 'retry', maxRetry: 0 });
+  await assert.rejects(() => flaky.ask('x'), /console dlq failure/);
+
+  assert.match(await run('dlq size'), /DLQ size:1/);
+  assert.match(await run('dlq list'), /console-flaky/);
+  assert.match(await run('dlq clear'), /DLQ cleared/);
+  assert.match(await run('dlq size'), /DLQ size:0/);
+  await flaky.stop();
 });
 
-test('console: gateway commands degrade gracefully when disabled', async () => {
-  assert.match(await run('gateway ping 127.0.0.1 1'), /ERR:gateway disabled/);
+test('console: cluster info reports this node and its peers', async () => {
+  const info = await run('cluster info');
+  assert.match(info, /cluster:\{/);
+  assert.match(info, /"nodeId":"console-node"/);
+  assert.match(info, /"remoteActors":/);
+  assert.match(info, /"peers":\[/);
+});
+
+test('console: an actor on another node is reachable by name through the console', async () => {
+  const peerRun = (...lines) => telnet(peerCtx.ports.console, lines);
+
+  const discovered = await peerRun('cluster wait player_001');
+  assert.match(discovered, /discovered:\{/);
+  assert.match(discovered, /"nodeId":"console-node"/);
+
+  const lookup = await peerRun('cluster lookup player_001');
+  assert.match(lookup, /lookup:\{.*"host":"127\.0\.0\.1","gatewayPort":\d+/);
+
+  const reply = await peerRun('ask player_001 {"type":"hurt","damage":2}');
+  assert.match(reply, /reply:\d+/, 'the remote ask returned the hp from the other node');
+});
+
+test('console: disabled subsystems degrade with a clear error', async () => {
+  assert.match(await runBare('cluster info'), /ERR:cluster plugin is not installed/);
+  const peer = await runBare('peer ping 127.0.0.1 9');
+  assert.match(peer, /ERR:/, 'an unreachable peer surfaces as an error');
+  assert.match(await runBare('actors'), /actors:\[\]/);
 });
 
 test('console: a non-loopback bind without a token is refused', async () => {
-  const guard = new TelnetConsole({ host: '0.0.0.0', token: '', context: {} });
-  assert.throws(() => guard.assertSafeBinding(), /refusing to expose the console/);
+  const unsafe = new TelnetConsole({
+    host: '0.0.0.0',
+    port: 0,
+    token: null,
+    context: { system: ctx.system },
+  });
+  await assert.rejects(() => unsafe.listen(), /refusing to expose the console/);
 
-  // And bootstrap degrades to "no console" instead of exposing it.
-  const unsafe = await bootstrap({
-    telnet: { enabled: true, port: 0, host: '0.0.0.0', token: '' },
-    gateway: { enabled: false },
-    gossip: { enabled: false },
-    bootActors: [],
-    registry: new (require('../registry').Registry)(),
+  const safe = new TelnetConsole({
+    host: '0.0.0.0',
+    port: 0,
+    token: 'a-token',
+    context: { system: ctx.system },
   });
   try {
-    assert.strictEqual(unsafe.console, null);
-    assert.ok(unsafe.warnings.some((w) => /console could not listen/.test(w)));
+    assert.ok(await safe.listen() > 0, 'a token makes a non-loopback bind acceptable');
   } finally {
-    await unsafe.close();
+    await safe.close();
   }
 });
 
 test('console: token authentication gates every command', async () => {
-  const node = await bootstrap({
-    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: 's3cret' },
-    gateway: { enabled: false },
-    gossip: { enabled: false },
-    bootActors: ['auth_actor'],
-    registry: new (require('../registry').Registry)(),
-  });
-  try {
-    assert.match(await telnet(node.ports.console, ['actors']), /authentication required/);
-    assert.match(await telnet(node.ports.console, ['auth nope', 'actors']), /authentication required/);
-    const ok = await telnet(node.ports.console, ['auth s3cret', 'actors']);
-    assert.match(ok, /authenticated/);
-    assert.match(ok, /actors:\["auth_actor"\]/);
-  } finally {
-    await node.close();
-  }
+  const denied = await telnet(authCtx.ports.console, ['actors']);
+  assert.match(denied, /ERR: authentication required/);
+  assert.doesNotMatch(denied, /actors:\[/);
+
+  const wrongToken = await telnet(authCtx.ports.console, ['auth nope', 'actors']);
+  assert.match(wrongToken, /ERR: authentication required/);
+
+  const allowed = await telnet(authCtx.ports.console, ['auth s3cr3t-token', 'actors']);
+  assert.match(allowed, /authenticated/);
+  assert.match(allowed, /actors:\[\]/);
 });

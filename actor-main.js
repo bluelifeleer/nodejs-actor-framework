@@ -1,382 +1,134 @@
 'use strict';
 
-const { Worker } = require('worker_threads');
-const path = require('path');
-const crypto = require('crypto');
-
-const config = require('./config');
-const { ensureDirs } = require('./config');
-const Supervisor = require('./supervisor');
-const { RestartStrategy } = require('./supervisor');
-const registry = require('./registry');
-const logger = require('./logger');
-const DLQ = require('./dead-letter-queue');
-const metrics = require('./metrics');
-const Gossip = require('./gossip');
-const PubSub = require('./pubsub');
-const HotReloadManager = require('./hot-reload-manager');
-const Gateway = require('./gateway');
-const Trace = require('./trace');
-const TelnetConsole = require('./telnet-console');
-const { ACTOR_ID_RE } = require('./telnet-console');
-const { validateStoreConfig } = require('./stores');
-const msgStore = require('./message-store');
-
-const WORKER_PATH = path.join(__dirname, 'actor-worker.js');
-const DEFAULT_PRIORITY = 1;
-
-function normalizePriority(value) {
-  return value === 0 || value === 1 || value === 2 ? value : DEFAULT_PRIORITY;
-}
-
 /**
- * Owns the local worker threads and routes messages.
+ * Demo / ops node, built on the framework.
  *
- * Fixes over the previous implementation:
- *  - `worker.on('error')` is registered, so a worker that fails to load or
- *    throws can no longer take the whole main process down,
- *  - the worker path is resolved against __dirname, not process.cwd(),
- *  - unexpected worker exits are reported to the supervisor, which actually
- *    restarts them now,
- *  - in-flight requests for a dead actor are rejected immediately instead of
- *    hanging until their timeout,
- *  - `send()` supports remote actors through the TCP gateway.
+ *   node actor-main.js
+ *
+ * Everything here is *composition*: the Actor semantics live in `lib/`, the
+ * optional capabilities live in `plugins/`, and this file only wires them to
+ * configuration and adds a telnet console. If you are embedding the framework
+ * in your own service you do not need this file — use `createSystem()` directly.
+ *
+ * Environment (see config.js for the full list):
+ *   ACTOR_NODE_ID, ACTOR_TELNET_*, ACTOR_GATEWAY_*, ACTOR_GOSSIP_*,
+ *   ACTOR_TLS_*, ACTOR_STORE_*, ACTOR_BOOT_ACTORS, ACTOR_PERSISTENCE_MODE
  */
-class ActorManager {
-  constructor(options = {}) {
-    this.config = options.config || config;
-    this.registry = options.registry || registry;
-    this.metrics = options.metrics || metrics;
-    this.logger = options.logger || logger;
-    this.supervisor = options.supervisor || null;
-    this.gateway = options.gateway || null;
-    this.requestTimeoutMs = this.config.actor.requestTimeoutMs;
 
-    /** @type {Map<string, Worker>} */
-    this.actors = new Map();
-    /** @type {Map<string, object>} replyId -> pending request */
-    this.replyMap = new Map();
-    /** @type {Map<string, object>} ctlId -> pending control request */
-    this.controlMap = new Map();
-    /** Actors stopped on purpose: their exit must not trigger a restart. */
-    this.intentional = new Set();
-    /** @type {Map<string, Set<string>>} targetActorId -> watcherActorIds */
-    this.monitors = new Map();
-    this.closed = false;
+const config = require('./packages/core/src/config');
+const logger = require('./packages/core/src/obs/logger');
+const msgStore = require('./packages/core/src/store/message-store');
+const { createSystem, plugins, Actor } = require('nodejs-actor-framework');
+const TelnetConsole = require('./packages/core/src/ops/telnet-console');
+const { validateStoreConfig } = require('./packages/core/src/store/message-store');
+
+/**
+ * Built-in demo actor, so the documented console commands work out of the box.
+ * Real deployments pass a module path instead (see `ACTOR_BOOT_MODULES`).
+ */
+class DemoActor extends Actor {
+  preStart() {
+    this.state = { hp: 100, hurtTotal: 0, handled: 0 };
   }
 
-  // --- lifecycle -----------------------------------------------------------
-
-  createActor(actorId) {
-    if (this.closed) throw new Error('ActorManager is closed');
-    const id = String(actorId ?? '');
-    if (!ACTOR_ID_RE.test(id)) throw new Error(`invalid actorId "${actorId}" (expected [A-Za-z0-9._:-]{1,128})`);
-    if (this.actors.has(id)) throw new Error(`actor ${id} already exists`);
-
-    if (this.supervisor) {
-      if (!this.supervisor.running && !this.supervisor.circuitOpen) this.supervisor.start();
-      if (!this.supervisor.hasChild(id)) {
-        this.supervisor.spawnChild(() => this._spawnWorker(id), id, {
-          stopFn: (ref) => {
-            this.intentional.add(id);
-            if (ref && typeof ref.terminate === 'function') ref.terminate().catch(() => {});
-          },
-        });
-        return id;
-      }
-    }
-    this._spawnWorker(id);
-    return id;
-  }
-
-  _spawnWorker(actorId) {
-    const worker = new Worker(WORKER_PATH, {});
-    const state = { lastError: null, exited: false };
-    this.actors.set(actorId, worker);
-    this.intentional.delete(actorId);
-
-    worker.on('message', (msg) => this._onWorkerMessage(actorId, msg));
-
-    // Without this listener an unhandled 'error' event terminates the process.
-    worker.on('error', (err) => {
-      state.lastError = err && err.message ? err.message : String(err);
-      this.logger.logSystem('actor_worker_error', { actorId, err: state.lastError });
-    });
-
-    worker.on('exit', (code) => {
-      if (state.exited) return;
-      state.exited = true;
-      this.actors.delete(actorId);
-      const intentional = this.intentional.delete(actorId);
-      this._rejectPendingForActor(actorId, new Error(`actor ${actorId} exited (code ${code})`));
-      this.logger.logSystem('actor_exit', { actorId, code, intentional, err: state.lastError });
-
-      // Monitors fire on every death, crash or intentional stop.
-      this._notifyWatchers(actorId, intentional ? 'stopped' : 'crash');
-
-      if (this.closed || intentional) {
-        this.registry.unregister(actorId);
-        // Withdraw from gossip too, otherwise peers keep advertising an actor
-        // that no longer exists.
-        if (typeof this.onActorRemoved === 'function') this.onActorRemoved(actorId);
-        return;
-      }
-      if (this.supervisor) {
-        const result = this.supervisor.handleChildCrash(actorId, { code, error: state.lastError });
-        this.logger.logSystem('actor_restart_decision', { actorId, ...result });
-        if (!result.restarted) this.registry.unregister(actorId);
-      } else {
-        this.registry.unregister(actorId);
-      }
-    });
-
-    worker.postMessage({ type: 'init', actorId });
-    this.metrics.initActor(actorId);
-    this.logger.logSystem('actor_spawn', { actorId });
-    return worker;
-  }
-
-  hasActor(actorId) {
-    return this.actors.has(String(actorId));
-  }
-
-  listActors() {
-    return [...this.actors.keys()];
-  }
-
-  /** Intentional stop: the supervisor will NOT restart the actor. */
-  async destroyActor(actorId) {
-    const id = String(actorId ?? '');
-    const worker = this.actors.get(id);
-    const supervised = this.supervisor ? this.supervisor.hasChild(id) : false;
-    if (!worker && !supervised) return false;
-
-    this.intentional.add(id);
-    if (supervised) this.supervisor.removeChild(id); // stopFn terminates the worker
-    if (worker) {
-      try {
-        await worker.terminate();
-      } catch {
-        /* already gone */
-      }
-    }
-    this.actors.delete(id);
-    registry.unregister(id);
-    return true;
-  }
-
-  /** Simulate a crash: the supervisor must restart the actor. */
-  crashActor(actorId) {
-    const id = String(actorId ?? '');
-    const worker = this.actors.get(id);
-    if (!worker) return false;
-    this.intentional.delete(id);
-    worker.terminate().catch(() => {});
-    return true;
-  }
-
-  async restartActor(actorId) {
-    const id = String(actorId ?? '');
-    if (!this.actors.has(id)) return false;
-    this.crashActor(id);
-    return true;
-  }
-
-  // --- messaging -----------------------------------------------------------
-
-  async send(actorId, payload, timeoutMs = this.requestTimeoutMs, priority = DEFAULT_PRIORITY, parentTraceCtx = null) {
-    if (!payload || typeof payload !== 'object') throw new TypeError('send(actorId, payload): payload must be an object');
-    const id = String(actorId ?? '');
-    const trace = Trace.buildContext(parentTraceCtx);
-    const prio = normalizePriority(priority);
-    const worker = this.actors.get(id);
-
-    if (worker) {
-      return new Promise((resolve, reject) => {
-        const replyId = crypto.randomUUID();
-        const timer = setTimeout(() => {
-          this.replyMap.delete(replyId);
-          reject(new Error(`message ${replyId} to ${id} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-        if (typeof timer.unref === 'function') timer.unref();
-        this.replyMap.set(replyId, { resolve, reject, timer, actorId: id });
-        worker.postMessage({ ...payload, __replyId: replyId, priority: prio, trace });
-      });
-    }
-
-    const meta = this.registry.find(id);
-    if (meta && meta.type === 'remote') {
-      if (!meta.host || !meta.gatewayPort) throw new Error(`actor ${id} is remote but has no reachable gateway address`);
-      if (!this.gateway) throw new Error(`actor ${id} is remote but the gateway is disabled`);
-      return this.gateway.deliver(meta.host, meta.gatewayPort, id, { ...stripInternal(payload), priority: prio, trace }, timeoutMs);
-    }
-
-    throw new Error(`actor ${id} not found`);
-  }
-
-  /**
-   * Control channel: request/response against a worker outside the mailbox
-   * (hot reload, monitors, stats, shutdown).
-   */
-  control(actorId, message, timeoutMs = this.requestTimeoutMs) {
-    const id = String(actorId ?? '');
-    const worker = this.actors.get(id);
-    if (!worker) return Promise.reject(new Error(`actor ${id} not found`));
-    return new Promise((resolve, reject) => {
-      const ctlId = crypto.randomUUID();
-      const timer = setTimeout(() => {
-        this.controlMap.delete(ctlId);
-        reject(new Error(`control "${message.type}" to ${id} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref();
-      this.controlMap.set(ctlId, { resolve, reject, timer, actorId: id });
-      worker.postMessage({ ...message, __ctl: true, __ctlId: ctlId });
-    });
-  }
-
-  /** Watch an actor: the watcher receives monitor:notifyDead when it dies. */
-  monitor(watcherActorId, targetActorId) {
-    const watcher = String(watcherActorId);
-    const target = String(targetActorId);
-    if (watcher === target) return Promise.reject(new Error('an actor cannot monitor itself'));
-    if (!this.monitors.has(target)) this.monitors.set(target, new Set());
-    this.monitors.get(target).add(watcher);
-    // Also register inside the worker so it shows up in `debug:stats`.
-    return this.control(target, { type: 'monitor:watch', watcherActorId: watcher }).catch(() => this);
-  }
-
-  unmountMonitor(watcherActorId, targetActorId) {
-    const watcher = String(watcherActorId);
-    const target = String(targetActorId);
-    if (this.monitors.has(target)) this.monitors.get(target).delete(watcher);
-    return this.control(target, { type: 'monitor:unwatch', watcherActorId: watcher }).catch(() => this);
-  }
-
-  _notifyWatchers(deadActorId, reason) {
-    const watchers = this.monitors.get(deadActorId);
-    if (!watchers) return;
-    this.monitors.delete(deadActorId);
-    for (const watcherActorId of watchers) {
-      this.send(watcherActorId, {
-        type: 'monitor:notifyDead',
-        deadActorId,
-        reason,
-      }).catch((err) => this.logger.logSystem('monitor_notify_failed', { watcherActorId, err: err.message }));
-    }
-  }
-
-  /** Used by the gateway when a peer asks us to deliver to a local actor. */
-  deliverLocal(targetActorId, payload, timeoutMs = this.requestTimeoutMs) {
-    const id = String(targetActorId ?? '');
-    // Only local delivery: never forward a peer's request back out, which
-    // would let two nodes bounce a message between them.
-    if (!this.actors.has(id)) throw new Error(`actor ${id} is not local to this node`);
-    return this.send(id, payload, timeoutMs);
-  }
-
-  _onWorkerMessage(actorId, msg) {
-    if (!msg || typeof msg !== 'object') return;
+  async receive(msg, ctx) {
+    this.state.handled += 1;
     switch (msg.type) {
-      case 'reply':
-        this._settle(this.replyMap, msg.replyId, true, msg.data);
-        break;
-      case 'error':
-        this._settle(this.replyMap, msg.replyId, false, new Error(msg.err));
-        break;
-      case 'mailbox_full':
-        this._settle(this.replyMap, msg.replyId, false, new Error(msg.error));
-        break;
-      case 'ctl_reply':
-        if (msg.ok) this._settle(this.controlMap, msg.ctlId, true, msg.data);
-        else this._settle(this.controlMap, msg.ctlId, false, new Error(msg.error));
-        break;
-      case 'metrics':
-        this.metrics.observe(msg.actorId || actorId, msg.delta);
-        break;
+      case 'hurt':
+        this.state.hp -= msg.damage;
+        this.state.hurtTotal += msg.damage;
+        return this.state.hp;
+      case 'debug:getState':
+        return {
+          ...this.state,
+          path: ctx.path,
+          restored: ctx.restored,
+          isolation: 'inline',
+          traceId: ctx.trace ? ctx.trace.traceId : null,
+        };
+      case 'debug:crash':
+        throw new Error(`crash requested via console for ${ctx.path}`);
       default:
-        break;
+        return { ok: true, echo: msg };
     }
-  }
-
-  _settle(map, id, ok, value) {
-    const entry = map.get(id);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    map.delete(id);
-    if (ok) entry.resolve(value);
-    else entry.reject(value);
-  }
-
-  _rejectPendingForActor(actorId, err) {
-    for (const [id, entry] of [...this.replyMap]) {
-      if (entry.actorId !== actorId) continue;
-      clearTimeout(entry.timer);
-      this.replyMap.delete(id);
-      entry.reject(err);
-    }
-    for (const [id, entry] of [...this.controlMap]) {
-      if (entry.actorId !== actorId) continue;
-      clearTimeout(entry.timer);
-      this.controlMap.delete(id);
-      entry.reject(err);
-    }
-  }
-
-  stats() {
-    return {
-      actors: this.listActors(),
-      pendingReplies: this.replyMap.size,
-      pendingControls: this.controlMap.size,
-      remote: this.registry.listAll().filter((e) => e.type === 'remote').map((e) => e.id),
-    };
-  }
-
-  async close() {
-    this.closed = true;
-    for (const [actorId, worker] of [...this.actors]) {
-      this.intentional.add(actorId);
-      try {
-        await this.control(actorId, { type: 'actor:shutdown' }, 300);
-      } catch {
-        /* fall through to terminate */
-      }
-      try {
-        await worker.terminate();
-      } catch {
-        /* already gone */
-      }
-    }
-    this.actors.clear();
-    for (const entry of this.replyMap.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(new Error('ActorManager closed'));
-    }
-    this.replyMap.clear();
-    for (const entry of this.controlMap.values()) {
-      clearTimeout(entry.timer);
-      entry.reject(new Error('ActorManager closed'));
-    }
-    this.controlMap.clear();
   }
 }
 
-function stripInternal(payload) {
-  const { __replyId, __msgId, ...rest } = payload;
-  return rest;
+/** Compose the plugin list from configuration. */
+function buildPlugins(cfg) {
+  const list = [];
+
+  if (cfg.gossip.enabled) {
+    list.push(plugins.cluster({
+      nodeId: cfg.nodeId,
+      host: cfg.gossip.host,
+      port: cfg.gossip.port,
+      advertiseHost: cfg.gossip.advertiseHost,
+      seeds: cfg.gossip.seeds,
+      intervalMs: cfg.gossip.intervalMs,
+      peerTimeoutMs: cfg.gossip.peerTimeoutMs,
+      tls: cfg.tls,
+      codec: cfg.gossip.codec,
+    }));
+  }
+  list.push(plugins.pubsub());
+
+  if (cfg.actor.tracingEnabled !== false) list.push(plugins.tracing());
+
+  if (cfg.metrics.exporter.enabled) {
+    list.push(plugins.metrics({
+      intervalMs: cfg.actor.metricsFlushMs,
+      exporter: {
+        enabled: true,
+        host: cfg.metrics.exporter.host,
+        port: cfg.metrics.exporter.port,
+        path: cfg.metrics.exporter.path,
+      },
+      storeBackend: cfg.store.backend,
+    }));
+  }
+
+  list.push(plugins.deadLetters());
+  list.push(plugins.rateLimit({
+    capacity: cfg.actor.tokenBucketCapacity,
+    rate: cfg.actor.tokenBucketRate,
+  }));
+
+  return list;
+}
+
+/** Map config onto the framework's per-actor defaults. */
+function actorDefaults(cfg) {
+  return {
+    mailbox: { maxSize: cfg.actor.maxMailboxSize },
+    supervision: {
+      strategy: cfg.supervisor.strategy,
+      maxRestarts: cfg.supervisor.maxRestarts,
+      withinSeconds: cfg.supervisor.withinSeconds,
+    },
+    askTimeoutMs: cfg.actor.requestTimeoutMs,
+    maxRetry: cfg.actor.maxRetry,
+    retryBackoffMs: cfg.actor.retryBackoffMs,
+    maxRetryBackoffMs: cfg.actor.maxRetryBackoffMs,
+  };
+}
+
+function persistenceFor(cfg, id) {
+  const mode = cfg.persistenceMode;
+  if (!mode || mode === 'none') return 'none';
+  if (mode === 'events') return { mode: 'events' };
+  if (mode === 'mailbox') return { mode: 'mailbox' };
+  return { mode: 'snapshot' };
 }
 
 /**
- * Start a full node: supervisor, gateway, gossip, pub/sub, hot reload, console.
- * Everything degrades gracefully: a busy port logs a warning instead of
- * killing the process.
+ * Boot a node: system + plugins + optional gateway + console.
+ *
+ * @returns {Promise<object>} the node context (also what the console receives)
  */
 async function bootstrap(overrides = {}) {
   const cfg = config.loadConfig(overrides);
-  ensureDirs(cfg);
-
-  // Each node gets its own registry, so two nodes can be embedded in one
-  // process (as the cluster tests do) without sharing discovery state.
-  const nodeRegistry = overrides.registry || registry;
+  config.ensureDirs(cfg);
 
   const warnings = [];
   const warn = (msg, err) => {
@@ -386,229 +138,110 @@ async function bootstrap(overrides = {}) {
     console.error(`[warn] ${text}`);
   };
 
-  await DLQ.init();
-
-  // Report persistence problems up front instead of failing inside a worker.
   const storeCheck = validateStoreConfig(cfg.store);
   if (!storeCheck.ok) warn(`store backend is not usable: ${storeCheck.reason}`);
 
-  const supervisor = new Supervisor('root-sup', {
-    strategy: cfg.supervisor.strategy || RestartStrategy.ONE_FOR_ONE,
-    maxRestarts: cfg.supervisor.maxRestarts,
-    withinSeconds: cfg.supervisor.withinSeconds,
-    cooldownMs: cfg.supervisor.cooldownMs,
-  });
-  supervisor.start();
+  // Hot reload: the old runtime compiled actor code at runtime. The framework
+  // deliberately has no eval path; a module-isolated actor is restarted instead.
+  if (cfg.hotReload.enabled) {
+    warn('ENABLE_HOT_RELOAD is ignored: the framework has no runtime code eval. Use isolation: \'worker\' + restart');
+  }
 
-  const actorManager = new ActorManager({ config: cfg, supervisor, registry: nodeRegistry, metrics, logger });
-
-  // --- gateway ------------------------------------------------------------
-  const gateway = new Gateway({
-    host: cfg.gateway.host,
-    port: cfg.gateway.port,
-    nodeId: cfg.nodeId,
-    codec: cfg.gateway.codec,
-    tls: cfg.tls,
-    onDeliver: (targetActorId, payload, timeoutMs) =>
-      actorManager.deliverLocal(targetActorId, payload, timeoutMs || cfg.actor.requestTimeoutMs),
-  });
-  gateway.on('error', (err) => warn('gateway error', err));
-  gateway.on('auth_error', (reason) => {
-    logger.logSystem('gateway_auth_error', { reason });
-    console.error(`[security] gateway rejected a peer: ${reason}`);
+  const system = createSystem({
+    name: cfg.nodeId,
+    plugins: buildPlugins(cfg),
+    defaults: actorDefaults(cfg),
+    persistenceDir: cfg.actorPersistenceDir,
+    mailboxStore: cfg.persistenceMode === 'mailbox' ? msgStore : null,
+    shutdownTimeoutMs: cfg.actor.shutdownTimeoutMs,
   });
 
+  system.on('system_failure', (err, ref) => warn(`actor failure${ref ? ` (${ref.path})` : ''}`, err));
+  system.on('dead_letter', (entry) => logger.logSystem('dead_letter', entry));
+  system.on('remote_tell_failed', (pathName, err) => warn(`remote tell to ${pathName} failed`, err));
+
+  // --- gateway -------------------------------------------------------------
   let gatewayEnabled = false;
+  let gatewayCodec = null;
   if (cfg.gateway.enabled) {
     try {
-      await gateway.listen();
+      await system.listen({
+        host: cfg.gateway.host,
+        port: cfg.gateway.port,
+        tls: cfg.tls,
+        codec: cfg.gateway.codec,
+      });
       gatewayEnabled = true;
+      gatewayCodec = system.server ? system.server.codecName : cfg.gateway.codec;
     } catch (err) {
       warn(`gateway could not listen on ${cfg.gateway.host}:${cfg.gateway.port}`, err);
     }
   }
-  // The manager needs the live gateway to dispatch to remote actors.
-  actorManager.gateway = gatewayEnabled ? gateway : null;
 
-  // --- gossip -------------------------------------------------------------
-  const gossip = new Gossip(cfg.nodeId, cfg.gossip.port, {
-    host: cfg.gossip.host,
-    advertiseHost: cfg.gossip.advertiseHost,
-    seeds: cfg.gossip.seeds,
-    intervalMs: cfg.gossip.intervalMs,
-    peerTimeoutMs: cfg.gossip.peerTimeoutMs,
-    tls: cfg.tls,
-  });
-
-  const localActorMeta = (actorId) => ({
-    nodeId: cfg.nodeId,
-    type: 'actor',
-    actorId,
-    host: cfg.gossip.advertiseHost,
-    gatewayPort: gateway.boundPort || cfg.gateway.port,
-  });
-
-  gossip.on('registry_update', (key, value, entry) => {
-    if (key.startsWith('subs:')) return; // handled by the PubSub bridge
-    if (!value || value.type !== 'actor') return;
-    nodeRegistry.set(key, {
-      type: 'remote',
-      nodeId: entry?.nodeId || value.nodeId,
-      host: value.host,
-      gatewayPort: value.gatewayPort,
-      lastSeen: Date.now(),
-    });
-  });
-  gossip.on('registry_delete', (key) => {
-    if (key.startsWith('subs:')) return;
-    const meta = nodeRegistry.find(key);
-    if (meta && meta.type === 'remote') nodeRegistry.unregister(key);
-  });
-  gossip.on('node_timeout', (nodeId) => logger.logSystem('gossip_node_timeout', { nodeId }));
-  // Remote entries must stay fresh while their node keeps gossiping. LWW only
-  // emits registry_update when the *value* changes, so refreshing on the event
-  // alone would let a perfectly healthy peer's actors expire.
-  gossip.on('round', (senderNodeId) => nodeRegistry.touchNode(senderNodeId, Date.now()));
-  gossip.on('auth_error', (reason) => {
-    logger.logSystem('gossip_auth_error', { reason });
-    console.error(`[security] gossip rejected a peer: ${reason}`);
-  });
-
-  let gossipEnabled = false;
-  if (cfg.gossip.enabled) {
-    try {
-      await gossip.start();
-      gossipEnabled = true;
-    } catch (err) {
-      warn(
-        `gossip could not listen on ${cfg.gossip.host}:${cfg.gossip.port} ` +
-          '(port 7000 is used by macOS AirPlay Receiver; pick another via ACTOR_GOSSIP_PORT)',
-        err,
-      );
-      await gossip.stop().catch(() => {});
-    }
+  // --- plugins -------------------------------------------------------------
+  // init() is where plugin setup (gossip, metrics exporter) happens; it is also
+  // called lazily by spawn(), so a failure here is reported but not fatal.
+  try {
+    await system.init();
+  } catch (err) {
+    warn('plugin setup failed', err);
   }
 
-  // --- supervisor <-> registry wiring ------------------------------------
-  const announce = (actorId) => {
-    nodeRegistry.set(actorId, { nodeId: cfg.nodeId, type: 'actor' });
-    if (gossipEnabled) gossip.setLocal(actorId, localActorMeta(actorId));
-  };
-  const withdraw = (actorId) => {
-    nodeRegistry.unregister(actorId);
-    if (gossipEnabled) gossip.delLocal(actorId);
-  };
-  actorManager.onActorRemoved = withdraw;
-
-  supervisor.on('child_start', announce);
-  supervisor.on('child_restart', (actorId) => {
-    announce(actorId);
-    logger.logSystem('actor_restarted', { actorId });
-  });
-  supervisor.on('child_crash', (actorId, info) => {
-    logger.logSystem('actor_crashed', { actorId, ...info });
-    withdraw(actorId);
-  });
-  supervisor.on('child_stop', withdraw);
-  supervisor.on('supervisor_circuit_open', () => {
-    logger.logSystem('supervisor_circuit_open', { supervisor: supervisor.id });
-    for (const actorId of [...nodeRegistry.keys()]) {
-      const meta = nodeRegistry.find(actorId);
-      if (meta && meta.type === 'actor') withdraw(actorId);
-    }
-  });
-  supervisor.on('supervisor_circuit_close', () => {
-    logger.logSystem('supervisor_circuit_close', { supervisor: supervisor.id });
-    for (const child of supervisor.children.values()) if (!child.stopped) announce(child.id);
-  });
-
-  // --- pub/sub ------------------------------------------------------------
-  const pubsub = new PubSub({ actorManager, gossip: gossipEnabled ? gossip : null, nodeId: cfg.nodeId });
-
-  // --- hot reload ---------------------------------------------------------
-  const hotReload = new HotReloadManager(actorManager, {
-    enabled: cfg.hotReload.enabled,
-    maxCodeBytes: cfg.hotReload.maxCodeBytes,
-    modulePath: cfg.hotReload.modulePath,
-  });
-
-  // --- boot actors --------------------------------------------------------
+  // --- boot actors ---------------------------------------------------------
+  const booted = [];
   for (const actorId of cfg.bootActors) {
     try {
-      actorManager.createActor(actorId);
+      await system.spawn(DemoActor, { id: actorId, persistence: persistenceFor(cfg, actorId) });
+      booted.push(actorId);
     } catch (err) {
-      warn(`could not spawn boot actor ${actorId}`, err);
+      warn(`boot actor "${actorId}" could not start`, err);
     }
   }
 
-  // --- local actor monitor example + registry pruning ---------------------
-  const pruneTimer = setInterval(() => {
-    for (const key of nodeRegistry.pruneStale(cfg.gossip.peerTimeoutMs)) {
-      if (gossipEnabled) gossip.delLocal(key);
-    }
-    if (gossipEnabled) gossip.pruneStaleNodes();
-  }, cfg.registryPruneMs);
-  if (typeof pruneTimer.unref === 'function') pruneTimer.unref();
-
-  // --- console ------------------------------------------------------------
-  const console_ = new TelnetConsole({
-    host: cfg.telnet.host,
-    port: cfg.telnet.port,
-    token: cfg.telnet.token,
-    maxLineBytes: cfg.telnet.maxLineBytes,
-    maxConnections: cfg.telnet.maxConnections,
-    context: {
-      am: actorManager,
-      supervisor,
-      registry: nodeRegistry,
-      dlq: DLQ,
-      metrics,
-      pubsub,
-      gossip: gossipEnabled ? gossip : null,
-      hotReload,
-      gateway: gatewayEnabled ? gateway : null,
-      logger,
-    },
-    logger,
-  });
-
-  let consoleEnabled = false;
+  // --- console -------------------------------------------------------------
+  let console_ = null;
   if (cfg.telnet.enabled) {
+    console_ = new TelnetConsole({
+      host: cfg.telnet.host,
+      port: cfg.telnet.port,
+      token: cfg.telnet.token,
+      maxLineBytes: cfg.telnet.maxLineBytes,
+      maxConnections: cfg.telnet.maxConnections,
+      // services come from the system; 默认 Actor 定义由应用注入（内核不依赖应用）
+      context: { system, config: cfg, warnings, logger, defaultActorDefinition: DemoActor },
+      logger,
+    });
     try {
       await console_.listen();
-      consoleEnabled = true;
     } catch (err) {
       warn(`console could not listen on ${cfg.telnet.host}:${cfg.telnet.port}`, err);
+      console_ = null;
     }
   }
 
   const ctx = {
+    // Framework-first surface.
+    system,
     config: cfg,
     warnings,
-    actorManager,
-    supervisor,
-    registry: nodeRegistry,
-    gossip: gossipEnabled ? gossip : null,
-    pubsub,
-    hotReload,
-    gateway: gatewayEnabled ? gateway : null,
-    console: consoleEnabled ? console_ : null,
-    metrics,
-    dlq: DLQ,
     logger,
+    console: console_,
+    metrics: system.metrics || null,
+    metricsExporter: system.metricsExporter || null,
+    cluster: system.cluster || null,
+    pubsub: system.pubsub || null,
     storeBackend: msgStore.backendName,
+    gatewayCodec,
+    booted,
     ports: {
-      console: consoleEnabled ? console_.boundPort : null,
-      gateway: gatewayEnabled ? gateway.boundPort : null,
-      gossip: gossipEnabled ? gossip.boundPort : null,
+      console: console_ ? console_.boundPort : null,
+      gateway: gatewayEnabled && system.server ? system.server.boundPort : null,
+      gossip: system.cluster ? system.cluster.port : null,
+      metrics: system.metricsExporter ? system.metricsExporter.boundPort : null,
     },
     async close() {
-      clearInterval(pruneTimer);
-      if (consoleEnabled) await console_.close();
-      if (gatewayEnabled) await gateway.close();
-      if (gossipEnabled) await gossip.stop();
-      supervisor.stop();
-      await actorManager.close();
+      if (console_) await console_.close();
+      await system.stop();
       await logger.flush();
     },
   };
@@ -616,25 +249,41 @@ async function bootstrap(overrides = {}) {
   return ctx;
 }
 
+/** One-line summary per subsystem, for logs and `node actor-main.js`. */
+function describe(ctx) {
+  const lines = [
+    `  node:    ${ctx.config.nodeId}`,
+    `  actors:  ${ctx.system.listActors().join(', ') || '(none)'}`,
+    `  console: ${ctx.ports.console ? `telnet ${ctx.config.telnet.host}:${ctx.ports.console}` : 'disabled'}`,
+    `  gateway: ${ctx.ports.gateway ? `${ctx.config.gateway.host}:${ctx.ports.gateway} (codec=${ctx.gatewayCodec})` : 'disabled'}`,
+    `  gossip:  ${ctx.ports.gossip ? `${ctx.config.gossip.host}:${ctx.ports.gossip}` : 'disabled'}`,
+    `  tls:     ${ctx.config.tls.enabled ? 'enabled (mutual)' : 'disabled'}`,
+    `  store:   ${ctx.storeBackend}${ctx.config.persistenceMode !== 'none' ? ` + actors:${ctx.config.persistenceMode}` : ''}`,
+    `  plugins: ${[...ctx.system.installed.keys()].join(', ') || '(none)'}`,
+    `  metrics: ${ctx.ports.metrics ? `http://${ctx.config.metrics.exporter.host}:${ctx.ports.metrics}${ctx.config.metrics.exporter.path}` : 'disabled'}`,
+    `  data:    ${ctx.config.dataDir}`,
+  ];
+  if (ctx.warnings.length > 0) lines.push(`  warnings: ${ctx.warnings.length} (see above)`);
+  return lines.join('\n');
+}
+
 async function main() {
   const ctx = await bootstrap();
   logger.logSystem('bootstrap_complete', {
     nodeId: ctx.config.nodeId,
-    actors: ctx.actorManager.listActors(),
+    actors: ctx.system.listActors(),
     ports: ctx.ports,
+    plugins: [...ctx.system.installed.keys()],
     warnings: ctx.warnings,
   });
-  console.log('Actor Framework bootstrap complete');
-  console.log(`  node:    ${ctx.config.nodeId}`);
-  console.log(`  actors:  ${ctx.actorManager.listActors().join(', ') || '(none)'}`);
-  console.log(`  console: ${ctx.ports.console ? `telnet ${ctx.config.telnet.host}:${ctx.ports.console}` : 'disabled'}`);
-  console.log(`  gateway: ${ctx.ports.gateway ? `${ctx.config.gateway.host}:${ctx.ports.gateway} (codec=${ctx.gateway.codecName})` : 'disabled'}`);
-  console.log(`  gossip:  ${ctx.ports.gossip ? `${ctx.config.gossip.host}:${ctx.ports.gossip}` : 'disabled'}`);
-  console.log(`  tls:     ${ctx.config.tls.enabled ? 'enabled (mutual)' : 'disabled'}`);
-  console.log(`  store:   ${ctx.storeBackend}`);
-  console.log(`  data:    ${ctx.config.dataDir}`);
 
+  console.log('Actor framework node up (framework model + plugins)');
+  console.log(describe(ctx));
+
+  let closing = false;
   const shutdown = async (signal) => {
+    if (closing) return;
+    closing = true;
     console.log(`\n[${signal}] shutting down`);
     try {
       await ctx.close();
@@ -642,24 +291,15 @@ async function main() {
       process.exit(0);
     }
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-
-  return ctx;
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal));
 }
 
 if (require.main === module) {
   main().catch((err) => {
     console.error('bootstrap failed:', err);
-    process.exitCode = 1;
+    process.exit(1);
   });
 }
 
-module.exports = {
-  ActorManager,
-  bootstrap,
-  main,
-  WORKER_PATH,
-  normalizePriority,
-  stripInternal,
-};
+module.exports = { bootstrap, main, DemoActor, buildPlugins, actorDefaults, describe };
+module.exports.DemoActor = DemoActor;
