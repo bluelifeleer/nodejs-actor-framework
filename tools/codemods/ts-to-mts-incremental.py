@@ -155,6 +155,10 @@ for rel in sys.argv[1:]:
                 return f"{kw}{quote}{rel}{quote}"
             return re.sub(r"(require\(|from )(['\"])([^'\"]*?)" + re.escape(old_spec) + r"\2", repl, text)
         t = rewrite(t)
+        # 硬编码文件名字符串也要跟着改（path.join(import.meta.dirname, 'worker-host.ts')
+        # 不是 require/import，正则覆盖不到；漏掉会 Cannot find module worker-host.ts）
+        t = t.replace("'" + old_spec + "'", "'" + new_spec + "'")
+        t = t.replace('"' + old_spec + '"', '"' + new_spec + '"')
         for name in exported:  # 类/函数：const X = require(...) → 解构
             t = re.sub(rf"const {name} = require\('([^']*{re.escape(new_spec)})'\);", rf"const {{ {name} }} = require('\1');", t)
         if t != o: g.write_text(t); fixed += 1
