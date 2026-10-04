@@ -51,3 +51,24 @@ dry-run 现在的对账输出（这两项必须为 0 / 全部覆盖才算通过�
 grep -rhoE "from '[^']+'" packages/core/src packages/core/test | sort -u
 # 再逐个 require.resolve / 检查文件是否存在
 ```
+
+## 第四轮：产物说明符逐条对账（关键，前几轮漏掉的正是这一步）
+
+前几轮的对账做在"改写前的解析"上，所以永远看不到产物里的非法说明符。正确做法是
+**应用 codemod 但不翻转 `"type": "module"`**，然后校验产物里每一条 `from '...'`：
+
+```bash
+python3 tools/codemods/cjs-to-esm-core.py          # 应用（先不翻转 type）
+# 逐条校验：node: 前缀是否合法、相对说明符能否解析到真实文件、import 具名项是否含冒号
+```
+
+实测 247 条说明符可解析，异常分三类（都已定位到具体文件）：
+
+| 异常 | 数量 | 例子 | 根因 / 修法 |
+|---|---|---|---|
+| `import` 具名项含冒号 | 5 | `src/store/backends/index.ts`: `LevelStore, isAvailable: levelAvailable` | **多行解构里的重命名**没有被 `(\w+):(\w+)` 规则覆盖到（该规则只处理同行相邻写法）。修法：转换后加一个**后置 pass**，把每条 `import { ... }` 的 body 里的 `X: Y` 统一改成 `Y as X` |
+| 非法 `node:` 前缀 | 17 | `test/*.test.js`: `node:test.js` | **`node:test` 不在 `module.builtinModules` 里**（Node 的已知怪癖：`test`、`test/reporters` 等运行时内置模块不列入该数组），于是判定失败并走了"相对/普通包"分支，被补上了 `.js`。修法：内置判定加**硬编码补充清单**（`test`、`test/reporters`、`sea`、`sqlite`、`wasi` 等），并保证**内置模块永不追加扩展名** |
+| 相对说明符未解析 | 1 | `test/unit-esm-interop.test.js`: `...` | **校验脚本的误报**：它扫到了测试里模板字符串的提示文本 `from '...'`。修法：校验只解析真实的 `import/export ... from` 语句（排除字符串/注释） |
+
+结论：**这三个异常全部可修且范围明确**（合计 23 处，涉及 3 类规则），不是"爆炸半径不可控"。
+下一轮按此修 codemod 的三条规则 + 加后置 pass，再重复"应用→逐条对账→为 0 才翻转 type"。
