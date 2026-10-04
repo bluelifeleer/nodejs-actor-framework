@@ -131,7 +131,46 @@ examples/                  # 全部改为依赖 workspace 包，验证"独立可
 
 **CI 矩阵**：Node 当前 LTS × {有依赖, 无依赖} + typecheck + build + 产物冒烟。
 
-## 8. 本节待确认
+
+## 9. `.js → .ts` 迁移：实测的解析规则与路线修正
+
+### 9.1 实测规则（Node v24.15.0）
+
+| 场景 | 结果 |
+|---|---|
+| `.js` require `'./leaf'`，只有 `leaf.ts` | ❌ 失败 —— **CJS 解析不补 `.ts`** |
+| `.js` require `'./leaf.ts'`（显式扩展名） | ✅ 成功 |
+| `.ts` require `'./leaf2'`，`leaf2.js` 存在 | ✅ 成功 |
+| `.ts` require `'./leaf'`，只有 `leaf.ts` | ❌ 失败 |
+
+结论：**半途迁移不是免费的**——每转一个文件成 `.ts`，其所有引用方必须写显式 `.ts` 扩展名。
+
+### 9.2 两种可行路线
+
+| 路线 | 写法 | 代价 |
+|---|---|---|
+| **A. 过渡期 CJS `.ts`** | 类型用 `export type`/`import type`（会被擦除），运行时用 `module.exports`/`require('./x.ts')` | 引用方要写 `.ts` 扩展名（CJS 里很别扭）；跨文件**运行时值**仍是 `any`，只有文件内部有类型；ESM 化时还要再改一遍语法 |
+| **B. 直接 ESM `.ts` + 显式 `.ts` 导入 + `rewriteRelativeImportExtensions`** | `import { X } from './x.ts'`（TS 编译时重写为 `./x.js`） | 需要包改 `"type": "module"`；**CJS 消费者（根测试/示例/actor-main）要么一起转 ESM，要么消费 `dist/cjs`**（即需要构建） |
+
+**决定：走路线 B。** 理由：A 的扩展名写法在 CJS 里是纯粹的过渡债，而且跨文件无类型（等于只拿到一半收益）；B 是 Node 原生 TS 的正规形态，且与设计里"ESM 源码 + 双产物发布"一致。B 的执行前提是先定"根侧 CJS 文件怎么办"（转 ESM 还是消费 dist），这需要单独一步。
+
+### 9.3 尝试 A 时发现的一个未解问题（阻塞项，已回退）
+
+按路线 A 转了两个叶子文件（`restart-strategy.ts`、`token-bucket.ts`，并给引用方加显式 `.ts`）后：
+
+- 类型检查通过；278/279 用例通过；
+- **稳定失败 1 例**：`worker isolation: a crash inside the worker restarts the actor with fresh state`
+  （`packages/core/test/unit-actor-isolation.test.js:72` → `TypeError: Cannot read properties of undefined (reading 'hp')`，即 `ref.state()` 返回 `undefined`）
+- **关键矛盾**：把该用例的操作序列（spawn worker 隔离 Actor → `hurt` → `state()`）**逐字**写成独立脚本运行，`state()` 正常返回 `{hp:70,calls:1}`；在测试文件里（即使 `--test-name-pattern` 只跑这一条）稳定失败。环境变量（含 `setupTempEnv` 的全部设置）已复现过，不是原因。
+
+已回退到全绿基线（279/279），**下次动 `.js → .ts` 前必须先解释这个差异**——它的形态（独立脚本通过 / 测试文件失败）更像测试运行器与 worker 线程交互的问题，而不是类型转换本身；但在没弄清之前，贸然批量转换会把一个未知风险扩散到 47 个文件。
+
+### 9.4 本次顺带完成（已保留）
+
+- 加了 `@types/node`（devDependency）并在 tsconfig 里启用 `types: ["node"]`——这是设计文档 §8 T-D 的建议；之后 `.ts` 代码不再需要手写 `process`/`Buffer`/`require` 的结构化声明。
+- dev tsconfig 的 `include` 已扩到 `packages/core/src/**/*.ts`（为转换后的文件真正进入类型检查做准备；当前无 `.ts` 源码，是 no-op）。
+
+## 10. 本节待确认
 
 | # | 事项 | 建议 |
 |---|---|---|

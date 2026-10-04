@@ -16,6 +16,6 @@
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": []
+    "types": ["node"]
   }
 }
