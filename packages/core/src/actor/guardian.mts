@@ -1,6 +1,6 @@
-'use strict';
 
-const RestartStrategy = require('./restart-strategy.mts');
+
+import RestartStrategy from './restart-strategy.mts';
 
 /**
  * Supervision decisions for one actor's children.
@@ -92,5 +92,7 @@ class ChildSupervisor {
   }
 }
 
-module.exports = ChildSupervisor;
-module.exports.RestartStrategy = RestartStrategy;
+
+
+export { RestartStrategy, ChildSupervisor };
+export default ChildSupervisor;

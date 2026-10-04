@@ -2,10 +2,10 @@
 
 const { Mailbox } = require('./mailbox.mts');
 const { TokenBucket } = require('./token-bucket.mts');
-const ChildSupervisor = require('./guardian.ts');
-const ActorContext = require('./actor-context.ts');
-const { ActorRef } = require('./actor-ref.ts');
-const { defineActor } = require('./actor.ts');
+const { ChildSupervisor } = require('./guardian.mts');
+const { ActorContext } = require('./actor-context.mts');
+const { ActorRef } = require('./actor-ref.mts');
+const { defineActor } = require('./actor.mts');
 const { resolvePersistence } = require('../store/persistence.ts');
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.mts');
 const RestartStrategy = require('./restart-strategy.mts');

@@ -1,6 +1,6 @@
-'use strict';
 
-const { DefinitionError } = require('./errors.mts');
+
+import { DefinitionError } from './errors.mts';
 
 /**
  * Base class for user actors.
@@ -232,4 +232,11 @@ class ActorDefinition {
   }
 }
 
-module.exports = { Actor, ActorDefinition, defineActor, HandlerActor };
+
+export { Actor, ActorDefinition, defineActor, HandlerActor };
+export default {
+  Actor,
+  ActorDefinition,
+  defineActor,
+  HandlerActor,
+};

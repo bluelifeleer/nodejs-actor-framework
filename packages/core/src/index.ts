@@ -23,13 +23,13 @@
  * may change between minor versions.
  */
 
-const { Actor, defineActor, ActorDefinition } = require('./actor/actor.ts');
-const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.ts');
+const { Actor, defineActor, ActorDefinition } = require('./actor/actor.mts');
+const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.mts');
 const { ActorSystem, createSystem } = require('./actor/system.ts');
 const { RemoteRef, Peer } = require('./cluster/remote.ts');
 const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
 const { Mailbox } = require('./actor/mailbox.mts');
-const ChildSupervisor = require('./actor/guardian.ts');
+const { ChildSupervisor } = require('./actor/guardian.mts');
 const errors = require('./actor/errors.mts');
 const RestartStrategy = require('./actor/restart-strategy.mts');
 const plugins = require('./plugins/index.ts');

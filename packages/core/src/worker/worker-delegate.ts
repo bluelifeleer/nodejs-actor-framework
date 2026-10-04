@@ -3,7 +3,7 @@
 const path = require('path');
 const { Worker } = require('worker_threads');
 const config = require('../config.ts');
-const { ActorDefinition } = require('../actor/actor.ts');
+const { ActorDefinition } = require('../actor/actor.mts');
 const { DefinitionError, ActorStoppedError } = require('../actor/errors.mts');
 
 /**
