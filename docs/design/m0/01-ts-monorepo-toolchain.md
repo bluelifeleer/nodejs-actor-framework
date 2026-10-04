@@ -279,12 +279,14 @@ ActorNotFoundError, PersistenceError, EscalationError
 **类型债务（诚实记录）**：45 个文件原本是 JS，转到 `.ts` 后就进入类型检查视野，而它们几乎
 没有类型标注，当前 `strict` 下 **1982 个错误**、放宽后 **1239 个**。因此：
 
-- `npm run typecheck` 仍是**严格且必须通过**的，但目前只覆盖**声明面**（`.d.ts`）：
-  类型测试一旦以显式 `.ts` 引用实现，会把整个未标注的实现拉进严格程序（实测 1200+ 错误），
-  所以 `test/types/**` 与 `src/**/*.ts` 暂时都排除在外，补齐标注后一并恢复；
-- 新增 `tsconfig.migration.json` + `npm run typecheck:migration`（`strict:false`）用于转换期"只抓语法与明显错误"，
-  它是**信息性**的，不当作门（否则常红无意义）；
-- 收口计划：逐文件补类型标注 → 把文件从迁移检查器挪回 strict 检查，债务数字（1239）作为进度指标。
+- **当前没有任何严格类型门**（如实说明）：core 的实现文件是 `.ts` 但没有类型标注，而声明文件
+  会通过 `'./token'` 这类导入把实现拉进严格程序——以前实现是 `.js`（`checkJs:false`）所以不报错，
+  现在是 `.ts` 就必然被检查（实测 1982 个错误）。因此：
+  - `npm run typecheck` → 迁移期检查器（`strict:false`，**信息性**，不阻断构建），当前暴露 **1239** 处待补标注；
+  - `npm run typecheck:strict` → 严格检查器，**当前是红的**，等实现补齐标注后恢复为门；
+  - 现阶段唯一的门是**全量测试**（281/281）。
+- 收口路线：逐文件补类型标注 → 该文件从迁移检查器挪回严格检查 → 1239 归零时把
+  `typecheck` 切回严格检查器，并把 `test/types/**` 与 `src/**/*.ts` 一起纳入。
 
 **下一步**：把 core 切成 ESM 语法（`module.exports` → `export`、`require` → `import`，6 个文件保留
 `createRequire`：`actor-cell`/`system`（循环依赖）、`level-store`（可选依赖）、`telnet-console`/`worker-host`
