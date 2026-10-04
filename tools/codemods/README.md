@@ -114,3 +114,24 @@ python3 tools/codemods/cjs-to-esm-core.py          # 应用（先不翻转 type�
 
 经验：**转换器本身的正确性也要用"产物级对账"验证**——只跑全量会在 11 个文件一起失败时
 难以定位；下一批前先用单文件试转 + 直接 require 该 .mts 验证导出面。
+
+## 增量转换器仍未具备的两条规则（实测踩到，务必先补）
+
+第六批（store/ + worker/，10 文件）两次失败，原因都在转换器缺规则，**不是路线问题**：
+
+| 规则 | 缺失时的症状 | 实测失败规模 |
+|---|---|---|
+| `__dirname` → `import.meta.dirname`、`__filename` → `import.meta.filename` | `ReferenceError: __dirname is not defined in ES module scope` | 26 个用例 |
+| **硬编码文件名字符串**（`path.join(import.meta.dirname, 'worker-host.ts')`）也要改成 `.mts` | `Cannot find module .../worker-host.ts` | worker 相关用例 |
+
+补充说明：`worker-delegate` 里 `HOST_PATH` 的字符串改动确实生效了，但 `__dirname` 规则没生效，
+两次是不同规则不同步——所以**每加一条规则都要用"代码行"核对，而不是查注释或字符串**。
+
+### 断言方法的教训（我连续犯的错）
+
+我多次写 `assert 'import.meta.dirname' in source` 之类断言，结果因为**注释里也出现同样的字样**
+而假通过；同样地，`print('已写入')` 无条件执行也制造过假成功。正确做法：
+
+- 断言要针对**代码结构**（例如 `ast.parse` 通过后按 AST 查找 `Attribute`/`Call` 节点），
+  或至少断言"注释被剥离后的文本"；
+- 打印成功信息必须放在断言之后，且断言失败要**非零退出**（`raise SystemExit(1)`）。
