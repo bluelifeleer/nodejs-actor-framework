@@ -1,5 +1,3 @@
-'use strict';
-
 /** Base class for everything this framework throws. */
 class ActorFrameworkError extends Error {
   constructor(message, details = {}) {
@@ -33,7 +31,9 @@ class PersistenceError extends ActorFrameworkError {}
  */
 class EscalationError extends ActorFrameworkError {}
 
-module.exports = {
+
+export { ActorFrameworkError, DefinitionError, MailboxFullError, AskTimeoutError, ActorStoppedError, ActorNotFoundError, PersistenceError, EscalationError };
+export default {
   ActorFrameworkError,
   DefinitionError,
   MailboxFullError,

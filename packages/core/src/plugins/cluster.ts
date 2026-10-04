@@ -2,7 +2,7 @@
 
 const config = require('../config.ts');
 const Gossip = require('../cluster/gossip.ts');
-const { ActorStoppedError } = require('../actor/errors.ts');
+const { ActorStoppedError } = require('../actor/errors.mts');
 
 /**
  * Cluster plugin: gossip-based discovery so an actor can be reached by **name**

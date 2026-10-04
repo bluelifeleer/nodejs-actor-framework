@@ -1,6 +1,6 @@
 'use strict';
 
-const { ActorNotFoundError } = require('../actor/errors.ts');
+const { ActorNotFoundError } = require('../actor/errors.mts');
 
 /**
  * Pub/sub plugin.

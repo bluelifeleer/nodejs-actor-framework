@@ -28,9 +28,9 @@ const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.ts');
 const { ActorSystem, createSystem } = require('./actor/system.ts');
 const { RemoteRef, Peer } = require('./cluster/remote.ts');
 const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
-const Mailbox = require('./actor/mailbox.ts');
+const { Mailbox } = require('./actor/mailbox.mts');
 const ChildSupervisor = require('./actor/guardian.ts');
-const errors = require('./actor/errors.ts');
+const errors = require('./actor/errors.mts');
 const RestartStrategy = require('./actor/restart-strategy.mts');
 const plugins = require('./plugins/index.ts');
 

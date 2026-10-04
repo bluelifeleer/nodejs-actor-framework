@@ -1,5 +1,3 @@
-'use strict';
-
 /**
  * Bounded FIFO mailbox.
  *
@@ -98,5 +96,7 @@ class Mailbox {
   }
 }
 
-module.exports = Mailbox;
-module.exports.OVERFLOW = OVERFLOW;
+
+
+export { OVERFLOW, Mailbox };
+export default Mailbox;
