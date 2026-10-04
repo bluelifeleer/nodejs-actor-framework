@@ -69,5 +69,15 @@ module.exports = {
   Mailbox,
 
   // error types
-  ...errors,
+  // Errors are listed explicitly instead of `...errors`: a spread inside the
+  // export object makes cjs-module-lexer give up, and then ESM consumers cannot
+  // do `import { ActorStoppedError } from 'nodejs-actor-framework'`.
+  ActorFrameworkError: errors.ActorFrameworkError,
+  DefinitionError: errors.DefinitionError,
+  MailboxFullError: errors.MailboxFullError,
+  AskTimeoutError: errors.AskTimeoutError,
+  ActorStoppedError: errors.ActorStoppedError,
+  ActorNotFoundError: errors.ActorNotFoundError,
+  PersistenceError: errors.PersistenceError,
+  EscalationError: errors.EscalationError,
 };

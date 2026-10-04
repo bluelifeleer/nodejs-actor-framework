@@ -452,7 +452,7 @@ await alerts.start();
 
 规则能力：gauge 比较（`>` `>=` `<` `<=` `==` `!=`）、计数器 `rate>`/`increase>`（计数器回绕/重启按 0 处理）、`for:` 持续时间（避免瞬时抖动误报）、`resolveFor`（防抖）、`resolved` 通知、console/webhook 通知器（webhook 失败不会阻塞评估）。规则定义有问题会在构造时直接报错。
 
-完整示例：`node examples/alerts.js`（故意制造邮箱积压 + 死信，能看到 firing → resolved 全过程）；指标清单见 [examples/prometheus/README.md](examples/prometheus/README.md)。
+完整示例：`node examples/alerts.mjs`（故意制造邮箱积压 + 死信，能看到 firing → resolved 全过程）；指标清单见 [examples/prometheus/README.md](examples/prometheus/README.md)。
 
 ## 功能状态
 

@@ -15,9 +15,9 @@
  * 然后停止灌入/修复，让你看到 resolved 通知（告警不会卡在 firing）。
  */
 
-const { createSystem, plugins } = require('nodejs-actor-framework');
-const { AlertManager, consoleNotifier, defaultGameRules } = require('../packages/core/src/obs/alerting');
-const MetricsExporter = require('../packages/core/src/obs/metrics-exporter');
+import { createSystem, plugins } from 'nodejs-actor-framework';   // 具名导入 CJS 包（需 lexer 可分析）
+import { AlertManager, consoleNotifier, defaultGameRules, webhookNotifier } from '../packages/core/src/obs/alerting.js';
+import MetricsExporter from '../packages/core/src/obs/metrics-exporter.js';
 
 const { renderFamilies } = MetricsExporter;
 
@@ -72,7 +72,7 @@ async function main() {
   for (const event of ['firing', 'resolved']) {
     alerts.on(event, (e) => {
       // 这里可以接入你自己的通知/工单系统
-      if (process.env.ALERT_WEBHOOK) require('../packages/core/src/obs/alerting').webhookNotifier(process.env.ALERT_WEBHOOK).send(e).catch(() => {});
+      if (process.env.ALERT_WEBHOOK) webhookNotifier(process.env.ALERT_WEBHOOK).send(e).catch(() => {});
     });
   }
 
@@ -118,11 +118,11 @@ async function main() {
   console.log('\n演示结束。规则文件见 examples/prometheus/alerts.yml（有 Prometheus 时用它）。');
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main().catch((err) => {
     console.error('告警示例失败:', err);
     process.exit(1);
   });
 }
 
-module.exports = { main };
+export { main };

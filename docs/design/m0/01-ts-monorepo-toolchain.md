@@ -186,6 +186,46 @@ examples/                  # 全部改为依赖 workspace 包，验证"独立可
 - 加了 `@types/node`（devDependency）并在 tsconfig 里启用 `types: ["node"]`——这是设计文档 §8 T-D 的建议；之后 `.ts` 代码不再需要手写 `process`/`Buffer`/`require` 的结构化声明。
 - dev tsconfig 的 `include` 已扩到 `packages/core/src/**/*.ts`（为转换后的文件真正进入类型检查做准备；当前无 `.ts` 源码，是 no-op）。
 
+
+### 9.5 路线 B 的前置工作：ESM 侧实测与两个已修问题
+
+按 B1（根侧也转 ESM）先做了**一个完整试点**：`examples/alerts.js → examples/alerts.mjs`。实测暴露并修掉两个真问题：
+
+**(1) 包的 ESM 具名导出只有 12/30 可见（互操作缺陷，已修）**
+
+`module.exports = { Actor, ..., plugins, cluster: plugins.cluster, ..., ...errors }` 这样的写法依赖 cjs-module-lexer 的启发式分析。实测结果：
+
+```
+require 导出: 30 | ESM 具名可见: 12 | 缺失: plugins, cluster, pubsub, metrics, tracing,
+deadLetters, rateLimit, MemoryPersistence, FilePersistence, ChildSupervisor, Mailbox,
+ActorFrameworkError, DefinitionError, MailboxFullError, AskTimeoutError, ActorStoppedError,
+ActorNotFoundError, PersistenceError, EscalationError
+```
+
+即 `import { ActorStoppedError } from 'nodejs-actor-framework'` 会直接抛错，而 `require` 完全正常——**只有 ESM 用户会踩，且报错指向包本身**。把 `...errors` 改成显式成员导出并**没有**解决（lexer 在 `plugins` 之前就放弃），说明不能依赖它的猜测。
+
+**修复**：新增 `packages/core/index.mjs`，把 30 个公共名**显式**重导出（`import cjs from './src/index.js'; export const { ... } = cjs; export default cjs;`），并在 `package.json` 加 `exports` 映射：`"." → { import: ./index.mjs, require: ./src/index.js, types: ./src/index.d.ts }`，另加 `"./src/*"` 通配以保留深路径访问。验证：**具名导出 30/30、身份一致**，`files` 白名单已含 `index.mjs`， 打包 55 个文件。
+
+**(2) ESM 侧的模块解析必须显式扩展名（已在试点中确认）**
+
+`import MetricsExporter from '../packages/core/src/obs/metrics-exporter.js'` —— 省掉 `.js` 会失败（ESM 不做扩展名补全），与 §9.1 的 CJS 侧规则正好相反。
+
+**试点同时确认可用**：具名导入 CJS 包（经 `index.mjs`）、`import.meta.filename`（`process.argv[1] === import.meta.filename` 在主模块判断中成立，另有 `import.meta.main === true`）。
+
+**B1 批量转换配方（已可用，待执行）**
+
+| CJS 构造 | ESM 写法 |
+|---|---|
+| `const { a, b } = require('pkg')` | `import { a, b } from 'pkg'`（经 index.mjs 已可用） |
+| `const X = require('pkg')`（默认导出型） | `import X from 'pkg'` |
+| `require('./local')` | `import ... from './local.js'`（**必须带扩展名**） |
+| `module.exports = { main }` | `export { main }` |
+| `require.main === module` | `process.argv[1] === import.meta.filename` |
+| `__dirname` | `import.meta.dirname` |
+| 函数内动态 `require(x)` | `import { createRequire } from 'node:module'` 或提到顶层静态导入 |
+
+待转换清单（根侧，18 个文件约 120 处构造）：`actor-main.js`、`examples/*.js`（8）、`examples/actors/*.js`（2）、`test/*.test.js`（7）、`tools/migrate-store.js`。执行顺序建议：`examples/actors/*` → `examples/*` → `tools` → 根 `test/*` → `actor-main.js`，每批跑全量保持绿。
+
 ## 10. 本节待确认
 
 | # | 事项 | 建议 |

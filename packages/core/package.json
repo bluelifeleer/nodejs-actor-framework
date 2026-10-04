@@ -6,6 +6,16 @@
   "author": "bluelife <thebubblelife@163.com>",
   "main": "src/index.js",
   "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./index.mjs",
+      "require": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -13,7 +23,8 @@
     "classic-level": "^3.0.0"
   },
   "files": [
-    "src"
+    "src",
+    "index.mjs"
   ],
   "keywords": [
     "actor",

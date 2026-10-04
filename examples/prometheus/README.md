@@ -34,6 +34,6 @@
    | `actor_cluster_actors` / `_remote_actors` / `_peers` | gauge | 集群视图 |
    | `actor_process_resident_memory_bytes` | gauge | 内存（配合容器上限告警） |
 
-4. **没有 Prometheus** 时用进程内告警器：`node examples/alerts.js`
+4. **没有 Prometheus** 时用进程内告警器：`node examples/alerts.mjs`
    （`lib/obs/alerting.js`：支持 `>`、`rate>`、`increase>` 条件、`for:` 持续时间、
    fire/resolve、console + webhook 通知）。
