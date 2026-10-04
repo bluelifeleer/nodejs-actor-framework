@@ -15,6 +15,8 @@
   },
   "include": [
     "packages/core/src/**/*.d.ts",
-    "packages/core/index.d.ts"
+    "packages/core/index.d.ts",
+    "packages/core/src/config.ts",
+    "packages/core/src/obs/alerting.ts"
   ]
 }

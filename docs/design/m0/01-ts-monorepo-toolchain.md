@@ -280,8 +280,9 @@ ActorNotFoundError, PersistenceError, EscalationError
 没有类型标注，当前 `strict` 下 **1982 个错误**、放宽后 **1239 个**。因此：
 
 - **严格类型门已恢复并真的通过**：`npm run typecheck`（严格）→ 0 错误 ✅。
-  它当前覆盖"声明面（`.d.ts`）+ 声明文件引用到的实现"，也就是 `ops/token.ts`、`ops/ws-server.ts`
-  （这两个文件已补齐类型：33 → 0、61 → 0）。
+  它当前显式覆盖 `packages/core/src/config.ts`、`packages/core/src/obs/alerting.ts`
+  以及声明文件引用到的实现 `ops/token.ts`、`ops/ws-server.ts`——这四个文件已补齐类型
+  （94 → 0；本轮 config.ts 27 → 0、alerting.ts 55 → 0）。
 - 仍未纳入严格门的：`packages/core/src/**/*.ts` 的其余文件与 `test/types/**`。
   实测把 `test/types/**` 收回后会通过 `obs/alerting.ts` 等再拉进约 71 个错误——这就是**下一批类型债**，
   清单与数字是逐文件收口的进度指标：

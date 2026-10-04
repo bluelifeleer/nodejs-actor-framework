@@ -42,31 +42,48 @@ const { EventEmitter } = require('events');
  *
  * @returns {{types: Record<string,string>, help: Record<string,string>, samples: Array<{name:string, labels:Record<string,string>, value:number}>}}
  */
-function parsePrometheusText(text) {
-  const types = {};
-  const help = {};
+export interface NotifierOptions {
+  /** Default sink for notifications (default: console.log). */
+  log?: (line: string) => void;
+}
+
+export interface WebhookOptions {
+  timeoutMs?: number;
+  name?: string;
+}
+
+export interface AlertManagerOptions {
+  source?: any;
+  rules?: any[];
+  notifiers?: any[];
+  intervalMs?: number;
+}
+
+function parsePrometheusText(text: string) {
+  const types: Record<string, string> = {};
+  const help: Record<string, string> = {};
   const samples = [];
   for (const rawLine of String(text).split('\n')) {
     const line = rawLine.trim();
     if (line === '') continue;
     if (line.startsWith('#')) {
       const typeMatch = /^#\s*TYPE\s+(\S+)\s+(\S+)/.exec(line);
-      if (typeMatch) types[typeMatch[1]] = typeMatch[2];
+      if (typeMatch) types[typeMatch[1]!] = typeMatch[2]!;
       const helpMatch = /^#\s*HELP\s+(\S+)\s+(.*)$/.exec(line);
-      if (helpMatch) help[helpMatch[1]] = helpMatch[2];
+      if (helpMatch) help[helpMatch[1]!] = helpMatch[2]!;
       continue;
     }
     const match = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(\S+)/.exec(line);
     if (!match) continue;
     const value = Number(match[3]);
     if (!Number.isFinite(value)) continue; // NaN/Inf are not useful for rules
-    const labels = {};
+    const labels: Record<string, string> = {};
     if (match[2]) {
       const body = match[2].slice(1, -1);
       const labelRe = /([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
       let labelMatch;
       while ((labelMatch = labelRe.exec(body)) !== null) {
-        labels[labelMatch[1]] = labelMatch[2].replace(/\\(.)/g, '$1');
+        labels[labelMatch[1]!] = (labelMatch[2] || '').replace(/\\(.)/g, '$1');
       }
     }
     samples.push({ name: match[1], labels, value });
@@ -75,7 +92,7 @@ function parsePrometheusText(text) {
 }
 
 /** Sum samples of a metric, optionally filtered by exact label matches. */
-function sumSamples(parsed, metric, labelFilter = null) {
+function sumSamples(parsed: any, metric: string, labelFilter: Record<string, string> | null = null) {
   let total = 0;
   let found = false;
   for (const sample of parsed.samples) {
@@ -101,12 +118,12 @@ function sumSamples(parsed, metric, labelFilter = null) {
 // ---------------------------------------------------------------------------
 
 const COMPARATORS = {
-  '>': (a, b) => a > b,
-  '>=': (a, b) => a >= b,
-  '<': (a, b) => a < b,
-  '<=': (a, b) => a <= b,
-  '==': (a, b) => a === b,
-  '!=': (a, b) => a !== b,
+  '>': (a: number, b: number) => a > b,
+  '>=': (a: number, b: number) => a >= b,
+  '<': (a: number, b: number) => a < b,
+  '<=': (a: number, b: number) => a <= b,
+  '==': (a: number, b: number) => a === b,
+  '!=': (a: number, b: number) => a !== b,
 };
 
 /**
@@ -118,7 +135,7 @@ const COMPARATORS = {
  *
  * @returns {{value:number|null, ok:boolean}}
  */
-function evaluateRule(rule, parsed, previous) {
+function evaluateRule(rule: any, parsed: any, previous: any) {
   const labelFilter = rule.labels || null;
   const metricName = rule.metric;
   const isCounter = parsed.types[metricName] === 'counter';
@@ -126,7 +143,7 @@ function evaluateRule(rule, parsed, previous) {
   // Resolve the comparator first: a typo in a rule must fail loudly even when
   // the metric happens to be absent from this scrape.
   const comparator = rule.condition.replace(/^(rate|increase)/, '');
-  const compare = COMPARATORS[comparator];
+  const compare = COMPARATORS[comparator as keyof typeof COMPARATORS];
   if (!compare) throw new Error(`alert rule "${rule.name}": unknown condition "${rule.condition}"`);
 
   let value = sumSamples(parsed, metricName, labelFilter);
@@ -144,14 +161,14 @@ function evaluateRule(rule, parsed, previous) {
   return { value, ok: compare(value, rule.threshold) };
 }
 
-function parseDuration(value) {
+function parseDuration(value: string) {
   if (typeof value === 'number') return value;
   if (!value) return 0;
   const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(String(value).trim());
   if (!match) throw new Error(`invalid duration "${value}"`);
   const amount = Number(match[1]);
   const unit = match[2] || 's';
-  return amount * { ms: 1, s: 1000, m: 60000, h: 3600000 }[unit];
+  return amount * (({ ms: 1, s: 1000, m: 60000, h: 3600000 } as Record<string, number>)[unit] ?? 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,11 +176,11 @@ function parseDuration(value) {
 // ---------------------------------------------------------------------------
 
 /** Print alerts to the console (or any log function). */
-function consoleNotifier(options = {}) {
-  const log = options.log || ((line) => console.log(line));
+function consoleNotifier(options: NotifierOptions = {}) {
+  const log = options.log || ((line: string) => console.log(line));
   return {
     name: 'console',
-    async send(event) {
+    async send(event: any) {
       const icon = event.status === 'firing' ? '[ALERT]' : '[RESOLVED]';
       log(
         `${icon} ${event.rule.name} (${event.rule.severity || 'warning'}) ` +
@@ -175,12 +192,12 @@ function consoleNotifier(options = {}) {
 }
 
 /** POST the alert as JSON to a webhook (Slack/钉钉/自建网关都行). */
-function webhookNotifier(url, options = {}) {
+function webhookNotifier(url: string, options: WebhookOptions = {}) {
   if (!url) throw new Error('webhookNotifier(url) requires a url');
   const timeoutMs = options.timeoutMs === undefined ? 3000 : options.timeoutMs;
   return {
     name: options.name || 'webhook',
-    async send(event) {
+    async send(event: any) {
       const body = JSON.stringify({
         status: event.status,
         name: event.rule.name,
@@ -197,7 +214,7 @@ function webhookNotifier(url, options = {}) {
   };
 }
 
-function postJson(url, body, timeoutMs) {
+function postJson(url: string, body: any, timeoutMs: number) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const transport = parsed.protocol === 'https:' ? https : http;
@@ -210,7 +227,7 @@ function postJson(url, body, timeoutMs) {
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
         timeout: timeoutMs,
       },
-      (res) => {
+      (res: any) => {
         res.resume();
         if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.statusCode);
         else reject(new Error(`webhook responded ${res.statusCode}`));
@@ -222,7 +239,7 @@ function postJson(url, body, timeoutMs) {
   });
 }
 
-function formatValue(value) {
+function formatValue(value: any): string {
   if (value === null || value === undefined) return 'n/a';
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(3);
@@ -240,10 +257,10 @@ class AlertManager extends EventEmitter {
    * @param {Array}  [options.notifiers]
    * @param {number} [options.intervalMs]
    */
-  constructor(options = {}) {
+  constructor(options: AlertManagerOptions = {}) {
     super();
     this.source = options.source || {};
-    this.rules = (options.rules || []).map((rule) => {
+    this.rules = (options.rules || []).map((rule: any) => {
       if (!rule.name || !rule.metric) throw new Error('each alert rule needs { name, metric }');
       const condition = rule.condition || '>';
       if (!/^(rate|increase)?(>=|<=|>|<|==|!=)$/.test(condition)) {
@@ -336,11 +353,11 @@ class AlertManager extends EventEmitter {
     return transitions;
   }
 
-  _event(status, rule, value, at) {
+  _event(status: string, rule: any, value: number, at: number) {
     return { status, rule, value, at, summary: rule.summary || '' };
   }
 
-  async _notify(event) {
+  async _notify(event: any) {
     for (const notifier of this.notifiers) {
       try {
         await notifier.send(event);
@@ -351,7 +368,7 @@ class AlertManager extends EventEmitter {
     }
   }
 
-  async _collect(now) {
+  async _collect(now: number) {
     if (typeof this.source.snapshot === 'function') {
       const result = await this.source.snapshot();
       if (typeof result === 'string') return parsePrometheusText(result);
@@ -359,7 +376,7 @@ class AlertManager extends EventEmitter {
       return { types: {}, help: {}, samples: [], ...result };
     }
     if (this.source.url) {
-      const text = await scrape(this.source.url, this.source.timeoutMs === undefined ? 3000 : this.source.timeoutMs);
+      const text = await scrape(String(this.source.url), this.source.timeoutMs === undefined ? 3000 : this.source.timeoutMs);
       return parsePrometheusText(text);
     }
     throw new Error('AlertManager needs source.url or source.snapshot');
@@ -370,7 +387,7 @@ class AlertManager extends EventEmitter {
     if (this._running) return;
     this._running = true;
     this.startedAt = Date.now();
-    await this.evaluateOnce().catch((err) => {
+    await this.evaluateOnce().catch((err: Error) => {
       this.lastError = err;
       this.emit('error', err);
     });
@@ -378,7 +395,7 @@ class AlertManager extends EventEmitter {
       // Serialise evaluations: a slow scrape must not stack up.
       this._pending = this._pending
         .then(() => (this._running ? this.evaluateOnce() : null))
-        .catch((err) => {
+        .catch((err: Error) => {
           this.lastError = err;
           this.emit('error', err);
         });
@@ -414,7 +431,7 @@ class AlertManager extends EventEmitter {
   }
 }
 
-function scrape(url, timeoutMs) {
+function scrape(url: string, timeoutMs: number) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const transport = parsed.protocol === 'https:' ? https : http;
@@ -426,10 +443,10 @@ function scrape(url, timeoutMs) {
         method: 'GET',
         timeout: timeoutMs,
       },
-      (res) => {
+      (res: any) => {
         let body = '';
         res.setEncoding('utf8');
-        res.on('data', (chunk) => {
+        res.on('data', (chunk: Buffer) => {
           body += chunk;
         });
         res.on('end', () => {

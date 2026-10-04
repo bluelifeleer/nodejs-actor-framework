@@ -19,25 +19,41 @@ const fs = require('fs');
 // 所以根目录必须来自"使用者"而不是"框架自己"。
 const ROOT = process.env.ACTOR_APP_ROOT ? path.resolve(process.env.ACTOR_APP_ROOT) : process.cwd();
 
-function readString(name, fallback) {
+/** 允许调用方覆盖任意配置项（未给出的走环境变量 / 默认值）。 */
+export interface ConfigOverrides {
+  dataDir?: string;
+  logDir?: string;
+  nodeId?: string;
+  gossipHost?: string;
+  gossipPort?: number;
+  advertiseHost?: string;
+  seeds?: string[];
+  gatewayHost?: string;
+  gatewayPort?: number;
+  bootActors?: string[];
+  persistenceMode?: string;
+  actorPersistenceDir?: string;
+}
+
+function readString(name: string, fallback: string): string {
   const raw = process.env[name];
   return raw === undefined || raw === '' ? fallback : raw;
 }
 
-function readNumber(name, fallback) {
+function readNumber(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function readBoolean(name, fallback) {
+function readBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
-function readList(name, fallback) {
+function readList(name: string, fallback: string[]): string[] {
   const raw = process.env[name];
   if (raw === undefined) return fallback;
   if (raw === '') return []; // explicitly set to empty means "none"
@@ -46,7 +62,7 @@ function readList(name, fallback) {
 
 const DEFAULT_DATA_DIR = path.join(ROOT, 'data');
 
-function build(overrides = {}) {
+function build(overrides: ConfigOverrides = {}) {
   const dataDir = overrides.dataDir || readString('ACTOR_DATA_DIR', DEFAULT_DATA_DIR);
   const logDir = overrides.logDir || readString('ACTOR_LOG_DIR', dataDir);
   const gossipPort = overrides.gossipPort ?? readNumber('ACTOR_GOSSIP_PORT', 7200);
@@ -187,16 +203,16 @@ function build(overrides = {}) {
 }
 
 /** Deep-ish merge of a partial override tree onto the env-derived base. */
-function loadConfig(overrides = {}) {
-  const base = build(overrides);
-  const merged = { ...base };
+function loadConfig(overrides: ConfigOverrides = {}) {
+  const base: Record<string, any> = build(overrides);
+  const merged: Record<string, any> = { ...base };
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) continue;
     if (value && typeof value === 'object' && !Array.isArray(value) && base[key] && typeof base[key] === 'object') {
       // Merge one level deep (and one more for things like metrics.exporter).
       // A shallow replace used to drop sibling defaults, so
       // `telnet: { port: 0 }` silently lost maxLineBytes/maxConnections.
-      const nested = { ...base[key] };
+      const nested: Record<string, any> = { ...(base[key] as Record<string, any>) };
       for (const [subKey, subValue] of Object.entries(value)) {
         if (subValue && typeof subValue === 'object' && !Array.isArray(subValue)
           && nested[subKey] && typeof nested[subKey] === 'object') {
@@ -213,7 +229,7 @@ function loadConfig(overrides = {}) {
   return merged;
 }
 
-function ensureDirs(config) {
+function ensureDirs(config: Record<string, any>): Record<string, any> {
   for (const dir of [config.dataDir, config.logDir]) {
     fs.mkdirSync(dir, { recursive: true });
   }
