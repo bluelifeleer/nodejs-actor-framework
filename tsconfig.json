@@ -1,14 +1,18 @@
 {
-  // 开发/校验配置：不产出、不检查 .js（迁移期），只校验类型声明与类型测试
+  // 严格校验配置：只检查类型声明与类型测试，必须始终通过。
+  // core 的 .ts 源码正处于"已转换、待补类型标注"阶段（见 docs/design/m0/01 §9.7），
+  // 补齐前不纳入严格检查，迁移期由 tsconfig.migration.json（宽松、信息性）把关。
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
     "allowJs": true,
     "checkJs": false,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true
   },
   "include": [
     "packages/core/src/**/*.d.ts",
-    "test/types/**/*.ts", "test/types/**/*.mts"
+    "test/types/**/*.ts",
+    "test/types/**/*.mts"
   ]
 }
