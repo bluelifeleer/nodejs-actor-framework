@@ -119,6 +119,9 @@ def convert(path, text):
         s = s[:p] + '\n'.join(dict.fromkeys(imports)) + '\n\n' + s[p:]
     if re.search(r"\brequire\(", s):
         s = "import { createRequire } from 'node:module';\n\n// 动态加载（循环依赖 / 可选依赖 / 按路径加载用户模块）保留 require 语义。\nconst require = createRequire(import.meta.url);\n\n" + s
+    # ESM 没有 __dirname/__filename（漏掉会 ReferenceError: __dirname is not defined）
+    s = re.sub(r'\b__dirname\b', 'import.meta.dirname', s)
+    s = re.sub(r'\b__filename\b', 'import.meta.filename', s)
     return s, {n.split(' as ')[-1].strip() for n in dedup}
 
 for rel in sys.argv[1:]:
