@@ -34,7 +34,7 @@ def split_top(body):
     return [p.strip() for p in parts if p.strip()]
 
 def convert(path, text):
-    named, consts, items, whole = [], [], [], []
+    named, consts, items, whole, props = [], [], [], [], []
     pos, out = 0, []
     pat = re.compile(r"^module\.exports\s*=\s*", re.M)
     while True:
@@ -68,6 +68,7 @@ def convert(path, text):
     s = ''.join(out)
     def prop(m):
         x, y = m.group(1), m.group(2).strip()
+        props.append((x, y))
         if re.fullmatch(r'\w+', y):
             if x in named or y in named: return ''
             named.append(y if x == y else f"{y} as {x}"); return ''
@@ -85,7 +86,11 @@ def convert(path, text):
         # `const X = require(...)` 拿到的是命名空间而不是 X 本身（实测 124 个用例失败）。
         if re.fullmatch(r'\w+', w):
             named.append(w); dedup.append(w)
-        stmts.append(f"export default {w};")
+        if props:
+            pairs = ', '.join(f"{k}: {v}" for k, v in props)
+            stmts.append(f"export default Object.assign({w}, {{ {pairs} }});")
+        else:
+            stmts.append(f"export default {w};")
     if items: stmts.append('export default {\n  ' + ',\n  '.join(items) + ',\n};')
     ordered, seen2 = [], set()
     for n in dedup:

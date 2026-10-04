@@ -4,7 +4,7 @@ const path = require('path');
 const config = require('../../config.ts');
 const { FileStore } = require('./file-store.ts');
 const { MemoryStore } = require('./memory-store.ts');
-const { LevelStore, isAvailable: levelAvailable } = require('./level-store.ts');
+const { LevelStore, isAvailable: levelAvailable } = require('./level-store.mts');
 const { fileName } = require('./naming.ts');
 
 const BACKENDS = ['file', 'memory', 'level'];

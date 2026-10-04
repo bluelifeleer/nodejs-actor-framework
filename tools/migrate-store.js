@@ -3,7 +3,7 @@ import fsp from 'fs/promises';
 import path from 'node:path';
 import _file_store from '../packages/core/src/store/backends/file-store.ts';
 const { FileStore } = _file_store;
-import _level_store from '../packages/core/src/store/backends/level-store.ts';
+import _level_store from '../packages/core/src/store/backends/level-store.mts';
 const { LevelStore, isAvailable } = _level_store;
 
 /**

@@ -10,7 +10,7 @@ const { setupTempEnv, cleanup } = require('./helpers');
 const tempDir = setupTempEnv('actor-migrate');
 
 const { FileStore } = require('../src/store/backends/file-store.ts');
-const { LevelStore, isAvailable } = require('../src/store/backends/level-store.ts');
+const { LevelStore, isAvailable } = require('../src/store/backends/level-store.mts');
 const { migrate, parseArgs } = require('../../../tools/migrate-store');
 
 const level = isAvailable();
