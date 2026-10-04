@@ -283,8 +283,12 @@ ActorNotFoundError, PersistenceError, EscalationError
   会通过 `'./token'` 这类导入把实现拉进严格程序——以前实现是 `.js`（`checkJs:false`）所以不报错，
   现在是 `.ts` 就必然被检查。因此：
   - `npm run typecheck` → 迁移期检查器（`strict:false`，**信息性**，不阻断构建），当前暴露 **1239** 处待补标注；
-  - `npm run typecheck:strict` → 严格检查器，**当前是红的：94 个错误**（声明面本身 + 被声明文件导入的实现；
-    这是恢复严格门的真实工作量，远小于把整个 src 纳入时的 1982）；
+   - `npm run typecheck:strict` → 严格检查器，**当前是红的：34 个错误，全部集中在 `ops/ws-server.ts`**
+    （94 → 34 的进度来自给 `ops/token.ts` 补齐类型：33 → 0）。剩余形态很规整：
+    17 处回调参数注解、6 处解构标注、8 处空值收窄（`_fragment`/`playerId` 的联合类型）、1 处 Promise 泛型；
+  - 类型补齐的正确做法（已验证）：把同名 `.d.ts` 里的类型**搬进 `.ts` 实现**
+    （`TokenAuthorityOptions`/`IssuedToken`/`VerifiedToken`、`WebSocketServerOptions`/`ConnectionOptions`），
+    再把多余的 `.d.ts` 删掉——将来由构建产出声明，不再手写；
   - 现阶段唯一的门是**全量测试**（281/281）。
 - 收口路线：逐文件补类型标注 → 该文件从迁移检查器挪回严格检查 → 1239 归零时把
   `typecheck` 切回严格检查器，并把 `test/types/**` 与 `src/**/*.ts` 一起纳入。

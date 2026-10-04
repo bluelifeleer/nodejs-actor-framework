@@ -30,13 +30,44 @@ const { EventEmitter } = require('events');
  *   });
  */
 
+export interface ConnectionOptions {
+  /** Hard cap per message; larger frames close the connection (default 4 MiB). */
+  maxPayloadBytes?: number;
+}
+
+export interface WebSocketServerOptions {
+  host?: string;
+  port?: number;
+  path?: string;
+  maxPayloadBytes?: number;
+  /** Advertised/required subprotocol, e.g. 'game.v1'. */
+  subprotocol?: string | string[];
+  /** Return false (or a rejecting promise) to refuse the upgrade. */
+  verifyClient?: (req: any, socket: any) => boolean | Promise<boolean>;
+  /** TLS options for `wss://` (see tls.createServer). */
+  tls?: Record<string, unknown>;
+  /** Fallback for non-upgrade HTTP requests (health checks). */
+  requestHandler?: (req: any, res: any) => void;
+}
+
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const OPCODE = { CONTINUATION: 0x0, TEXT: 0x1, BINARY: 0x2, CLOSE: 0x8, PING: 0x9, PONG: 0xa };
 const MAX_HANDSHAKE_BYTES = 16 * 1024;
 
 /** One connected client. */
 class WebSocketConnection extends EventEmitter {
-  constructor(socket, options = {}) {
+  socket: any;
+  maxPayloadBytes: number;
+  closed: boolean;
+  readyState: string;
+  /** Authenticated player, written by the access layer. */
+  playerId: string | null;
+  _buffer: Buffer;
+  _fragment: { opcode: number; chunks: Buffer[]; length: number } | null;
+  _closeSent: boolean;
+  _closeReceived: boolean;
+
+  constructor(socket: any, options: ConnectionOptions = {}) {
     super();
     this.socket = socket;
     this.maxPayloadBytes = options.maxPayloadBytes === undefined ? 4 * 1024 * 1024 : options.maxPayloadBytes;
@@ -50,8 +81,8 @@ class WebSocketConnection extends EventEmitter {
     this.playerId = null;
 
     socket.setNoDelay(true);
-    socket.on('data', (chunk) => this._onData(chunk));
-    socket.on('error', (err) => {
+    socket.on('data', (chunk: Buffer) => this._onData(chunk));
+    socket.on('error', (err: Error) => {
       this.emit('error', err);
       this._teardown(1006);
     });
@@ -61,7 +92,7 @@ class WebSocketConnection extends EventEmitter {
   // --- public API ----------------------------------------------------------
 
   /** Send a text (or binary) message. */
-  send(data, { binary = false } = {}) {
+  send(data: unknown, { binary = false }: { binary?: boolean } = {}) {
     if (this.closed) return false;
     const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
     const opcode = binary || Buffer.isBuffer(data) ? OPCODE.BINARY : OPCODE.TEXT;
@@ -69,7 +100,7 @@ class WebSocketConnection extends EventEmitter {
   }
 
   /** Send a JSON message (convenience for protocol layers). */
-  sendJson(obj) {
+  sendJson(obj: unknown) {
     return this.send(JSON.stringify(obj));
   }
 
@@ -105,7 +136,7 @@ class WebSocketConnection extends EventEmitter {
 
   // --- framing -------------------------------------------------------------
 
-  _frame(opcode, payload) {
+  _frame(opcode: number, payload: Buffer) {
     if (this.socket.destroyed) return false;
     const length = payload.length;
     let header;
@@ -132,7 +163,7 @@ class WebSocketConnection extends EventEmitter {
     }
   }
 
-  _onData(chunk) {
+  _onData(chunk: Buffer) {
     this._buffer = this._buffer.length === 0 ? chunk : Buffer.concat([this._buffer, chunk]);
 
     for (;;) {
@@ -266,7 +297,7 @@ class WebSocketConnection extends EventEmitter {
 
 /** HTTP(S) + WebSocket upgrade server. */
 class WebSocketServer extends EventEmitter {
-  constructor(options = {}) {
+  constructor(options: WebSocketServerOptions = {}) {
     super();
     this.host = options.host || '127.0.0.1';
     this.port = options.port === undefined ? 0 : options.port;
@@ -288,7 +319,7 @@ class WebSocketServer extends EventEmitter {
 
   listen() {
     return new Promise((resolve, reject) => {
-      const handler = (req, res) => {
+      const handler = (req: any, res: any) => {
         if (this._httpHandler) return this._httpHandler(req, res);
         res.writeHead(426, { 'content-type': 'text/plain' });
         return res.end('Upgrade Required: this endpoint speaks WebSocket\n');
@@ -297,11 +328,11 @@ class WebSocketServer extends EventEmitter {
       this.server.on('error', reject);
       // A TLS server emits tlsClientError for handshake failures; surface it
       // instead of dying with an unhandled 'error'.
-      this.server.on('tlsClientError', (err, socket) => {
+      this.server.on('tlsClientError', (err: Error, socket: any) => {
         this.emit('tlsClientError', err);
         socket.destroy();
       });
-      this.server.on('upgrade', (req, socket, head) => this._onUpgrade(req, socket, head));
+      this.server.on('upgrade', (req: any, socket: any, head: Buffer) => this._onUpgrade(req, socket, head));
       this.server.listen(this.port, this.host, () => {
         this.boundPort = this.server.address().port;
         this.port = this.boundPort;
@@ -312,7 +343,7 @@ class WebSocketServer extends EventEmitter {
   }
 
   async _onUpgrade(req, socket, head) {
-    const fail = (status, message) => {
+    const fail = (status: number, message: string) => {
       socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
@@ -493,7 +524,7 @@ class ClientConnection extends EventEmitter {
     this._closed = null; // { code, reason } once the connection ended
 
     socket.setNoDelay(true);
-    socket.on('data', (chunk) => {
+    socket.on('data', (chunk: Buffer) => {
       this._buffer = Buffer.concat([this._buffer, chunk]);
       for (;;) {
         const frame = this._readFrame();
@@ -502,7 +533,7 @@ class ClientConnection extends EventEmitter {
         if (this.closed) break;
       }
     });
-    socket.on('error', (err) => this.emit('error', err));
+    socket.on('error', (err: Error) => this.emit('error', err));
     socket.on('close', () => {
       if (!this.closed) {
         this.closed = true;
@@ -518,14 +549,14 @@ class ClientConnection extends EventEmitter {
     else this._inbox.push({ data, isBinary });
   }
 
-  send(data, { binary = false } = {}) {
+  send(data: unknown, { binary = false }: { binary?: boolean } = {}) {
     if (this.closed) return false;
     const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data), 'utf8');
     const opcode = binary || Buffer.isBuffer(data) ? OPCODE.BINARY : OPCODE.TEXT;
     return this._frame(opcode, payload);
   }
 
-  sendJson(obj) {
+  sendJson(obj: unknown) {
     return this.send(JSON.stringify(obj));
   }
 
@@ -599,7 +630,7 @@ class ClientConnection extends EventEmitter {
     });
   }
 
-  _frame(opcode, payload) {
+  _frame(opcode: number, payload: Buffer) {
     if (this.socket.destroyed) return false;
     const length = payload.length;
     let header;

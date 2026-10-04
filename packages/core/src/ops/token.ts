@@ -19,13 +19,56 @@
  */
 
 const crypto = require('crypto');
+export interface TokenAuthorityOptions {
+  /** At least 16 characters, or `ACTOR_AUTH_SECRET` in the environment. */
+  secret?: string;
+  /** Default token lifetime in ms (default 1h). 0 is honoured (expires at once). */
+  ttlMs?: number;
+  /** Accepted clock drift in ms (default 5000). 0 disables tolerance. */
+  clockSkewMs?: number;
+  maxRevoked?: number;
+}
+
+export interface IssueOptions {
+  playerId: string;
+  ttlMs?: number;
+  claims?: Record<string, unknown>;
+}
+
+export interface IssuedToken {
+  token: string;
+  playerId: string;
+  expiresAt: number;
+}
+
+export interface VerifiedToken {
+  playerId: string;
+  iat: number;
+  exp: number;
+  jti: string;
+  claims: Record<string, unknown>;
+}
+
+export interface RequestLike {
+  url?: string;
+  headers?: Record<string, string | string[] | undefined>;
+}
+
+
 
 /** base64url without padding. */
-const b64 = (buf) => Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
-const unb64 = (str) => Buffer.from(String(str).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+const b64 = (buf: Buffer | string | Uint8Array): string => Buffer.from(buf).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+const unb64 = (str: unknown): Buffer => Buffer.from(String(str).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 
 class TokenAuthority {
-  constructor(options = {}) {
+  secret: Buffer;
+  defaultTtlMs: number;
+  clockSkewMs: number;
+  /** Revoked token ids (jti); in-memory by design. */
+  revoked: Set<string>;
+  maxRevoked: number;
+
+  constructor(options: TokenAuthorityOptions = {}) {
     const secret = options.secret || process.env.ACTOR_AUTH_SECRET;
     if (!secret || String(secret).length < 16) {
       throw new Error(
@@ -44,7 +87,7 @@ class TokenAuthority {
   }
 
   /** Issue a signed token for a player. */
-  issue({ playerId, ttlMs = this.defaultTtlMs, claims = {} } = {}) {
+  issue({ playerId, ttlMs = this.defaultTtlMs, claims = {} }: IssueOptions = { playerId: '' }): IssuedToken {
     if (!playerId) throw new Error('issue({ playerId }) is required');
     const now = Date.now();
     const payload = { sub: String(playerId), iat: now, exp: now + ttlMs, jti: crypto.randomUUID(), ...claims };
@@ -61,7 +104,7 @@ class TokenAuthority {
    * @returns {{playerId: string, iat: number, exp: number, jti: string, claims: object}|null}
    *          null for anything invalid — never throws on bad input.
    */
-  verify(token) {
+  verify(token: unknown): VerifiedToken | null {
     if (typeof token !== 'string' || token.length === 0 || token.length > 4096) return null;
     const dot = token.lastIndexOf('.');
     if (dot <= 0) return null;
@@ -72,7 +115,7 @@ class TokenAuthority {
     const expected = this._sign(body);
     if (!timingSafeEqual(signature, expected)) return null;
 
-    let payload;
+    let payload: any;
     try {
       payload = JSON.parse(unb64(body).toString('utf8'));
     } catch {
@@ -89,7 +132,7 @@ class TokenAuthority {
   }
 
   /** Revoke a token (by its `jti`), so a logout takes effect immediately. */
-  revoke(token) {
+  revoke(token: unknown): boolean {
     const verified = this.verify(token);
     if (!verified || !verified.jti) return false;
     this.revoked.add(verified.jti);
@@ -105,12 +148,12 @@ class TokenAuthority {
     return true;
   }
 
-  _sign(body) {
+  _sign(body: string): string {
     return b64(crypto.createHmac('sha256', this.secret).update(body).digest());
   }
 }
 
-function timingSafeEqual(a, b) {
+function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
   if (bufA.length !== bufB.length) return false;
@@ -123,21 +166,26 @@ function timingSafeEqual(a, b) {
  *   - `Sec-WebSocket-Protocol: bearer.<token>`  (for browsers, which cannot set headers)
  *   - `Authorization: Bearer <token>`
  */
-function tokenFromRequest(req) {
+function tokenFromRequest(req: RequestLike | null): string | null {
   if (!req) return null;
+  // Header values may be repeated (string[]) — take the first, as the wire format allows one.
+  const header = (name: string): string | undefined => {
+    const value = (req.headers || {})[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
   try {
-    const url = new URL(req.url, 'http://localhost');
+    const url = new URL(req.url || '/', 'http://localhost');
     const fromQuery = url.searchParams.get('token');
     if (fromQuery) return fromQuery;
   } catch {
     /* fall through */
   }
-  const protocol = req.headers['sec-websocket-protocol'];
+  const protocol = header('sec-websocket-protocol');
   if (protocol) {
     const match = /(?:^|,\s*)bearer\.([A-Za-z0-9._-]+)/.exec(protocol);
-    if (match) return match[1];
+    if (match) return match[1] ?? null;
   }
-  const auth = req.headers.authorization;
+  const auth = header('authorization');
   if (auth && /^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
   return null;
 }
