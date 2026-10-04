@@ -97,3 +97,20 @@ python3 tools/codemods/cjs-to-esm-core.py          # 应用（先不翻转 type�
 
 结论：**这三个异常全部可修且范围明确**（合计 23 处，涉及 3 类规则），不是"爆炸半径不可控"。
 下一轮按此修 codemod 的三条规则 + 加后置 pass，再重复"应用→逐条对账→为 0 才翻转 type"。
+
+## 增量 .mts 路线的使用与此批踩坑（第五批）
+
+用法：`python3 tools/codemods/ts-to-mts-incremental.py <若干个 .ts>` —— 逐个转成 `.mts`、
+重命名、并自动修正全仓引用方（说明符 + 类/函数的解构取值）。每批转完立刻跑全量 + 严格 typecheck。
+
+第五批（worker/ + store/，11 个文件）失败，两个原因**都在转换器**，与 ESM 路线无关：
+
+1. **说明符替换必须按完整相对路径匹配**（已修）：原来只按文件名匹配，于是
+   `'./plugins/index.ts'`、`'../src/index.ts'` 这种"同名但未转换"的文件也被改成 `.mts`
+   → `Cannot find module './plugins/index.mts'`。
+2. **`module.exports.X = <匿名表达式>` 的具名导出缺失**（待查）：`level-store` 转换后
+   报 `does not provide an export named 'levelAvailable'`，需要看该文件里
+   `module.exports.isAvailable`（或类似）的实际写法再补规则。
+
+经验：**转换器本身的正确性也要用"产物级对账"验证**——只跑全量会在 11 个文件一起失败时
+难以定位；下一批前先用单文件试转 + 直接 require 该 .mts 验证导出面。

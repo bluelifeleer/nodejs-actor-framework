@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """把指定 .ts 文件转成 .mts（ESM），并修正全仓引用方。"""
-import pathlib, re, subprocess, sys
+import pathlib, re, subprocess, sys, os
 ROOT = pathlib.Path('.').resolve()
 FIXED = {'crypto':'crypto','fs':'fs','path':'path','os':'os','net':'net','http':'http','https':'https','url':'url',
          'events':'events','readline':'readline','worker_threads':'workerThreads','assert':'assert','tls':'tls','util':'util',
@@ -128,8 +128,28 @@ for rel in sys.argv[1:]:
     for g in [p for p in ROOT.rglob('*.ts') if 'node_modules' not in str(p)] + [p for p in ROOT.rglob('*.js') if 'node_modules' not in str(p)] + [p for p in ROOT.rglob('*.mts') if 'node_modules' not in str(p)]:
         if g == newname: continue
         t = g.read_text(); o = t
-        t = re.sub(rf"require\('([^']*/)?{re.escape(old_spec)}'\)", lambda m: f"require('{m.group(1) or ''}{new_spec}')", t)
-        t = re.sub(rf"from '([^']*/)?{re.escape(old_spec)}'", lambda m: f"from '{m.group(1) or ''}{new_spec}'", t)
+        # 说明符替换必须**按完整相对路径**匹配：只按文件名匹配会把 './plugins/index.ts'、
+        # '../src/index.ts' 这种"同名但未转换"的文件也改成 .mts（实测导致 Cannot find module）。
+        old_rel = f.relative_to(ROOT).as_posix()
+        new_rel = newname.relative_to(ROOT).as_posix()
+        for fl in [g for g in ROOT.rglob('*.ts') if 'node_modules' not in str(g)] + [g for g in ROOT.rglob('*.js') if 'node_modules' not in str(g)] + [g for g in ROOT.rglob('*.mts') if 'node_modules' not in str(g)]:
+            pass
+        def spec_fix(m, kw):
+            spec = (m.group(2) or '') + old_spec
+            base = (g.parent/spec)
+            if not base.exists() and not base.with_suffix('.ts').exists():
+                return m.group(0)
+            if base.resolve() == f.resolve() if base.exists() else False:
+                rel = os.path.relpath(newname, g.parent).replace(os.sep, '/')
+                if not rel.startswith('.'): rel = './' + rel
+                return f"{kw}'{rel}'"
+            return m.group(0)
+        t = re.sub(rf"require\((['\"])([^'\"]*?/)?{re.escape(old_spec)}\1\)",
+                   lambda m: f"require('{os.path.relpath(newname, g.parent).replace(os.sep,'/')}')"
+                             if (g.parent/(m.group(2) or '')+old_spec).resolve() == f.resolve() else m.group(0), t)
+        t = re.sub(rf"from (['\"])([^'\"]*?/)?{re.escape(old_spec)}\1",
+                   lambda m: f"from '{os.path.relpath(newname, g.parent).replace(os.sep,'/')}'"
+                             if (g.parent/(m.group(2) or '')+old_spec).resolve() == f.resolve() else m.group(0), t)
         for name in exported:  # 类/函数：const X = require(...) → 解构
             t = re.sub(rf"const {name} = require\('([^']*{re.escape(new_spec)})'\);", rf"const {{ {name} }} = require('\1');", t)
         if t != o: g.write_text(t); fixed += 1
