@@ -154,7 +154,7 @@ examples/                  # 全部改为依赖 workspace 包，验证"独立可
 
 **决定：走路线 B。** 理由：A 的扩展名写法在 CJS 里是纯粹的过渡债，而且跨文件无类型（等于只拿到一半收益）；B 是 Node 原生 TS 的正规形态，且与设计里"ESM 源码 + 双产物发布"一致。B 的执行前提是先定"根侧 CJS 文件怎么办"（转 ESM 还是消费 dist），这需要单独一步。
 
-### 9.3 尝试 A 时发现的一个未解问题（阻塞项，已回退）
+### 9.3 该问题已定位并修复：崩溃重启窗口内读状态会静默返回 undefined（阻塞项解除）
 
 按路线 A 转了两个叶子文件（`restart-strategy.ts`、`token-bucket.ts`，并给引用方加显式 `.ts`）后：
 
@@ -163,7 +163,23 @@ examples/                  # 全部改为依赖 workspace 包，验证"独立可
   （`packages/core/test/unit-actor-isolation.test.js:72` → `TypeError: Cannot read properties of undefined (reading 'hp')`，即 `ref.state()` 返回 `undefined`）
 - **关键矛盾**：把该用例的操作序列（spawn worker 隔离 Actor → `hurt` → `state()`）**逐字**写成独立脚本运行，`state()` 正常返回 `{hp:70,calls:1}`；在测试文件里（即使 `--test-name-pattern` 只跑这一条）稳定失败。环境变量（含 `setupTempEnv` 的全部设置）已复现过，不是原因。
 
-已回退到全绿基线（279/279），**下次动 `.js → .ts` 前必须先解释这个差异**——它的形态（独立脚本通过 / 测试文件失败）更像测试运行器与 worker 线程交互的问题，而不是类型转换本身；但在没弄清之前，贸然批量转换会把一个未知风险扩散到 47 个文件。
+**已定位：这是框架的真实缺陷，与 TypeScript 无关，转换只是把窗口拉宽了。**
+
+根因（两处叠加，都在"崩溃 → 重启"的时间窗内）：
+
+1. `ActorCell._restart()` **先** `restarts += 1`，**之后**才 teardown + `_init()`。观察者（测试的 `waitFor(restarts === 1)`）可以在新 incarnation 就绪前就继续往下走。
+2. `ActorCell.fetchState()`（`ref.state()` / `saveSnapshot()` 的底层）在窗口内 `instance` 与 `delegate` **都是 null**，于是直接 `return undefined` —— 静默把"暂时没有 incarnation"表达成"这个 Actor 没有状态"，甚至会让 `saveSnapshot()` 跳过写盘。
+
+为什么独立脚本当时通过：脚本在崩溃后 `await` 了 400ms 才读状态，窗口已过；测试在 `restarts` 一变就立刻读，正落在窗口内。为什么 TS 转换后必然失败：worker 加载 `.ts` 模块（类型剥离）更慢，窗口更宽。
+
+**修复（两处都修，覆盖两个变体）**：
+
+- cell 层：新增 incarnation 门闩 —— `fetchState()` 在重启窗口内先 `await _awaitIncarnation()`（有界，默认 `shutdownTimeoutMs`），`_init()`/`_initWorker()` 完成与 `_finishStop()` 时唤醒等待者。
+- delegate 层：`WorkerDelegate` 新增就绪标记（`ready` + 等待者），`getState()`/`invoke()` 在 worker 完成启动前不投递（避免 worker 里 `instance` 还是 null 时回一个空状态）。
+
+**回归测试**：`unit-actor-isolation.test.js` 新增「崩溃后**不做任何等待**立刻读状态」用例——断言拿到的是新 incarnation 的干净状态而不是 `undefined`。全量 280/280 通过。
+
+这条经验值得记住：**类型迁移会放大原有的时序缺陷**（它改变了启动耗时），所以"转换后失败"未必是转换本身的问题。
 
 ### 9.4 本次顺带完成（已保留）
 

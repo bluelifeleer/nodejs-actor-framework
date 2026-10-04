@@ -70,6 +70,48 @@ class WorkerDelegate {
     this.seq = 0;
     this.stopped = false;
     this.pid = null;
+    /**
+     * 就绪门闩：`start()` 返回前 worker 仍在加载 actor 模块（此时 worker 里的
+     * `instance` 还是 null）。这段时间内如果外部调用 `getState()`（例如
+     * `ref.state()` 或崩溃重启后的 `saveSnapshot()`），worker 会回一个空状态，
+     * 调用方拿到 `undefined` —— 静默丢状态。所以控制类调用必须先等门闩打开。
+     */
+    this.ready = false;
+    /** @type {Array<{resolve:Function, reject:Function}>} */
+    this._readyWaiters = [];
+  }
+
+  _markReady() {
+    this.ready = true;
+    const waiters = this._readyWaiters.splice(0);
+    for (const w of waiters) w.resolve();
+  }
+
+  /** 等待 worker 完成启动；超时则抛错（不静默返回空状态）。 */
+  _whenReady(timeoutMs) {
+    if (this.ready) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this._readyWaiters.indexOf(waiter);
+        if (idx >= 0) this._readyWaiters.splice(idx, 1);
+        reject(new Error(`worker for ${this.cell.path} was not ready within ${timeoutMs}ms`));
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      const waiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject,
+      };
+      this._readyWaiters.push(waiter);
+    });
+  }
+
+  /** worker 丢掉时唤醒所有等待者（避免永久挂起）。 */
+  _rejectReadyWaiters(err) {
+    const waiters = this._readyWaiters.splice(0);
+    for (const w of waiters) w.reject(err);
   }
 
   async start({ snapshot } = {}) {
@@ -107,6 +149,7 @@ class WorkerDelegate {
 
     try {
       await failure;
+      this._markReady();
     } catch (err) {
       // A failed start must not leak the thread: it would keep the process
       // alive forever and burn a slot per failed spawn.
@@ -214,6 +257,8 @@ class WorkerDelegate {
   /** Everything that was in flight when the worker died. */
   _onWorkerLost(err) {
     if (this.worker) this.worker.__dead = true;
+    this.ready = false;
+    this._rejectReadyWaiters(err);
     for (const entry of this.invokePending.values()) entry.reject(err);
     this.invokePending.clear();
     for (const entry of this.controlPending.values()) {
@@ -229,7 +274,7 @@ class WorkerDelegate {
       return Promise.reject(new ActorStoppedError(`worker for ${this.cell.path} is gone`));
     }
     const seq = (this.seq += 1);
-    return new Promise((resolve, reject) => {
+    const send = () => new Promise((resolve, reject) => {
       this.invokePending.set(seq, { resolve, reject });
       try {
         this.worker.postMessage({ kind: 'invoke', seq, payload, senderPath: senderPath || null, trace });
@@ -238,13 +283,18 @@ class WorkerDelegate {
         reject(new Error(`message cannot be cloned to the worker: ${err.message}`));
       }
     });
+    // 就绪前投递会被 worker 忽略（它还没装好 instance），所以先等门闩。
+    return this._whenReady(this.cell.system.shutdownTimeoutMs || 5000).then(send);
   }
 
   /** Ask the worker for its actor state (used by snapshots and introspection). */
   getState(timeoutMs = 5000) {
     if (!this.worker || this.worker.__dead) return Promise.resolve(undefined);
+    // 就绪前不能问状态：worker 会回一个空状态，调用方以为"没有状态"。
     const seq = (this.seq += 1);
-    return this._control(`seq:${seq}`, { kind: 'snapshot', seq }, timeoutMs).then((msg) => msg.state);
+    return this._whenReady(timeoutMs)
+      .then(() => this._control(`seq:${seq}`, { kind: 'snapshot', seq }, timeoutMs))
+      .then((msg) => msg.state);
   }
 
   _control(key, message, timeoutMs) {

@@ -81,6 +81,27 @@ test('worker isolation: a crash inside the worker restarts the actor with fresh 
   }
 });
 
+test('worker isolation: state can be read immediately after a crash, without waiting', async () => {
+  const system = createSystem({ logger: false, defaults: { supervision: { maxRestarts: 5 } } });
+  try {
+    const ref = await system.spawn(PLAYER, { id: 'racy', isolation: 'worker' });
+    await ref.ask({ type: 'hurt', damage: 30 });
+    assert.strictEqual((await ref.state()).hp, 70);
+
+    await assert.rejects(() => ref.ask({ type: 'boom' }), /worker boom/);
+
+    // 关键：崩溃后**不做任何等待**立刻读状态。重启窗口内既没有 instance 也没有
+    // delegate，旧实现会静默返回 undefined（调用方以为这个 Actor 没有状态）。
+    // 正确行为是等新 incarnation 就位，并返回它的干净状态。
+    const fresh = await ref.state();
+    assert.notStrictEqual(fresh, undefined, 'state() must wait for the new incarnation instead of returning undefined');
+    assert.strictEqual(fresh.hp, 100, 'the new incarnation starts fresh');
+    assert.strictEqual(await ref.ask({ type: 'hurt', damage: 1 }), 99, 'and it is usable');
+  } finally {
+    await system.stop();
+  }
+});
+
 test('worker isolation: a non-cloneable reply is reported, not silently lost', async () => {
   const system = createSystem({ logger: false, defaults: { supervision: { maxRestarts: 5 } } });
   try {

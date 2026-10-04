@@ -102,6 +102,13 @@ class ActorCell {
     this.bucket = limit ? new TokenBucket(limit.capacity, limit.rate) : null;
     /** Trace context of the message being handled (tracing plugin). */
     this.currentTrace = null;
+    /**
+     * 崩溃/重启窗口内既没有 `instance` 也没有 `delegate`。此时若有外部调用
+     * 读取状态（`ref.state()`、`saveSnapshot()`），旧行为是静默返回
+     * `undefined`——调用方会以为"这个 Actor 没有状态"，甚至把空状态写进快照。
+     * 这里改成等新 incarnation 就位（有界），而不是装作没有状态。
+     */
+    this._incarnationWaiters = [];
     this.context = new ActorContext(this);
     this.instance = null;
     this.started = false;
@@ -165,6 +172,7 @@ class ActorCell {
       await this.instance.postRecover(this.context);
     }
     this.started = true;
+    this._markIncarnation();
   }
 
   /**
@@ -186,6 +194,7 @@ class ActorCell {
     await delegate.start({ snapshot });
     this.delegate = delegate;
     this.started = true;
+    this._markIncarnation();
   }
 
   async _restore() {
@@ -213,6 +222,34 @@ class ActorCell {
       this.counters.recovered += records.length;
       if (records.length > 0) this.system.scheduler.schedule(this);
     }
+  }
+
+  /** 是否有可用的 incarnation（内联实例或 worker 代理）。 */
+  get _hasIncarnation() {
+    return Boolean(this.instance || this.delegate);
+  }
+
+  _markIncarnation() {
+    const waiters = this._incarnationWaiters.splice(0);
+    for (const w of waiters) w();
+  }
+
+  /** 等新 incarnation 就位；已就位或已停止则立即返回。有界，避免永久挂起。 */
+  _awaitIncarnation(timeoutMs = this.system.shutdownTimeoutMs || 5000) {
+    if (this._hasIncarnation || this.stopped) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const idx = this._incarnationWaiters.indexOf(waiter);
+        if (idx >= 0) this._incarnationWaiters.splice(idx, 1);
+        resolve(); // 超时后由调用方按"当前确实没有状态"处理
+      }, timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      const waiter = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this._incarnationWaiters.push(waiter);
+    });
   }
 
   /** preRestart + postStop for the current incarnation (idempotent). */
@@ -578,6 +615,7 @@ class ActorCell {
     const wasStopped = this.stopped;
     this.stopped = true;
     this.started = false;
+    this._markIncarnation(); // 叫醒等待者：已停止，别等下去了
     // _rejectPending() drains the mailbox: clearing it first would silently
     // drop queued messages whose callers are still awaiting a reply.
     this._rejectPending();
@@ -667,6 +705,8 @@ class ActorCell {
    * protocol for isolated ones. Always a clone, never the live object.
    */
   async fetchState() {
+    // 重启窗口内先等新 incarnation，别把"暂时没有"当成"没有状态"。
+    if (!this._hasIncarnation && !this.stopped) await this._awaitIncarnation();
     if (this.delegate) return this.delegate.getState();
     if (!this.instance) return undefined;
     const state = this.instance.state;
