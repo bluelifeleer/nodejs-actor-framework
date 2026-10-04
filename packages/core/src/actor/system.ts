@@ -1,29 +1,15 @@
-import { createRequire } from 'node:module';
+'use strict';
 
-// 动态加载（循环依赖 / 可选依赖 / 按路径加载用户模块）保留 require 语义。
-const require = createRequire(import.meta.url);
-
-
-
-
-
-
-
-
-
-
-
-
-import EventEmitter from 'node:events';
-import config from '../config.ts';
-import { InlineScheduler } from './scheduler.mts';
-import { ActorCell } from './actor-cell.mts';
-import { ChildSupervisor } from './guardian.mts';
-import { defineActor } from './actor.mts';
-import { FilePersistence, MemoryPersistence } from '../store/persistence.ts';
-import { Peer, createServerGateway, RemoteRef } from '../cluster/remote.ts';
-import { ActorNotFoundError, ActorStoppedError, EscalationError } from './errors.mts';
-import RestartStrategy from './restart-strategy.mts';
+const EventEmitter = require('events');
+const config = require('../config.ts');
+const InlineScheduler = require('./scheduler.ts');
+const ActorCell = require('./actor-cell.ts');
+const ChildSupervisor = require('./guardian.ts');
+const { defineActor } = require('./actor.ts');
+const { FilePersistence, MemoryPersistence } = require('../store/persistence.ts');
+const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote.ts');
+const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors.ts');
+const RestartStrategy = require('./restart-strategy.ts');
 
 const DEFAULT_ACTOR_OPTIONS = {
   mailbox: { maxSize: 1000, overflow: 'reject' },
@@ -525,10 +511,4 @@ function createSystem(options = {}) {
   return new ActorSystem(options);
 }
 
-
-export { ActorSystem, createSystem, DEFAULT_ACTOR_OPTIONS };
-export default {
-  ActorSystem,
-  createSystem,
-  DEFAULT_ACTOR_OPTIONS,
-};
+module.exports = { ActorSystem, createSystem, DEFAULT_ACTOR_OPTIONS };

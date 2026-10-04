@@ -1,9 +1,13 @@
+'use strict';
+
 /**
  * Token bucket used for per-actor rate limiting.
  *
  * `msUntil()` lets the caller wait for exactly as long as needed instead of
  * busy-polling, and messages are never re-queued just to be throttled later,
  * so priority/FIFO order inside a mailbox is preserved.
+ *
+ * 迁移期写法见 restart-strategy.ts（CJS + `export type` + `module.exports`）。
  */
 export interface TokenBucketLike {
   readonly capacity: number;
@@ -13,7 +17,7 @@ export interface TokenBucketLike {
   msUntil(count?: number, now?: number): number;
 }
 
-export class TokenBucket implements TokenBucketLike {
+class TokenBucket implements TokenBucketLike {
   readonly capacity: number;
   readonly ratePerSec: number;
   tokens: number;
@@ -60,4 +64,5 @@ export class TokenBucket implements TokenBucketLike {
   }
 }
 
-export default TokenBucket;
+module.exports = TokenBucket;
+module.exports.TokenBucket = TokenBucket;

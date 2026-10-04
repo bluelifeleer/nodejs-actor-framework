@@ -2,7 +2,7 @@
 
 const config = require('../config.ts');
 const Gateway = require('./gateway.ts');
-const { ActorStoppedError, ActorNotFoundError } = require('../actor/errors.mts');
+const { ActorStoppedError, ActorNotFoundError } = require('../actor/errors.ts');
 
 /**
  * Location transparency: a remote actor is used exactly like a local one.

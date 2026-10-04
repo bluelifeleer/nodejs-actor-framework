@@ -4,7 +4,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const { fileName } = require('./backends/naming.ts');
-const { PersistenceError } = require('../actor/errors.mts');
+const { PersistenceError } = require('../actor/errors.ts');
 
 /**
  * Persistence adapters for actor state and events.

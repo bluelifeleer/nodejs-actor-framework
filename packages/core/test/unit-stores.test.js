@@ -10,7 +10,7 @@ const tempDir = setupTempEnv('actor-stores');
 
 const { FileStore } = require('../src/store/backends/file-store.ts');
 const { MemoryStore } = require('../src/store/backends/memory-store.ts');
-const { LevelStore, isAvailable: levelAvailable } = require('../src/store/backends/level-store.mts');
+const { LevelStore, isAvailable: levelAvailable } = require('../src/store/backends/level-store.ts');
 const { createStore, validateStoreConfig, BACKENDS } = require('../src/store/backends/index.ts');
 const { MessageStore } = require('../src/store/message-store.ts');
 const { fileName } = require('../src/store/backends/naming.ts');

@@ -325,35 +325,6 @@ ActorNotFoundError, PersistenceError, EscalationError
 **当前状态**：`packages/core` 仍为 CJS，全量 281/281、严格 typecheck 0 错误；codemod 与本文档
 一并入库（`tools/codemods/`），下一轮可直接从第 1 步继续。
 
-
-### 9.9 改用增量路线：逐文件重写为 `.mts`，不再做整体转换
-
-前几轮试图一次性把 core 切成 ESM（翻转包级 `"type": "module"`）连续失败，根因是这个
-翻转会同时影响 `src/**`、`test/**`、`fixtures/**` 五条链路，必须原子完成、无法分批验证。
-
-**改用增量路线（已落地首批）**：把单个文件**重写为 `.mts`**（ESM TS），其余文件保持 CJS `.ts`。
-Node 允许同一包内混用（`.mts`=ESM、`.ts` 随包类型=CJS），且双向互操作都成立：
-
-- ESM(`.mts`) → import CJS(`.ts`) ✓
-- CJS(`.ts`) → `require()` ESM(`.mts`) ✓（Node ≥22.12，无 top-level await；本包满足）
-
-于是**不需要翻转 `type`、不需要原子批次**，每次只动一个文件 + 它的引用方，逐次验证。
-
-**已转换（首批，281/281 通过、严格 typecheck 0 错误）**：
-
-| 文件 | 形态 | 引用方改动 |
-|---|---|---|
-| `actor/restart-strategy.mts` | 具名导出常量 + default | 4 处 `require(...ts)` → `.mts`（具名导出让 CJS 侧直接拿到同名属性） |
-| `actor/token-bucket.mts` | `export class` + default | 调用方由 `const TokenBucket = require(...)` 改为 `const { TokenBucket } = require(...)` |
-
-**约定（后续逐文件沿用）**：
-
-1. 新文件用 `.mts`；**具名导出**为主，default 作为兼容；
-2. 引用方把说明符改成显式 `.mts`；类/函数的取值方式改成解构（`const { X } = require(...)`）；
-3. 每转一个文件立刻跑全量 + 严格 typecheck（本轮 281/281、0 错误）；
-4. 全部转完后，包入口用 `index.cjs`（`module.exports = require('./src/index.mts')`）供 CJS 消费者，
-   `exports` 映射 import→`index.mts` / require→`index.cjs`；此时**依然不需要构建**。
-
 ## 10. 本节待确认
 
 | # | 事项 | 建议 |

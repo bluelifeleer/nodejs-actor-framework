@@ -1,27 +1,14 @@
-import { createRequire } from 'node:module';
+'use strict';
 
-// 动态加载（循环依赖 / 可选依赖 / 按路径加载用户模块）保留 require 语义。
-const require = createRequire(import.meta.url);
-
-
-
-
-
-
-
-
-
-
-
-import { Mailbox } from './mailbox.mts';
-import { TokenBucket } from './token-bucket.mts';
-import { ChildSupervisor } from './guardian.mts';
-import { ActorContext } from './actor-context.mts';
-import { ActorRef } from './actor-ref.mts';
-import { defineActor } from './actor.mts';
-import { resolvePersistence } from '../store/persistence.ts';
-import { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } from './errors.mts';
-import RestartStrategy from './restart-strategy.mts';
+const Mailbox = require('./mailbox.ts');
+const TokenBucket = require('./token-bucket.ts');
+const ChildSupervisor = require('./guardian.ts');
+const ActorContext = require('./actor-context.ts');
+const { ActorRef } = require('./actor-ref.ts');
+const { defineActor } = require('./actor.ts');
+const { resolvePersistence } = require('../store/persistence.ts');
+const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
+const RestartStrategy = require('./restart-strategy.ts');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -771,6 +758,4 @@ class ActorCell {
   }
 }
 
-
-export { ActorCell };
-export default ActorCell;
+module.exports = ActorCell;

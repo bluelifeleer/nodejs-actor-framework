@@ -13,7 +13,7 @@
  */
 
 const { parentPort } = require('worker_threads');
-const { defineActor } = require('../actor/actor.mts');
+const { defineActor } = require('../actor/actor.ts');
 
 let instance = null;
 let currentSender = null;

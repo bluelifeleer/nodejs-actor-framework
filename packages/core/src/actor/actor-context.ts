@@ -1,6 +1,6 @@
+'use strict';
 
-
-import { ActorStoppedError } from './errors.mts';
+const { ActorStoppedError } = require('./errors.ts');
 
 /**
  * The `ctx` object passed to every actor hook and to `receive`.
@@ -122,7 +122,5 @@ function resolveTarget(cell, target) {
   throw new ActorStoppedError(`no actor registered as "${target}"`);
 }
 
-
-
-export { resolveTarget, ActorContext };
-export default ActorContext;
+module.exports = ActorContext;
+module.exports.resolveTarget = resolveTarget;

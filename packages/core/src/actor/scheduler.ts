@@ -1,6 +1,6 @@
+'use strict';
 
-
-import config from '../config.ts';
+const config = require('../config.ts');
 
 /**
  * Fair scheduler for in-process actors.
@@ -111,8 +111,5 @@ class InlineScheduler {
   }
 }
 
-
-
-export { InlineScheduler };
-export const defaultMessagesPerTurn = config.actor ? 16 : 16;
-export default InlineScheduler;
+module.exports = InlineScheduler;
+module.exports.defaultMessagesPerTurn = config.actor ? 16 : 16;

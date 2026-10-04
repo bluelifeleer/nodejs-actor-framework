@@ -1,19 +1,10 @@
-import { createRequire } from 'node:module';
+'use strict';
 
-// 动态加载（循环依赖 / 可选依赖 / 按路径加载用户模块）保留 require 语义。
-const require = createRequire(import.meta.url);
-
-
-
-
-
-
-
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
-import config from '../../config.ts';
-import { fileName } from './naming.ts';
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const config = require('../../config.ts');
+const { fileName } = require('./naming.ts');
 
 /**
  * LevelDB backend (optional).
@@ -251,8 +242,6 @@ class LevelStore {
   }
 }
 
-
-
-
-export { LevelStore, isAvailable };
-export default Object.assign(LevelStore, { LevelStore: LevelStore, isAvailable: isAvailable });
+module.exports = LevelStore;
+module.exports.LevelStore = LevelStore;
+module.exports.isAvailable = isAvailable;

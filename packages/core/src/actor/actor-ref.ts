@@ -1,6 +1,6 @@
+'use strict';
 
-
-import { ActorStoppedError } from './errors.mts';
+const { ActorStoppedError } = require('./errors.ts');
 
 /**
  * A handle to an actor.
@@ -108,9 +108,4 @@ class DeadLetterRef {
   }
 }
 
-
-export { ActorRef, DeadLetterRef };
-export default {
-  ActorRef,
-  DeadLetterRef,
-};
+module.exports = { ActorRef, DeadLetterRef };
