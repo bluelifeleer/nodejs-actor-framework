@@ -1,4 +1,5 @@
-'use strict';
+import { Actor } from 'nodejs-actor-framework';
+import workerThreads from 'node:worker_threads';
 
 /**
  * Example actor module for `isolation: 'worker'`.
@@ -7,9 +8,9 @@
  * thread without an eval), so isolated actors live in their own files.
  */
 
-const { Actor } = require('nodejs-actor-framework');
 
-module.exports = class Encoder extends Actor {
+
+export default class Encoder extends Actor {
   preStart() {
     this.state = { jobs: 0, lastInput: null };
   }
@@ -25,7 +26,7 @@ module.exports = class Encoder extends Actor {
         return Buffer.from(String(msg.text), 'utf8').toString('base64');
       }
       case 'stats':
-        return { ...this.state, threadId: require('worker_threads').threadId, path: ctx.path };
+        return { ...this.state, threadId: workerThreads.threadId, path: ctx.path };
       default:
         throw new Error(`encoder: unknown message "${msg.type}"`);
     }

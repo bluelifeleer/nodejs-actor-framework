@@ -1,4 +1,11 @@
-'use strict';
+import { test, before, after } from 'node:test';
+import assert from 'node:assert';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, telnet, telnetRaw } = _helpers;
+import _actor_main from '../actor-main.js';
+const { bootstrap } = _actor_main;
+import _telnet_console from '../packages/core/src/ops/telnet-console.js';
+const { TelnetConsole } = _telnet_console;
 
 /**
  * Console-level integration against the framework node.
@@ -8,14 +15,14 @@
  * `ask`, `state`, `stats`, `readDeadLetters`, pubsub, cluster).
  */
 
-const { test, before, after } = require('node:test');
-const assert = require('node:assert');
-const { setupTempEnv, cleanup, telnet, telnetRaw } = require('../packages/core/test/helpers');
+
+
+
 
 const tempDir = setupTempEnv('actor-console');
 
-const { bootstrap } = require('../actor-main');
-const { TelnetConsole } = require('../packages/core/src/ops/telnet-console');
+
+
 
 let ctx;
 let bareCtx;

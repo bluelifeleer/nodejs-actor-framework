@@ -1,4 +1,12 @@
-'use strict';
+import path from 'node:path';
+import { createSystem, plugins } from 'nodejs-actor-framework';
+import _token from '../packages/core/src/ops/token.js';
+const { TokenAuthority } = _token;
+import _access_node from './access-node.js';
+const { startAccessNode, roomFor } = _access_node;
+import _game_server from './game-server.js';
+const { Room } = _game_server;
+import fs from 'node:fs';
 
 /**
  * 多节点房间分片演示：2 个 Actor 节点 + 1 个接入层（WSS + token 鉴权）。
@@ -21,17 +29,17 @@
  * "room-2 在 game-2 的 host:gatewayPort"，接入层的 `ctx.ask('room-2', …)` 就能命中远端。
  */
 
-const path = require('path');
-const { createSystem, plugins } = require('nodejs-actor-framework');
-const { TokenAuthority } = require('../packages/core/src/ops/token');
-const { startAccessNode, roomFor } = require('./access-node');
-const { Room } = require('./game-server');
+
+
+
+
+
 
 const NODES = Number(process.env.NODES || 2);
 const ROOM_COUNT = Number(process.env.ROOM_COUNT || 4);
 const SECRET = process.env.ACTOR_AUTH_SECRET || 'dev-secret-change-me-please-32chars';
-const TLS_CERT = process.env.CERT || path.join(__dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'node-1.crt');
-const TLS_KEY = process.env.KEY || path.join(__dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'node-1.key');
+const TLS_CERT = process.env.CERT || path.join(import.meta.dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'node-1.crt');
+const TLS_KEY = process.env.KEY || path.join(import.meta.dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'node-1.key');
 const USE_TLS = process.env.WSS_TLS !== '0'; // 默认开 WSS（把 WSS_TLS=0 关掉）
 
 async function main() {
@@ -104,7 +112,7 @@ async function main() {
   console.log(`access-1: 网关 ${accessSystem.port}（房间要把推送发到这里）`);
 
   const tls = USE_TLS
-    ? { key: require('fs').readFileSync(TLS_KEY), cert: require('fs').readFileSync(TLS_CERT) }
+    ? { key: fs.readFileSync(TLS_KEY), cert: fs.readFileSync(TLS_CERT) }
     : null;
   const access = await startAccessNode({
     system: accessSystem,
@@ -124,7 +132,7 @@ async function main() {
     const owner = nodes.find((n) => n.owned.includes(room));
     console.log(`  ${playerId} → ${room}（在 ${owner ? owner.name : '?'} 上）  token=${tokens.issue({ playerId }).token}`);
   }
-  const caHint = access.secure ? `CA=${path.join(__dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'ca.crt')} ` : '';
+  const caHint = access.secure ? `CA=${path.join(import.meta.dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'ca.crt')} ` : '';
   console.log(`\n客户端示例（默认校验证书；示例证书是自签的，所以要带上 CA）：`);
   console.log(`  ${caHint}node examples/ws-client.js ${url} <上面的 token>`);
   console.log(`  或本地偷懒：node examples/ws-client.js ${url} <token> --insecure`);
@@ -155,11 +163,12 @@ async function main() {
   }
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main().catch((err) => {
     console.error('集群启动失败:', err);
     process.exit(1);
   });
 }
 
-module.exports = { main };
+export { main };
+export default { main };

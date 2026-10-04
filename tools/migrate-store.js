@@ -1,4 +1,10 @@
-'use strict';
+import fs from 'node:fs';
+import fsp from 'fs/promises';
+import path from 'node:path';
+import _file_store from '../packages/core/src/store/backends/file-store.js';
+const { FileStore } = _file_store;
+import _level_store from '../packages/core/src/store/backends/level-store.js';
+const { LevelStore, isAvailable } = _level_store;
 
 /**
  * Migrate persisted actor state between store backends (file -> level today).
@@ -16,12 +22,12 @@
  *   node tools/migrate-store.js --data ./data [--actor id]... [--purge] [--dry-run] [--json]
  */
 
-const fs = require('fs');
-const fsp = require('fs/promises');
-const path = require('path');
 
-const { FileStore } = require('../packages/core/src/store/backends/file-store');
-const { LevelStore, isAvailable } = require('../packages/core/src/store/backends/level-store');
+
+
+
+
+
 
 function parseArgs(argv) {
   const options = { dataDir: null, actors: [], purge: false, dryRun: false, json: false, levelPath: null };
@@ -218,10 +224,11 @@ async function main(argv) {
   }
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
 }
 
-module.exports = { migrate, parseArgs, inferActorsFromFiles, main, HELP };
+export { migrate, parseArgs, inferActorsFromFiles, main, HELP };
+export default { migrate, parseArgs, inferActorsFromFiles, main, HELP };

@@ -1,4 +1,5 @@
-'use strict';
+import net from 'node:net';
+import { Actor, createSystem, plugins, ActorNotFoundError } from 'nodejs-actor-framework';
 
 /**
  * 一个可运行的游戏服务器骨架 —— 「拿到框架之后该怎么写第一个游戏服」。
@@ -45,8 +46,8 @@
  *   chat {"text":"gg"}             top {"n":3}       room {}      quit
  */
 
-const net = require('net');
-const { Actor, createSystem, plugins, ActorNotFoundError } = require('nodejs-actor-framework');
+
+
 
 const PORT = Number(process.env.PORT === undefined ? 7777 : process.env.PORT);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -448,11 +449,12 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal));
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main().catch((err) => {
     console.error('启动失败:', err);
     process.exit(1);
   });
 }
 
-module.exports = { Player, Room, makeSession, main };
+export { Player, Room, makeSession, main };
+export default { Player, Room, makeSession, main };

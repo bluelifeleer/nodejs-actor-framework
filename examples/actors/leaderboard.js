@@ -1,4 +1,5 @@
-'use strict';
+import { Actor } from 'nodejs-actor-framework';
+import workerThreads from 'node:worker_threads';
 
 /**
  * worker 隔离的排行榜 Actor（示例）。
@@ -10,9 +11,9 @@
  * 自旋 200ms 也不会卡住主线程上的房间/玩家 Actor。
  */
 
-const { Actor } = require('nodejs-actor-framework');
 
-module.exports = class Leaderboard extends Actor {
+
+export default class Leaderboard extends Actor {
   preStart() {
     this.state = { queries: 0, lastTop: [] };
   }
@@ -31,7 +32,7 @@ module.exports = class Leaderboard extends Actor {
         return ranked;
       }
       case 'stats':
-        return { ...this.state, threadId: require('worker_threads').threadId, path: ctx.path };
+        return { ...this.state, threadId: workerThreads.threadId, path: ctx.path };
       default:
         throw new Error(`leaderboard: unknown message "${msg.type}"`);
     }

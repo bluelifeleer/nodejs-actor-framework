@@ -1,24 +1,31 @@
-'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
-const http = require('http');
-const path = require('path');
-const { setupTempEnv, cleanup, waitFor, delay } = require('../packages/core/test/helpers');
 
-const tempDir = setupTempEnv('actor-plugins');
 
-const {
-  createSystem,
+
+
+
+import { test } from 'node:test';
+import assert from 'node:assert';
+import http from 'node:http';
+import path from 'node:path';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, waitFor, delay } = _helpers;
+import _pkg from 'nodejs-actor-framework';
+const { createSystem,
   plugins,
   cluster,
   pubsub,
   metrics: metricsPlugin,
   tracing,
   deadLetters,
-  rateLimit,
-} = require('nodejs-actor-framework');
-const { DeadLetterQueue } = require('../packages/core/src/store/dead-letter-queue');
+  rateLimit, } = _pkg;
+import _dead_letter_queue from '../packages/core/src/store/dead-letter-queue.js';
+const { DeadLetterQueue } = _dead_letter_queue;
+
+const tempDir = setupTempEnv('actor-plugins');
+
+
+
 
 test.after(() => cleanup(tempDir));
 

@@ -1,4 +1,5 @@
-'use strict';
+import net from 'node:net';
+import readline from 'node:readline';
 
 /**
  * 极简游戏客户端（示例）—— 用来验证 examples/game-server.js。
@@ -10,8 +11,8 @@
  * 真实的客户端（Unity/浏览器）做的是同一件事，只是用 WebSocket/QUIC 承载。
  */
 
-const net = require('net');
-const readline = require('readline');
+
+
 
 const port = Number(process.argv[2] || 7777);
 const host = process.env.HOST || '127.0.0.1';

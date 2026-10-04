@@ -1,19 +1,26 @@
-'use strict';
+import { test } from 'node:test';
+import assert from 'node:assert';
+import net from 'node:net';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, waitFor, delay } = _helpers;
+import fs from 'node:fs';
 
 /**
  * The runnable game-server example is part of the documentation, so it gets
  * tested like code: real child processes, real TCP clients, real restart.
  */
 
-const { test } = require('node:test');
-const assert = require('node:assert');
-const net = require('net');
-const path = require('path');
-const { spawn } = require('child_process');
-const { setupTempEnv, cleanup, waitFor, delay } = require('../packages/core/test/helpers');
+
+
+
+
+
+
 
 const tempDir = setupTempEnv('actor-game-example');
-const SERVER = path.join(__dirname, '..', 'examples', 'game-server.js');
+const SERVER = path.join(import.meta.dirname, '..', 'examples', 'game-server.js');
 
 test.after(() => cleanup(tempDir));
 
@@ -218,7 +225,6 @@ test('example game server: SIGTERM shuts down gracefully and snapshots the roste
   assert.match(log, /已安全退出/);
 
   await delay(20);
-  const fs = require('fs');
   const snapshots = fs.readdirSync(path.join(dataDir, 'snapshots'));
   assert.ok(snapshots.some((f) => f.includes('room-1')), `roster snapshot written, got ${snapshots.join(',')}`);
   assert.ok(snapshots.some((f) => f.includes('bob')), `player snapshot written, got ${snapshots.join(',')}`);

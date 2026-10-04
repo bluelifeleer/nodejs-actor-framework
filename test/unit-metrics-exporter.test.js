@@ -1,15 +1,25 @@
-'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
-const http = require('http');
-const { setupTempEnv, cleanup, waitFor } = require('../packages/core/test/helpers');
+
+
+
+
+import { test } from 'node:test';
+import assert from 'node:assert';
+import http from 'node:http';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, waitFor } = _helpers;
+import MetricsExporter from '../packages/core/src/obs/metrics-exporter.js';
+import _metrics_exporter from '../packages/core/src/obs/metrics-exporter.js';
+const { renderFamilies, escapeLabelValue, formatValue } = _metrics_exporter;
+import _metrics from '../packages/core/src/obs/metrics.js';
+const { Metrics } = _metrics;
+import _actor_main from '../actor-main.js';
 
 const tempDir = setupTempEnv('actor-metrics');
 
-const MetricsExporter = require('../packages/core/src/obs/metrics-exporter');
-const { renderFamilies, escapeLabelValue, formatValue } = require('../packages/core/src/obs/metrics-exporter');
-const { Metrics } = require('../packages/core/src/obs/metrics');
+
+
+
 
 test.after(() => cleanup(tempDir));
 
@@ -195,7 +205,7 @@ test('exporter: label values are escaped and non-finite numbers are sanitised', 
 });
 
 test('integration: bootstrap exposes a working endpoint', async () => {
-  const { bootstrap } = require('../actor-main');
+  const { bootstrap } = _actor_main;
   const ctx = await bootstrap({
     nodeId: 'metrics-node',
     telnet: { enabled: false },
@@ -225,7 +235,7 @@ test('integration: bootstrap exposes a working endpoint', async () => {
 });
 
 test('integration: a busy metrics port degrades to a warning, not a crash', async () => {
-  const { bootstrap } = require('../actor-main');
+  const { bootstrap } = _actor_main;
   const first = await bootstrap({
     nodeId: 'm1',
     telnet: { enabled: false },

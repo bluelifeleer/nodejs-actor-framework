@@ -1,4 +1,10 @@
-'use strict';
+import { test, before, after } from 'node:test';
+import assert from 'node:assert';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, waitFor } = _helpers;
+import _actor_main from '../actor-main.js';
+const { bootstrap, describe } = _actor_main;
+import { AskTimeoutError, ActorStoppedError } from 'nodejs-actor-framework';
 
 /**
  * Node-level integration: the demo node is now *composition* (system + plugins),
@@ -6,14 +12,14 @@
  * test/unit-actor-*.test.js).
  */
 
-const { test, before, after } = require('node:test');
-const assert = require('node:assert');
-const { setupTempEnv, cleanup, waitFor } = require('../packages/core/test/helpers');
+
+
+
 
 const tempDir = setupTempEnv('actor-node');
 
-const { bootstrap, describe } = require('../actor-main');
-const { AskTimeoutError, ActorStoppedError } = require('nodejs-actor-framework');
+
+
 
 const WORKER_PLAYER = './packages/core/test/fixtures/actors/worker-player.js';
 

@@ -1,4 +1,16 @@
-'use strict';
+import { test } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import _helpers from '../packages/core/test/helpers.js';
+const { setupTempEnv, cleanup, waitFor } = _helpers;
+import _ws_server from '../packages/core/src/ops/ws-server.js';
+const { connect } = _ws_server;
+import _token from '../packages/core/src/ops/token.js';
+const { TokenAuthority } = _token;
+import _access_node from '../examples/access-node.js';
+const { roomFor } = _access_node;
 
 /**
  * 接入层 + 集群分片的端到端测试：真子进程、真 WSS、真 token 校验、真跨节点路由。
@@ -11,19 +23,19 @@
  *   - 明文绑定非回环地址会被拒绝（安全默认）。
  */
 
-const { test } = require('node:test');
-const assert = require('node:assert');
-const fs = require('fs');
-const path = require('path');
-const { spawn } = require('child_process');
-const { setupTempEnv, cleanup, waitFor } = require('../packages/core/test/helpers');
-const { connect } = require('../packages/core/src/ops/ws-server');
-const { TokenAuthority } = require('../packages/core/src/ops/token');
-const { roomFor } = require('../examples/access-node');
+
+
+
+
+
+
+
+
+
 
 const tempDir = setupTempEnv('actor-cluster-access');
-const LAUNCHER = path.join(__dirname, '..', 'examples', 'game-cluster.js');
-const CA = path.join(__dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'ca.crt');
+const LAUNCHER = path.join(import.meta.dirname, '..', 'examples', 'game-cluster.js');
+const CA = path.join(import.meta.dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'ca.crt');
 const SECRET = 'integration-secret-long-enough';
 
 test.after(() => cleanup(tempDir));
@@ -207,7 +219,7 @@ test('cluster+access: an actor that is not on any node is reported, not hung', a
 });
 
 test('access layer: plaintext on a non-loopback host is refused', () => {
-  const { startAccessNode } = require('../examples/access-node');
+  const { startAccessNode } = _access_node;
   const tokens = new TokenAuthority({ secret: 'refusal-test-secret-long-enough' });
   const fakeSystem = { emit() {}, spawn() {}, resolve: () => null };
   assert.rejects(

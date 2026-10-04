@@ -1,4 +1,10 @@
-'use strict';
+import config from './packages/core/src/config.js';
+import logger from './packages/core/src/obs/logger.js';
+import msgStore from './packages/core/src/store/message-store.js';
+import { createSystem, plugins, Actor } from 'nodejs-actor-framework';
+import TelnetConsole from './packages/core/src/ops/telnet-console.js';
+import _message_store from './packages/core/src/store/message-store.js';
+const { validateStoreConfig } = _message_store;
 
 /**
  * Demo / ops node, built on the framework.
@@ -15,12 +21,12 @@
  *   ACTOR_TLS_*, ACTOR_STORE_*, ACTOR_BOOT_ACTORS, ACTOR_PERSISTENCE_MODE
  */
 
-const config = require('./packages/core/src/config');
-const logger = require('./packages/core/src/obs/logger');
-const msgStore = require('./packages/core/src/store/message-store');
-const { createSystem, plugins, Actor } = require('nodejs-actor-framework');
-const TelnetConsole = require('./packages/core/src/ops/telnet-console');
-const { validateStoreConfig } = require('./packages/core/src/store/message-store');
+
+
+
+
+
+
 
 /**
  * Built-in demo actor, so the documented console commands work out of the box.
@@ -294,12 +300,13 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal));
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main().catch((err) => {
     console.error('bootstrap failed:', err);
     process.exit(1);
   });
 }
 
-module.exports = { bootstrap, main, DemoActor, buildPlugins, actorDefaults, describe };
-module.exports.DemoActor = DemoActor;
+export { bootstrap, main, DemoActor, buildPlugins, actorDefaults, describe };
+export default { bootstrap, main, DemoActor, buildPlugins, actorDefaults, describe };
+

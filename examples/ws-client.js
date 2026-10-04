@@ -1,4 +1,8 @@
-'use strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline';
+import _ws_server from '../packages/core/src/ops/ws-server.js';
+const { connect } = _ws_server;
 
 /**
  * WebSocket 客户端（对应 examples/access-node.js 与 examples/game-cluster.js）。
@@ -9,10 +13,10 @@
  * playerId 不在消息里传：服务器从 token 里取。客户端只发命令。
  */
 
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
-const { connect } = require('../packages/core/src/ops/ws-server');
+
+
+
+
 
 const url = process.argv[2];
 const token = process.argv[3];

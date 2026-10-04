@@ -1,4 +1,5 @@
-'use strict';
+import http from 'node:http';
+import { Actor, createSystem, plugins } from 'nodejs-actor-framework';
 
 /**
  * Example: a two-node cluster using the plugin surface.
@@ -17,8 +18,8 @@
  * other machine.
  */
 
-const http = require('http');
-const { Actor, createSystem, plugins } = require('nodejs-actor-framework');
+
+
 
 class Counter extends Actor {
   preStart() {

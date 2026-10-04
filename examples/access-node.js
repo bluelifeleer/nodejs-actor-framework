@@ -1,4 +1,11 @@
-'use strict';
+import path from 'node:path';
+import config from '../packages/core/src/config.js';
+import { createSystem, plugins, ActorNotFoundError } from 'nodejs-actor-framework';
+import _ws_server from '../packages/core/src/ops/ws-server.js';
+const { WebSocketServer } = _ws_server;
+import _token from '../packages/core/src/ops/token.js';
+const { TokenAuthority, tokenFromRequest } = _token;
+import fs from 'node:fs';
 
 /**
  * 接入层（access node）：浏览器/手机客户端唯一需要认识的东西。
@@ -16,11 +23,11 @@
  * 为什么 playerId 必须来自 token：如果让客户端在消息里带 playerId，任何人都能操作别人的角色。
  */
 
-const path = require('path');
-const config = require('../packages/core/src/config');
-const { createSystem, plugins, ActorNotFoundError } = require('nodejs-actor-framework');
-const { WebSocketServer } = require('../packages/core/src/ops/ws-server');
-const { TokenAuthority, tokenFromRequest } = require('../packages/core/src/ops/token');
+
+
+
+
+
 
 const ROOM_PREFIX = process.env.ROOM_PREFIX || 'room';
 const ROOM_COUNT = Number(process.env.ROOM_COUNT || 2);
@@ -211,8 +218,8 @@ async function main() {
 
   const tls = process.env.WSS_TLS
     ? {
-      key: require('fs').readFileSync(process.env.KEY || path.join(config.root, 'certs', 'server.key')),
-      cert: require('fs').readFileSync(process.env.CERT || path.join(config.root, 'certs', 'server.crt')),
+      key: fs.readFileSync(process.env.KEY || path.join(config.root, 'certs', 'server.key')),
+      cert: fs.readFileSync(process.env.CERT || path.join(config.root, 'certs', 'server.crt')),
     }
     : null;
 
@@ -251,11 +258,12 @@ async function main() {
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, shutdown);
 }
 
-if (require.main === module) {
+if (process.argv[1] === import.meta.filename) {
   main().catch((err) => {
     console.error('接入层启动失败:', err.message);
     process.exit(1);
   });
 }
 
-module.exports = { startAccessNode, makeSession, roomFor };
+export { startAccessNode, makeSession, roomFor };
+export default { startAccessNode, makeSession, roomFor };
