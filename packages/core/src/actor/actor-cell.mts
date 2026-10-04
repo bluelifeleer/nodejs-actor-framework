@@ -1,14 +1,27 @@
-'use strict';
+import { createRequire } from 'node:module';
 
-const { Mailbox } = require('./mailbox.mts');
-const { TokenBucket } = require('./token-bucket.mts');
-const { ChildSupervisor } = require('./guardian.mts');
-const { ActorContext } = require('./actor-context.mts');
-const { ActorRef } = require('./actor-ref.mts');
-const { defineActor } = require('./actor.mts');
-const { resolvePersistence } = require('../store/persistence.ts');
-const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.mts');
-const RestartStrategy = require('./restart-strategy.mts');
+// 动态加载（循环依赖 / 可选依赖 / 按路径加载用户模块）保留 require 语义。
+const require = createRequire(import.meta.url);
+
+
+
+
+
+
+
+
+
+
+
+import { Mailbox } from './mailbox.mts';
+import { TokenBucket } from './token-bucket.mts';
+import { ChildSupervisor } from './guardian.mts';
+import { ActorContext } from './actor-context.mts';
+import { ActorRef } from './actor-ref.mts';
+import { defineActor } from './actor.mts';
+import { resolvePersistence } from '../store/persistence.ts';
+import { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } from './errors.mts';
+import RestartStrategy from './restart-strategy.mts';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -758,4 +771,6 @@ class ActorCell {
   }
 }
 
-module.exports = ActorCell;
+
+export { ActorCell };
+export default ActorCell;

@@ -25,7 +25,7 @@
 
 const { Actor, defineActor, ActorDefinition } = require('./actor/actor.mts');
 const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.mts');
-const { ActorSystem, createSystem } = require('./actor/system.ts');
+const { ActorSystem, createSystem } = require('./actor/system.mts');
 const { RemoteRef, Peer } = require('./cluster/remote.ts');
 const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
 const { Mailbox } = require('./actor/mailbox.mts');
