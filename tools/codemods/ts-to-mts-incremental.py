@@ -103,7 +103,7 @@ def convert(path, text):
     def take(m):
         names, mod = m.group(1), m.group(2)
         braces = names.strip().startswith('{'); raw = ' '.join(names.strip().strip('{} ').split())
-        if braces: raw = re.sub(r'(\w+)\s*:\s*(\w+)', r'\2 as \1', raw)
+        if braces: raw = re.sub(r'(\w+)\s*:\s*(\w+)', r'\1 as \2', raw)
         if is_builtin(mod): spec = 'node:' + (mod[5:] if mod.startswith('node:') else mod)
         elif mod.startswith('.'):
             spec = resolve_rel(path, mod)
@@ -122,12 +122,14 @@ def convert(path, text):
     # ESM 没有 __dirname/__filename（漏掉会 ReferenceError: __dirname is not defined）
     s = re.sub(r'\b__dirname\b', 'import.meta.dirname', s)
     s = re.sub(r'\b__filename\b', 'import.meta.filename', s)
-    # 后置 pass：import 具名项里的 CJS 重命名写法 X: Y 在 ESM 里必须写成 Y as X。
+    # 后置 pass：CJS 解构 `const { exported: local } = require(...)` 对应 ESM 的
+    # `import { exported as local }` —— 注意顺序：导出名在前、本地名在后（写反会报
+    # does not provide an export named '<local>'）。
     # 放在最后做，覆盖所有生成路径（实测漏掉会报
     # "does not provide an export named 'levelAvailable'"）。
     def fix_import_renames(t):
         def fix(m):
-            body = re.sub(r'(\w+)\s*:\s*(\w+)', r'\2 as \1', m.group(1))
+            body = re.sub(r'(\w+)\s*:\s*(\w+)', r'\1 as \2', m.group(1))
             return 'import {' + ' '.join(body.split()) + '}'
         return re.sub(r'import\s*\{([^}]*)\}', fix, t)
     s = fix_import_renames(s)
