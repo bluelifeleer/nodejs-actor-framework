@@ -18,3 +18,36 @@
    （`Buffer.alloc(0)` 里的 `)`），必须区分声明点与调用点，并且每步立刻编译。
 3. **具名导出去重**：`module.exports = { X }` 与 `module.exports.X = X` 同时存在时，
    两者都会变成 `export { X }` → `SyntaxError: Duplicate export`。
+
+## 第三轮对账结果（仍未落地，供下一轮从"说明符对账"继续）
+
+已修好的规则（`cjs-to-esm-core.py` 内已实现，且脚本自带两项对账输出）：
+
+1. **内置子路径模块**：用 `module.builtinModules` 判定，`timers/promises`、`assert/strict`、
+   `fs/promises` 等一律写成 `node:<子路径>`（此前会被当成普通包）。
+2. **扩展名按目标文件实际存在性决定**：`src/*.ts` 之间补 `.ts`，`test/*.js` 之间补 `.js`，
+   不能按"导入方后缀"推断。
+3. **具名导出去重**：`module.exports = { X }` + `module.exports.X = X` 只输出一次 `export { X }`。
+4. **解构重命名**：`const { a: b } = require(...)` 在 ESM 里必须写成 `import { b as a }`。
+
+dry-run 现在的对账输出（这两项必须为 0 / 全部覆盖才算通过）：
+
+```
+改写 67/67 个文件
+  解析失败的说明符: 0            ← 必须为 0
+  残留 require/module.exports: 13 ← 这些是动态加载，必须有 createRequire 前导（脚本已加）
+```
+
+**仍未通过的两类签名**（下一轮先在这里对账，不要再直接跑全套）：
+
+- `ERR_UNKNOWN_BUILTIN_MODULE`（39 个）——说明符里仍有非法的 `node:` 前缀，
+  需要把 `src/**` + `test/**` 里所有 `import ... from '...'` 的说明符**逐条打印出来核对**；
+- `ERR_MODULE_NOT_FOUND`（30 个）——相对说明符仍指向不存在的文件（很可能是
+  `test/**` 引 `../src/index.ts` 之类跨目录、或目录 index 的情况）。
+
+排查办法（比跑全套快得多）：应用 codemod 后**先不翻转 type**，逐条打印说明符对账：
+
+```bash
+grep -rhoE "from '[^']+'" packages/core/src packages/core/test | sort -u
+# 再逐个 require.resolve / 检查文件是否存在
+```
