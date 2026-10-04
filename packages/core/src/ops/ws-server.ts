@@ -108,7 +108,7 @@ class WebSocketConnection extends EventEmitter {
     return this._frame(OPCODE.PING, Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)));
   }
 
-  pong(payload = Buffer.alloc(0)) {
+  pong(payload: Buffer<ArrayBufferLike> = Buffer.alloc(0)): boolean {
     return this._frame(OPCODE.PONG, Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)));
   }
 
@@ -179,11 +179,11 @@ class WebSocketConnection extends EventEmitter {
     const buf = this._buffer;
     if (buf.length < 2) return null;
 
-    const fin = (buf[0] & 0x80) !== 0;
-    const rsv = buf[0] & 0x70;
-    const opcode = buf[0] & 0x0f;
-    const masked = (buf[1] & 0x80) !== 0;
-    let length = buf[1] & 0x7f;
+    const fin = (buf.readUInt8(0) & 0x80) !== 0;
+    const rsv = buf.readUInt8(0) & 0x70;
+    const opcode = buf.readUInt8(0) & 0x0f;
+    const masked = (buf.readUInt8(1) & 0x80) !== 0;
+    let length = buf.readUInt8(1) & 0x7f;
     let offset = 2;
 
     if (rsv !== 0) {
@@ -220,14 +220,14 @@ class WebSocketConnection extends EventEmitter {
     const mask = buf.subarray(offset, offset + 4);
     offset += 4;
     const payload = Buffer.allocUnsafe(length);
-    for (let i = 0; i < length; i += 1) payload[i] = buf[offset + i] ^ mask[i & 3];
+    for (let i = 0; i < length; i += 1) payload[i] = buf.readUInt8(offset + i) ^ mask.readUInt8(i & 3);
     offset += length;
 
     this._buffer = buf.subarray(offset);
     return { fin, opcode, payload };
   }
 
-  _handleFrame({ fin, opcode, payload }) {
+  _handleFrame({ fin, opcode, payload }: { fin: boolean; opcode: number; payload: Buffer }) {
     switch (opcode) {
       case OPCODE.PING:
         this.pong(payload);
@@ -280,12 +280,12 @@ class WebSocketConnection extends EventEmitter {
     }
   }
 
-  _fail(code, reason) {
+  _fail(code: number, reason: string) {
     this.emit('protocolError', new Error(`websocket protocol error: ${reason}`));
     this.close(code, reason.slice(0, 120));
   }
 
-  _teardown(code, { reason = '', silent = false } = {}) {
+  _teardown(code: number, { reason = '', silent = false }: { reason?: string; silent?: boolean } = {}) {
     if (this.closed) return;
     this.closed = true;
     this.readyState = 'closed';
@@ -342,7 +342,7 @@ class WebSocketServer extends EventEmitter {
     });
   }
 
-  async _onUpgrade(req, socket, head) {
+  async _onUpgrade(req: any, socket: any, head: Buffer) {
     const fail = (status: number, message: string) => {
       socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
@@ -397,13 +397,13 @@ class WebSocketServer extends EventEmitter {
     for (const connection of [...this.connections]) connection.destroy();
     this.connections.clear();
     if (this.server) {
-      await new Promise((resolve) => this.server.close(() => resolve()));
+      await new Promise<void>((resolve) => this.server.close(() => resolve()));
       this.server = null;
     }
   }
 }
 
-function acceptKey(key) {
+function acceptKey(key: string): string {
   return crypto.createHash('sha1').update(key + GUID).digest('base64');
 }
 
@@ -413,7 +413,14 @@ function clientKey() {
 }
 
 /** Minimal client-side handshake, so examples/tests need no `ws` dependency either. */
-function connect(url, { timeoutMs = 5000, headers = {}, tls = {} } = {}) {
+function connect(
+  url: string,
+  {
+    timeoutMs = 5000,
+    headers = {},
+    tls = {},
+  }: { timeoutMs?: number; headers?: Record<string, string>; tls?: Record<string, unknown> } = {},
+) {
   return new Promise((resolve, reject) => {
     let parsed;
     try {
@@ -441,7 +448,7 @@ function connect(url, { timeoutMs = 5000, headers = {}, tls = {} } = {}) {
     if (typeof timer.unref === 'function') timer.unref();
 
     let buffer = Buffer.alloc(0);
-    const onData = (chunk) => {
+    const onData = (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       const end = buffer.indexOf('\r\n\r\n');
       if (end < 0) {
@@ -473,7 +480,7 @@ function connect(url, { timeoutMs = 5000, headers = {}, tls = {} } = {}) {
       return undefined;
     };
     socket.on('data', onData);
-    socket.once('error', (err) => {
+    socket.once('error', (err: Error) => {
       clearTimeout(timer);
       reject(err);
     });
@@ -508,7 +515,7 @@ function connect(url, { timeoutMs = 5000, headers = {}, tls = {} } = {}) {
  * frames and accepts unmasked ones — the mirror image of WebSocketConnection.
  */
 class ClientConnection extends EventEmitter {
-  constructor(socket, options = {}) {
+  constructor(socket: any, options: ConnectionOptions = {}) {
     super();
     this.socket = socket;
     this.closed = false;
@@ -544,7 +551,7 @@ class ClientConnection extends EventEmitter {
   }
 
   /** Emit immediately when someone is listening, otherwise queue it. */
-  _deliver(data, isBinary) {
+  _deliver(data: unknown, isBinary: boolean) {
     if (this.listenerCount('message') > 0) this.emit('message', data, isBinary);
     else this._inbox.push({ data, isBinary });
   }
@@ -599,7 +606,7 @@ class ClientConnection extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket message')), timeoutMs);
-      this.once('message', (data, isBinary) => {
+      this.once('message', (data: unknown, isBinary: boolean) => {
         clearTimeout(timer);
         resolve({ data, isBinary });
       });
@@ -611,7 +618,7 @@ class ClientConnection extends EventEmitter {
     if (this._pingInbox.length > 0) return Promise.resolve(this._pingInbox.shift());
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket ping')), timeoutMs);
-      this.once('ping', (payload) => {
+      this.once('ping', (payload: Buffer) => {
         clearTimeout(timer);
         resolve(payload);
       });
@@ -623,7 +630,7 @@ class ClientConnection extends EventEmitter {
     if (this._pongInbox.length > 0) return Promise.resolve(this._pongInbox.shift());
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket pong')), timeoutMs);
-      this.once('pong', (payload) => {
+      this.once('pong', (payload: Buffer) => {
         clearTimeout(timer);
         resolve(payload);
       });
@@ -649,7 +656,7 @@ class ClientConnection extends EventEmitter {
     header[0] = 0x80 | opcode;
     const mask = crypto.randomBytes(4);
     const masked = Buffer.allocUnsafe(length);
-    for (let i = 0; i < length; i += 1) masked[i] = payload[i] ^ mask[i & 3];
+    for (let i = 0; i < length; i += 1) masked[i] = payload.readUInt8(i) ^ mask.readUInt8(i & 3);
     this.socket.write(Buffer.concat([header, mask, masked]));
     return true;
   }
@@ -689,7 +696,7 @@ class ClientConnection extends EventEmitter {
     return { fin, opcode, payload };
   }
 
-  _handleFrame({ fin, opcode, payload }) {
+  _handleFrame({ fin, opcode, payload }: { fin: boolean; opcode: number; payload: Buffer }) {
     switch (opcode) {
       case OPCODE.PING:
         this._frame(OPCODE.PONG, payload);

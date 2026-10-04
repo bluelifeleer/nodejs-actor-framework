@@ -279,19 +279,16 @@ ActorNotFoundError, PersistenceError, EscalationError
 **类型债务（诚实记录）**：45 个文件原本是 JS，转到 `.ts` 后就进入类型检查视野，而它们几乎
 没有类型标注，当前 `strict` 下 **1982 个错误**、放宽后 **1239 个**。因此：
 
-- **当前没有任何严格类型门**（如实说明）：core 的实现文件是 `.ts` 但没有类型标注，而声明文件
-  会通过 `'./token'` 这类导入把实现拉进严格程序——以前实现是 `.js`（`checkJs:false`）所以不报错，
-  现在是 `.ts` 就必然被检查。因此：
-  - `npm run typecheck` → 迁移期检查器（`strict:false`，**信息性**，不阻断构建），当前暴露 **1239** 处待补标注；
-   - `npm run typecheck:strict` → 严格检查器，**当前是红的：34 个错误，全部集中在 `ops/ws-server.ts`**
-    （94 → 34 的进度来自给 `ops/token.ts` 补齐类型：33 → 0）。剩余形态很规整：
-    17 处回调参数注解、6 处解构标注、8 处空值收窄（`_fragment`/`playerId` 的联合类型）、1 处 Promise 泛型；
-  - 类型补齐的正确做法（已验证）：把同名 `.d.ts` 里的类型**搬进 `.ts` 实现**
-    （`TokenAuthorityOptions`/`IssuedToken`/`VerifiedToken`、`WebSocketServerOptions`/`ConnectionOptions`），
-    再把多余的 `.d.ts` 删掉——将来由构建产出声明，不再手写；
-  - 现阶段唯一的门是**全量测试**（281/281）。
-- 收口路线：逐文件补类型标注 → 该文件从迁移检查器挪回严格检查 → 1239 归零时把
-  `typecheck` 切回严格检查器，并把 `test/types/**` 与 `src/**/*.ts` 一起纳入。
+- **严格类型门已恢复并真的通过**：`npm run typecheck`（严格）→ 0 错误 ✅。
+  它当前覆盖"声明面（`.d.ts`）+ 声明文件引用到的实现"，也就是 `ops/token.ts`、`ops/ws-server.ts`
+  （这两个文件已补齐类型：33 → 0、61 → 0）。
+- 仍未纳入严格门的：`packages/core/src/**/*.ts` 的其余文件与 `test/types/**`。
+  实测把 `test/types/**` 收回后会通过 `obs/alerting.ts` 等再拉进约 71 个错误——这就是**下一批类型债**，
+  清单与数字是逐文件收口的进度指标：
+  - `npm run typecheck:migration`（宽松，信息性）暴露全部剩余债务；
+  - 做法已验证：把同名 `.d.ts` 的类型搬进 `.ts` 实现，再删掉多余的 `.d.ts`（将来由构建产出声明）。
+- 现已清零的文件：`ops/token.ts`、`ops/ws-server.ts`（后者含 Buffer 索引读改 `readUInt8`、
+  解构类型、`Promise<void>` 泛型等真实改进，不只是让编译闭嘴）。
 
 **下一步**：把 core 切成 ESM 语法（`module.exports` → `export`、`require` → `import`，6 个文件保留
 `createRequire`：`actor-cell`/`system`（循环依赖）、`level-store`（可选依赖）、`telnet-console`/`worker-host`
