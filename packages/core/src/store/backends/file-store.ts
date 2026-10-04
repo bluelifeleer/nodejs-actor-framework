@@ -4,10 +4,10 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
-const config = require('../../config');
-const { crc32 } = require('./crc32');
-const { fileName, legacyFileName } = require('./naming');
-const { Manifest } = require('./manifest');
+const config = require('../../config.ts');
+const { crc32 } = require('./crc32.ts');
+const { fileName, legacyFileName } = require('./naming.ts');
+const { Manifest } = require('./manifest.ts');
 
 /**
  * Default, dependency-free persistence backend: an append-only log per actor.

@@ -23,16 +23,16 @@
  * may change between minor versions.
  */
 
-const { Actor, defineActor, ActorDefinition } = require('./actor/actor');
-const { ActorRef, DeadLetterRef } = require('./actor/actor-ref');
-const { ActorSystem, createSystem } = require('./actor/system');
-const { RemoteRef, Peer } = require('./cluster/remote');
-const { MemoryPersistence, FilePersistence } = require('./store/persistence');
-const Mailbox = require('./actor/mailbox');
-const ChildSupervisor = require('./actor/guardian');
-const errors = require('./actor/errors');
+const { Actor, defineActor, ActorDefinition } = require('./actor/actor.ts');
+const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.ts');
+const { ActorSystem, createSystem } = require('./actor/system.ts');
+const { RemoteRef, Peer } = require('./cluster/remote.ts');
+const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
+const Mailbox = require('./actor/mailbox.ts');
+const ChildSupervisor = require('./actor/guardian.ts');
+const errors = require('./actor/errors.ts');
 const RestartStrategy = require('./actor/restart-strategy.ts');
-const plugins = require('./plugins');
+const plugins = require('./plugins/index.ts');
 
 module.exports = {
   // programming model

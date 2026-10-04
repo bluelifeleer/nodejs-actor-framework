@@ -1,6 +1,6 @@
 'use strict';
 
-const { Actor } = require('../../../src/index.js');
+const { Actor } = require('../../../src/index.ts');
 
 module.exports = class WorkerChild extends Actor {
   async receive(msg) {

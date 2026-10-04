@@ -1,7 +1,7 @@
 'use strict';
 
-const { Metrics } = require('../obs/metrics');
-const MetricsExporter = require('../obs/metrics-exporter');
+const { Metrics } = require('../obs/metrics.ts');
+const MetricsExporter = require('../obs/metrics-exporter.ts');
 
 /**
  * Metrics plugin: folds actor counters into the existing metrics store, and

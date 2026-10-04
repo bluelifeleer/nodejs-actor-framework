@@ -6,7 +6,7 @@ const { setupTempEnv, cleanup } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-codec');
 
-const { Gateway, encodeFrame, FrameDecoder, CODEC, codecFromName } = require('../src/cluster/gateway');
+const { Gateway, encodeFrame, FrameDecoder, CODEC, codecFromName } = require('../src/cluster/gateway.ts');
 
 test.after(() => cleanup(tempDir));
 

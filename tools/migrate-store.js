@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import fsp from 'fs/promises';
 import path from 'node:path';
-import _file_store from '../packages/core/src/store/backends/file-store.js';
+import _file_store from '../packages/core/src/store/backends/file-store.ts';
 const { FileStore } = _file_store;
-import _level_store from '../packages/core/src/store/backends/level-store.js';
+import _level_store from '../packages/core/src/store/backends/level-store.ts';
 const { LevelStore, isAvailable } = _level_store;
 
 /**

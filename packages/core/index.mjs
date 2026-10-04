@@ -6,7 +6,7 @@
  * 于是 `import { ActorStoppedError } from 'nodejs-actor-framework'` 会直接报错，
  * 而 `require` 一切正常——只有 ESM 用户踩坑。显式列出是唯一可靠的方式。
  */
-import cjs from './src/index.js';
+import cjs from './src/index.ts';
 
 export default cjs;
 

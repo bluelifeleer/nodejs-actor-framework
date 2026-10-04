@@ -9,7 +9,7 @@ const { setupTempEnv, cleanup, waitFor } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-isolation');
 
-const { createSystem } = require('../src/index.js');
+const { createSystem } = require('../src/index.ts');
 
 test.after(() => cleanup(tempDir));
 

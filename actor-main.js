@@ -1,9 +1,9 @@
-import config from './packages/core/src/config.js';
-import logger from './packages/core/src/obs/logger.js';
-import msgStore from './packages/core/src/store/message-store.js';
+import config from './packages/core/src/config.ts';
+import logger from './packages/core/src/obs/logger.ts';
+import msgStore from './packages/core/src/store/message-store.ts';
 import { createSystem, plugins, Actor } from 'nodejs-actor-framework';
-import TelnetConsole from './packages/core/src/ops/telnet-console.js';
-import _message_store from './packages/core/src/store/message-store.js';
+import TelnetConsole from './packages/core/src/ops/telnet-console.ts';
+import _message_store from './packages/core/src/store/message-store.ts';
 const { validateStoreConfig } = _message_store;
 
 /**

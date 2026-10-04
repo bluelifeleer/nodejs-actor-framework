@@ -3,8 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const config = require('../../config');
-const { fileName } = require('./naming');
+const config = require('../../config.ts');
+const { fileName } = require('./naming.ts');
 
 /**
  * LevelDB backend (optional).

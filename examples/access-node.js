@@ -1,9 +1,9 @@
 import path from 'node:path';
-import config from '../packages/core/src/config.js';
+import config from '../packages/core/src/config.ts';
 import { createSystem, plugins, ActorNotFoundError } from 'nodejs-actor-framework';
-import _ws_server from '../packages/core/src/ops/ws-server.js';
+import _ws_server from '../packages/core/src/ops/ws-server.ts';
 const { WebSocketServer } = _ws_server;
-import _token from '../packages/core/src/ops/token.js';
+import _token from '../packages/core/src/ops/token.ts';
 const { TokenAuthority, tokenFromRequest } = _token;
 import fs from 'node:fs';
 

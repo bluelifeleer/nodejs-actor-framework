@@ -8,9 +8,9 @@ const { setupTempEnv, cleanup, waitFor, delay } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-tls-rotation');
 
-const { Gateway } = require('../src/cluster/gateway');
-const Gossip = require('../src/cluster/gossip');
-const tlsUtil = require('../src/cluster/tls-util');
+const { Gateway } = require('../src/cluster/gateway.ts');
+const Gossip = require('../src/cluster/gossip.ts');
+const tlsUtil = require('../src/cluster/tls-util.ts');
 
 test.after(() => cleanup(tempDir));
 

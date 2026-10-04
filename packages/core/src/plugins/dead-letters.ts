@@ -1,7 +1,7 @@
 'use strict';
 
-const defaultQueue = require('../store/dead-letter-queue');
-const { DeadLetterQueue } = require('../store/dead-letter-queue');
+const defaultQueue = require('../store/dead-letter-queue.ts');
+const { DeadLetterQueue } = require('../store/dead-letter-queue.ts');
 
 /**
  * Durable dead letters.

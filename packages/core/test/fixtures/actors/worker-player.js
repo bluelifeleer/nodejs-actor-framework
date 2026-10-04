@@ -1,7 +1,7 @@
 'use strict';
 
 // Fixture for isolation tests: an actor designed to run in its own worker thread.
-const { Actor } = require('../../../src/index.js');
+const { Actor } = require('../../../src/index.ts');
 
 module.exports = class WorkerPlayer extends Actor {
   preStart() {

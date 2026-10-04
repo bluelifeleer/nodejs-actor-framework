@@ -1,6 +1,6 @@
 'use strict';
 
-const { ActorStoppedError } = require('./errors');
+const { ActorStoppedError } = require('./errors.ts');
 
 /**
  * The `ctx` object passed to every actor hook and to `receive`.

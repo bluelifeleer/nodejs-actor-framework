@@ -14,7 +14,7 @@ const {
   consoleNotifier,
   webhookNotifier,
   defaultGameRules,
-} = require('../src/obs/alerting');
+} = require('../src/obs/alerting.ts');
 
 const EXPOSITION = `# HELP actor_mailbox_depth_total Messages queued across all actors.
 # TYPE actor_mailbox_depth_total gauge

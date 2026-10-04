@@ -1,13 +1,13 @@
 'use strict';
 
-const Mailbox = require('./mailbox');
+const Mailbox = require('./mailbox.ts');
 const TokenBucket = require('./token-bucket.ts');
-const ChildSupervisor = require('./guardian');
-const ActorContext = require('./actor-context');
-const { ActorRef } = require('./actor-ref');
-const { defineActor } = require('./actor');
-const { resolvePersistence } = require('../store/persistence');
-const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors');
+const ChildSupervisor = require('./guardian.ts');
+const ActorContext = require('./actor-context.ts');
+const { ActorRef } = require('./actor-ref.ts');
+const { defineActor } = require('./actor.ts');
+const { resolvePersistence } = require('../store/persistence.ts');
+const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -180,7 +180,7 @@ class ActorCell {
    * the mailbox, supervision and persistence; only execution is delegated.
    */
   async _initWorker() {
-    const { WorkerDelegate } = require('../worker/worker-delegate');
+    const { WorkerDelegate } = require('../worker/worker-delegate.ts');
     let snapshot;
     if (this.persistence.mode === 'snapshot' && this.persistence.store) {
       snapshot = await this.persistence.store.loadSnapshot(this.path);
@@ -641,7 +641,7 @@ class ActorCell {
   async spawnChild(definition, options = {}) {
     if (this.stopped) throw new ActorStoppedError(`cannot spawn from stopped actor ${this.path}`);
     const defn = options.isolation === 'worker'
-      ? require('../worker/worker-delegate').defineWorkerActor(definition, options)
+      ? require('../worker/worker-delegate.ts').defineWorkerActor(definition, options)
       : defineActor(definition);
     const id = options.id ? String(options.id) : `${defn.name}-${this.system._nextChildSeq()}`;
     if (this.children.has(id)) throw new DefinitionError(`child "${id}" already exists under ${this.path}`);

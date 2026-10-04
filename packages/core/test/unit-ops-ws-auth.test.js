@@ -8,8 +8,8 @@ const { setupTempEnv, cleanup, waitFor } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-ops-ws');
 
-const { WebSocketServer, connect } = require('../src/ops/ws-server');
-const { TokenAuthority, tokenFromRequest } = require('../src/ops/token');
+const { WebSocketServer, connect } = require('../src/ops/ws-server.ts');
+const { TokenAuthority, tokenFromRequest } = require('../src/ops/token.ts');
 
 test.after(() => cleanup(tempDir));
 

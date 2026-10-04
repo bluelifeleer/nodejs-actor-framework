@@ -18,12 +18,12 @@
  *   });
  */
 
-const cluster = require('./cluster');
-const pubsub = require('./pubsub');
-const metrics = require('./metrics');
-const tracing = require('./tracing');
-const deadLetters = require('./dead-letters');
-const rateLimit = require('./rate-limit');
+const cluster = require('./cluster.ts');
+const pubsub = require('./pubsub.ts');
+const metrics = require('./metrics.ts');
+const tracing = require('./tracing.ts');
+const deadLetters = require('./dead-letters.ts');
+const rateLimit = require('./rate-limit.ts');
 
 module.exports = {
   cluster,

@@ -1,10 +1,10 @@
 'use strict';
 
 const EventEmitter = require('events');
-const config = require('../config');
-const tlsUtil = require('./tls-util');
-const proto = require('./proto');
-const { CODEC, codecFromName, createFraming } = require('./framing');
+const config = require('../config.ts');
+const tlsUtil = require('./tls-util.ts');
+const proto = require('./proto.ts');
+const { CODEC, codecFromName, createFraming } = require('./framing.ts');
 
 /**
  * Gossip cluster membership + registry replication.

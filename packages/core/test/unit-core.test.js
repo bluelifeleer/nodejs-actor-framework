@@ -8,14 +8,14 @@ const { setupTempEnv, cleanup } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-core');
 
-const config = require('../src/config');
-const { loadConfig, ensureDirs } = require('../src/config');
-const Trace = require('../src/obs/trace');
-const { MessageStore } = require('../src/store/message-store');
-const { DeadLetterQueue: DLQ } = require('../src/store/dead-letter-queue');
+const config = require('../src/config.ts');
+const { loadConfig, ensureDirs } = require('../src/config.ts');
+const Trace = require('../src/obs/trace.ts');
+const { MessageStore } = require('../src/store/message-store.ts');
+const { DeadLetterQueue: DLQ } = require('../src/store/dead-letter-queue.ts');
 const TokenBucket = require('../src/actor/token-bucket.ts');
-const metrics = require('../src/obs/metrics');
-const { Counters } = require('../src/obs/metrics');
+const metrics = require('../src/obs/metrics.ts');
+const { Counters } = require('../src/obs/metrics.ts');
 
 test.after(() => cleanup(tempDir));
 
@@ -152,7 +152,7 @@ test('token-bucket: never exceeds capacity after a long idle period', async () =
 });
 
 test('metrics: worker deltas are merged and averages derived', () => {
-  const Metrics = require('../src/obs/metrics').Metrics;
+  const Metrics = require('../src/obs/metrics.ts').Metrics;
   const m = new Metrics({ logDir: path.join(tempDir, 'metrics') });
   m.observe('a1', { received: 10, handled: 8, failed: 2, totalLatencyMs: 80, maxLatencyMs: 30 });
   m.observe('a1', { received: 5, handled: 2, totalLatencyMs: 20, maxLatencyMs: 12 });

@@ -2,9 +2,9 @@
 
 const path = require('path');
 const { Worker } = require('worker_threads');
-const config = require('../config');
-const { ActorDefinition } = require('../actor/actor');
-const { DefinitionError, ActorStoppedError } = require('../actor/errors');
+const config = require('../config.ts');
+const { ActorDefinition } = require('../actor/actor.ts');
+const { DefinitionError, ActorStoppedError } = require('../actor/errors.ts');
 
 /**
  * Main-thread side of worker isolation.
@@ -22,7 +22,7 @@ const { DefinitionError, ActorStoppedError } = require('../actor/errors');
  * stays on the owning ActorCell, so the two isolation modes share one model.
  */
 
-const HOST_PATH = path.join(__dirname, 'worker-host.js');
+const HOST_PATH = path.join(__dirname, 'worker-host.ts');
 
 /** Resolve an actor module path, refusing anything outside the project root. */
 function resolveActorModule(requested) {

@@ -14,10 +14,10 @@ import net from 'node:net';
 import tls from 'tls';
 import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, waitFor } = _helpers;
-import _gateway from '../packages/core/src/cluster/gateway.js';
+import _gateway from '../packages/core/src/cluster/gateway.ts';
 const { Gateway } = _gateway;
-import Gossip from '../packages/core/src/cluster/gossip.js';
-import _tls_util from '../packages/core/src/cluster/tls-util.js';
+import Gossip from '../packages/core/src/cluster/gossip.ts';
+import _tls_util from '../packages/core/src/cluster/tls-util.ts';
 import _actor_main from '../actor-main.js';
 
 const tempDir = setupTempEnv('actor-tls');

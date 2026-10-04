@@ -263,6 +263,31 @@ ActorNotFoundError, PersistenceError, EscalationError
 
 每一步沿用本次做法：**codemod + dry-run + 残留检查 + 全量回归**，任一时点保持绿。
 
+
+### 9.7 core 已全部转为 `.ts`（过渡期 CJS 语法）——转换完成，类型补齐待续
+
+**结果**：`packages/core/src` 45 个 `.js` → `.ts`（`git mv`，保留重命名历史），125 处 `require`、
+27 处 ESM `import` 说明符改为显式 `.ts`，`worker-host.js` 这类硬编码文件名、`index.mjs`、
+`package.json` 的 `main`/`exports` 一并更新。**全量 281/281 通过**。
+
+踩到的三个坑（都已修，供后续 codemod 参考）：
+
+1. 根侧已是 ESM，**`import ... from '...'` 也要重写**——只处理 `require()` 会漏 27 处；
+2. 扫描范围要含 `actor-main.js`、`examples/**`（它们也引用 core 内部路径）；
+3. 非 `require` 的**硬编码文件名**（`path.join(__dirname, 'worker-host.js')`）不会被正则覆盖。
+
+**类型债务（诚实记录）**：45 个文件原本是 JS，转到 `.ts` 后就进入类型检查视野，而它们几乎
+没有类型标注，当前 `strict` 下 **1982 个错误**、放宽后 **1239 个**。因此：
+
+- `npm run typecheck` 仍是**严格且必须通过**的（只含 `.d.ts` 与类型测试）；
+- 新增 `tsconfig.migration.json` + `npm run typecheck:migration`（`strict:false`）用于转换期"只抓语法与明显错误"，
+  它是**信息性**的，不当作门（否则常红无意义）；
+- 收口计划：逐文件补类型标注 → 把文件从迁移检查器挪回 strict 检查，债务数字（1239）作为进度指标。
+
+**下一步**：把 core 切成 ESM 语法（`module.exports` → `export`、`require` → `import`，6 个文件保留
+`createRequire`：`actor-cell`/`system`（循环依赖）、`level-store`（可选依赖）、`telnet-console`/`worker-host`
+（按路径加载）、`config`），再转包内 16 个测试文件，最后做双产物构建替换手写的 `index.mjs`。
+
 ## 10. 本节待确认
 
 | # | 事项 | 建议 |

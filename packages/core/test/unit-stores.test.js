@@ -8,12 +8,12 @@ const { setupTempEnv, cleanup } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-stores');
 
-const { FileStore } = require('../src/store/backends/file-store');
-const { MemoryStore } = require('../src/store/backends/memory-store');
-const { LevelStore, isAvailable: levelAvailable } = require('../src/store/backends/level-store');
-const { createStore, validateStoreConfig, BACKENDS } = require('../src/store/backends');
-const { MessageStore } = require('../src/store/message-store');
-const { fileName } = require('../src/store/backends/naming');
+const { FileStore } = require('../src/store/backends/file-store.ts');
+const { MemoryStore } = require('../src/store/backends/memory-store.ts');
+const { LevelStore, isAvailable: levelAvailable } = require('../src/store/backends/level-store.ts');
+const { createStore, validateStoreConfig, BACKENDS } = require('../src/store/backends/index.ts');
+const { MessageStore } = require('../src/store/message-store.ts');
+const { fileName } = require('../src/store/backends/naming.ts');
 
 test.after(() => cleanup(tempDir));
 
@@ -215,7 +215,7 @@ test('file store: acknowledgements are durable across a reopen', async () => {
 test('file store: legacy .jsonl files are migrated, not discarded', async () => {
   const baseDir = uniqueDir('file-legacy');
   fs.mkdirSync(baseDir, { recursive: true });
-  const { legacyFileName } = require('../src/store/backends/naming');
+  const { legacyFileName } = require('../src/store/backends/naming.ts');
   const legacy = path.join(baseDir, legacyFileName('legacy_actor'));
   fs.writeFileSync(
     legacy,
@@ -338,7 +338,7 @@ test('facade: delegates to an injected backend and reports its name', async () =
 });
 
 test('facade: the default singleton uses the configured backend', () => {
-  const store = require('../src/store/message-store');
+  const store = require('../src/store/message-store.ts');
   assert.ok(BACKENDS.includes(store.backendName));
-  assert.ok(store.pathFor('x').startsWith(require('../src/config').dataDir));
+  assert.ok(store.pathFor('x').startsWith(require('../src/config.ts').dataDir));
 });

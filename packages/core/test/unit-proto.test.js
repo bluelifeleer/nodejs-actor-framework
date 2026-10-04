@@ -14,8 +14,8 @@ const {
   encodeGatewayFrame,
   decodeGatewayFrame,
   GATEWAY_FRAME_SCHEMA,
-} = require('../src/cluster/proto');
-const { crc32 } = require('../src/store/backends/crc32');
+} = require('../src/cluster/proto.ts');
+const { crc32 } = require('../src/store/backends/crc32.ts');
 
 test.after(() => cleanup(tempDir));
 

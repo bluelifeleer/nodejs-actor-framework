@@ -8,8 +8,8 @@ const { setupTempEnv, cleanup, waitFor } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-fw-persist');
 
-const { createSystem, MemoryPersistence, FilePersistence, Actor } = require('../src/index.js');
-const { MessageStore } = require('../src/store/message-store');
+const { createSystem, MemoryPersistence, FilePersistence, Actor } = require('../src/index.ts');
+const { MessageStore } = require('../src/store/message-store.ts');
 
 test.after(() => cleanup(tempDir));
 

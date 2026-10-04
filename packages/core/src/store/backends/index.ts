@@ -1,11 +1,11 @@
 'use strict';
 
 const path = require('path');
-const config = require('../../config');
-const { FileStore } = require('./file-store');
-const { MemoryStore } = require('./memory-store');
-const { LevelStore, isAvailable: levelAvailable } = require('./level-store');
-const { fileName } = require('./naming');
+const config = require('../../config.ts');
+const { FileStore } = require('./file-store.ts');
+const { MemoryStore } = require('./memory-store.ts');
+const { LevelStore, isAvailable: levelAvailable } = require('./level-store.ts');
+const { fileName } = require('./naming.ts');
 
 const BACKENDS = ['file', 'memory', 'level'];
 

@@ -6,7 +6,7 @@ const { setupTempEnv, cleanup, waitFor, freePort } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-remote');
 
-const { createSystem, RemoteRef } = require('../src/index.js');
+const { createSystem, RemoteRef } = require('../src/index.ts');
 
 test.after(() => cleanup(tempDir));
 
@@ -102,7 +102,7 @@ test('remote: a handler failure is reported to the caller', async (t) => {
 });
 
 test('remote: the sender path and the trace survive the node boundary', async (t) => {
-  const tracing = require('../src/plugins/tracing');
+  const tracing = require('../src/plugins/tracing.ts');
   const server = createSystem({ logger: false, name: 'trace-a', plugins: [tracing()] });
   const client = createSystem({ logger: false, name: 'trace-b', plugins: [tracing()] });
   const port = await server.listen({ host: '127.0.0.1', port: 0 });

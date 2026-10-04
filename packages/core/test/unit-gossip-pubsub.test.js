@@ -6,7 +6,7 @@ const { setupTempEnv, cleanup, waitFor, freePort, delay } = require('./helpers')
 
 const tempDir = setupTempEnv('actor-gossip');
 
-const Gossip = require('../src/cluster/gossip');
+const Gossip = require('../src/cluster/gossip.ts');
 
 test.after(() => cleanup(tempDir));
 

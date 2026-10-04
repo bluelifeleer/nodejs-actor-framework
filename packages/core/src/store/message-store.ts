@@ -1,6 +1,6 @@
 'use strict';
 
-const { createStore, validateStoreConfig, pathForActor } = require('./backends');
+const { createStore, validateStoreConfig, pathForActor } = require('./backends/index.ts');
 
 /**
  * Persistence facade.

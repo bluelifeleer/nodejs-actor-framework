@@ -1,14 +1,14 @@
 'use strict';
 
 const EventEmitter = require('events');
-const config = require('../config');
-const InlineScheduler = require('./scheduler');
-const ActorCell = require('./actor-cell');
-const ChildSupervisor = require('./guardian');
-const { defineActor } = require('./actor');
-const { FilePersistence, MemoryPersistence } = require('../store/persistence');
-const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote');
-const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors');
+const config = require('../config.ts');
+const InlineScheduler = require('./scheduler.ts');
+const ActorCell = require('./actor-cell.ts');
+const ChildSupervisor = require('./guardian.ts');
+const { defineActor } = require('./actor.ts');
+const { FilePersistence, MemoryPersistence } = require('../store/persistence.ts');
+const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote.ts');
+const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
 const DEFAULT_ACTOR_OPTIONS = {
@@ -139,7 +139,7 @@ class ActorSystem extends EventEmitter {
     if (this.stopped) throw new ActorStoppedError('actor system is stopped');
     await this.init();
     const defn = options.isolation === 'worker'
-      ? require('../worker/worker-delegate').defineWorkerActor(definition, options)
+      ? require('../worker/worker-delegate.ts').defineWorkerActor(definition, options)
       : defineActor(definition);
     const id = options.id ? String(options.id) : `${defn.name}-${(this._seq += 1)}`;
     if (this.cells.has(id)) throw new ActorStoppedError(`actor "${id}" already exists`);

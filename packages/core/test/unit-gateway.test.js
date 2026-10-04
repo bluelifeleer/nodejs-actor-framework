@@ -6,7 +6,7 @@ const { setupTempEnv, cleanup, freePort } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-gw');
 
-const { Gateway, encodeFrame, FrameDecoder, CODEC } = require('../src/cluster/gateway');
+const { Gateway, encodeFrame, FrameDecoder, CODEC } = require('../src/cluster/gateway.ts');
 
 test.after(() => cleanup(tempDir));
 

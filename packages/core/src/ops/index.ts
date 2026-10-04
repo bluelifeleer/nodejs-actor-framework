@@ -5,8 +5,8 @@
  * Both modules are dependency-free and only loaded when you use them.
  */
 
-const ws = require('./ws-server');
-const token = require('./token');
+const ws = require('./ws-server.ts');
+const token = require('./token.ts');
 
 module.exports = {
   WebSocketServer: ws.WebSocketServer,

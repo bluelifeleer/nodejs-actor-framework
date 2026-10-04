@@ -1,6 +1,6 @@
 'use strict';
 
-const Trace = require('../obs/trace');
+const Trace = require('../obs/trace.ts');
 
 /**
  * Tracing plugin: gives every message a distributed-trace context and nests

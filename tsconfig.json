@@ -8,7 +8,6 @@
     "resolveJsonModule": true
   },
   "include": [
-    "packages/core/src/**/*.ts",
     "packages/core/src/**/*.d.ts",
     "test/types/**/*.ts", "test/types/**/*.mts"
   ]

@@ -1,0 +1,20 @@
+{
+  // 迁移期检查器：core 的 .ts 源码正在从 JS 迁入，尚未逐文件补齐类型标注。
+  // 这里放宽到"只抓语法与明显错误"（strict off、implicit any 允许），
+  // 目的是转换期间仍能挡住低级错误；每补齐一个文件的类型，就把它挪回
+  // tsconfig.json 的 strict 检查（见 docs/design/m0/01 §9.6 的收口计划）。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": false,
+    "checkJs": false,
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "types": ["node"]
+  },
+  "include": ["packages/core/src/**/*.ts"],
+  "exclude": ["packages/core/src/**/*.d.ts"]
+}

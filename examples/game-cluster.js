@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createSystem, plugins } from 'nodejs-actor-framework';
-import _token from '../packages/core/src/ops/token.js';
+import _token from '../packages/core/src/ops/token.ts';
 const { TokenAuthority } = _token;
 import _access_node from './access-node.js';
 const { startAccessNode, roomFor } = _access_node;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { ActorStoppedError } = require('./errors');
+const { ActorStoppedError } = require('./errors.ts');
 
 /**
  * A handle to an actor.

@@ -11,9 +11,10 @@
   },
   "scripts": {
     "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/core/test/*.test.js' 'test/*.test.js'",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.migration.json",
     "start": "node actor-main.js",
-    "gen-test-certs": "./scripts/gen-test-certs.sh"
+    "gen-test-certs": "./scripts/gen-test-certs.sh",
+    "typecheck:strict": "tsc -p tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

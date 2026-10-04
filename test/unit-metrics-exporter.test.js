@@ -8,10 +8,10 @@ import assert from 'node:assert';
 import http from 'node:http';
 import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, waitFor } = _helpers;
-import MetricsExporter from '../packages/core/src/obs/metrics-exporter.js';
-import _metrics_exporter from '../packages/core/src/obs/metrics-exporter.js';
+import MetricsExporter from '../packages/core/src/obs/metrics-exporter.ts';
+import _metrics_exporter from '../packages/core/src/obs/metrics-exporter.ts';
 const { renderFamilies, escapeLabelValue, formatValue } = _metrics_exporter;
-import _metrics from '../packages/core/src/obs/metrics.js';
+import _metrics from '../packages/core/src/obs/metrics.ts';
 const { Metrics } = _metrics;
 import _actor_main from '../actor-main.js';
 

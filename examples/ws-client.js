@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import _ws_server from '../packages/core/src/ops/ws-server.js';
+import _ws_server from '../packages/core/src/ops/ws-server.ts';
 const { connect } = _ws_server;
 
 /**

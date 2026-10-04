@@ -19,7 +19,7 @@ const { createSystem,
   tracing,
   deadLetters,
   rateLimit, } = _pkg;
-import _dead_letter_queue from '../packages/core/src/store/dead-letter-queue.js';
+import _dead_letter_queue from '../packages/core/src/store/dead-letter-queue.ts';
 const { DeadLetterQueue } = _dead_letter_queue;
 
 const tempDir = setupTempEnv('actor-plugins');

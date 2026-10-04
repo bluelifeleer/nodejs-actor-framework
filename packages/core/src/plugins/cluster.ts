@@ -1,8 +1,8 @@
 'use strict';
 
-const config = require('../config');
-const Gossip = require('../cluster/gossip');
-const { ActorStoppedError } = require('../actor/errors');
+const config = require('../config.ts');
+const Gossip = require('../cluster/gossip.ts');
+const { ActorStoppedError } = require('../actor/errors.ts');
 
 /**
  * Cluster plugin: gossip-based discovery so an actor can be reached by **name**

@@ -1,7 +1,7 @@
 'use strict';
 
 const http = require('http');
-const config = require('../config');
+const config = require('../config.ts');
 
 /**
  * Prometheus metrics endpoint.

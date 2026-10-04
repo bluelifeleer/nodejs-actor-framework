@@ -2,10 +2,10 @@
 
 const EventEmitter = require('events');
 const crypto = require('crypto');
-const config = require('../config');
-const proto = require('./proto');
-const tlsUtil = require('./tls-util');
-const { CODEC, CODEC_NAME, HEADER_BYTES, codecFromName, createFraming } = require('./framing');
+const config = require('../config.ts');
+const proto = require('./proto.ts');
+const tlsUtil = require('./tls-util.ts');
+const { CODEC, CODEC_NAME, HEADER_BYTES, codecFromName, createFraming } = require('./framing.ts');
 
 /**
  * Cross-node delivery gateway.

@@ -2,8 +2,8 @@
 
 const net = require('net');
 const crypto = require('crypto');
-const config = require('../config');
-const { resolveActorModule } = require('../worker/worker-delegate');
+const config = require('../config.ts');
+const { resolveActorModule } = require('../worker/worker-delegate.ts');
 
 // A path is one or more segments; "." and ".." are rejected below so a console
 // user cannot sneak a traversal-looking string past validation.

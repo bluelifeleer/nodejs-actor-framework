@@ -7,9 +7,9 @@ const { setupTempEnv, cleanup, waitFor } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-gossip-frame');
 
-const Gossip = require('../src/cluster/gossip');
-const proto = require('../src/cluster/proto');
-const { createFraming, CODEC, codecFromName } = require('../src/cluster/framing');
+const Gossip = require('../src/cluster/gossip.ts');
+const proto = require('../src/cluster/proto.ts');
+const { createFraming, CODEC, codecFromName } = require('../src/cluster/framing.ts');
 
 test.after(() => cleanup(tempDir));
 

@@ -6,7 +6,7 @@ const { setupTempEnv, cleanup, waitFor } = require('./helpers');
 
 const tempDir = setupTempEnv('actor-framework');
 
-const fw = require('../src/index.js');
+const fw = require('../src/index.ts');
 const { Actor, createSystem, defineActor, MemoryPersistence, FilePersistence, RestartStrategy } = fw;
 const {
   AskTimeoutError,

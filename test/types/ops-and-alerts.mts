@@ -10,7 +10,7 @@ import {
   type WebSocketConnection,
   type ClientConnection,
   type VerifiedToken,
-} from 'nodejs-actor-framework/src/ops/index.js';
+} from 'nodejs-actor-framework/src/ops/index.ts';
 import {
   AlertManager,
   parsePrometheusText,
@@ -19,7 +19,7 @@ import {
   defaultGameRules,
   type AlertEvent,
   type AlertStatus,
-} from 'nodejs-actor-framework/src/obs/alerting.js';
+} from 'nodejs-actor-framework/src/obs/alerting.ts';
 
 export async function accessLayer(): Promise<void> {
   // No Node type packages here on purpose: pass the secret directly.

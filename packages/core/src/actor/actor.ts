@@ -1,6 +1,6 @@
 'use strict';
 
-const { DefinitionError } = require('./errors');
+const { DefinitionError } = require('./errors.ts');
 
 /**
  * Base class for user actors.

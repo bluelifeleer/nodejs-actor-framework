@@ -4,7 +4,7 @@ import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, telnet, telnetRaw } = _helpers;
 import _actor_main from '../actor-main.js';
 const { bootstrap } = _actor_main;
-import _telnet_console from '../packages/core/src/ops/telnet-console.js';
+import _telnet_console from '../packages/core/src/ops/telnet-console.ts';
 const { TelnetConsole } = _telnet_console;
 
 /**
