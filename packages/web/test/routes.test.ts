@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { buildRouteTable, defineRoutes, get, matchRoute, normalizeMethod, parsePattern, post } from '../src/index.ts';
+import { buildRouteTable, defineRoutes, get, matchRoute, normalizeMethod, parsePattern, post, ws } from '../src/index.ts';
 
 const handler = async () => ({ ok: true });
 
@@ -133,4 +133,31 @@ test('routes: HEAD 回退到 GET（headOnly），OPTIONS 返回 204 + Allow 而�
 
   // 小写方法请求同样被归一化
   assert.strictEqual(matchRoute(routes, { method: 'get', url: '/rooms' }).kind, 'matched');
+});
+
+
+test('routes: WebSocket 路由（ws）复用同一套模式语法；HTTP 请求打到仅 WS 路径为 404', () => {
+  const handler2 = {}
+  const { routes, issues } = buildRouteTable([
+    ws('/chat/:room?token=', handler2 as never),
+    get('/chat', handler),
+  ]);
+  assert.deepStrictEqual(issues, []);
+
+  const wsRoute = routes.find((r) => r.method === 'WS');
+  assert.ok(wsRoute, '应存在 WS 路由');
+  assert.deepStrictEqual(wsRoute?.pathParams, ['room']);
+  assert.deepStrictEqual(wsRoute?.queryParams, ['token']);
+
+  // 同一路径同时有 WS 与 GET：HTTP 请求命中 GET；Allow 里不出现 WS
+  assert.strictEqual(matchRoute(routes, { method: 'GET', url: '/chat' }).kind, 'matched');
+  const wrong = matchRoute(routes, { method: 'DELETE', url: '/chat' });
+  assert.strictEqual(wrong.kind, 'method_not_allowed');
+  if (wrong.kind === 'method_not_allowed') assert.deepStrictEqual([...wrong.allow], ['GET']);
+
+  // 仅 WS 的路径：HTTP 请求 404（不是 405，因为 WS 不是 HTTP 方法）
+  assert.strictEqual(matchRoute(routes, { method: 'GET', url: '/chat/lobby' }).kind, 'not_found');
+  // 未知方法报错信息里也应列出 WS
+  const bad = buildRouteTable([['NOPE', '/x', handler] as never]);
+  assert.match(bad.issues[0]?.message ?? '', /WS/);
 });

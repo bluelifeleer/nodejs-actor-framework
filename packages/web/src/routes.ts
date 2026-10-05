@@ -11,13 +11,17 @@ export const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'O
 
 export type HttpMethod = (typeof HTTP_METHODS)[number];
 
+/** 路由方法 = HTTP 方法 + WS（WebSocket 路由复用同一套模式语法与启动期检查）。 */
+export const ROUTE_METHODS = [...HTTP_METHODS, 'WS'] as const;
+export type RouteMethod = (typeof ROUTE_METHODS)[number];
+
 /**
  * 方法归一化：用户可能写小写（JS 侧尤其容易），也可能写错。
  * 归一化后再存表，并在启动期对未知方法报错——否则会变成"路由永远打不中"的静默故障。
  */
-export function normalizeMethod(method: string): HttpMethod | null {
+export function normalizeMethod(method: string): RouteMethod | null {
   const upper = String(method).trim().toUpperCase();
-  return (HTTP_METHODS as readonly string[]).includes(upper) ? (upper as HttpMethod) : null;
+  return (ROUTE_METHODS as readonly string[]).includes(upper) ? (upper as RouteMethod) : null;
 }
 
 export interface RouteIssue {
@@ -35,7 +39,7 @@ export interface ControllerLike {
 }
 
 export interface Route {
-  readonly method: HttpMethod;
+  readonly method: RouteMethod;
   /** 原始模式，如 `/rooms/:id/players?limit=`。 */
   readonly pattern: string;
   /** 归一化后的路径（去掉查询声明），如 `/rooms/:id/players`。 */
@@ -52,7 +56,7 @@ function isControllerObject(value: unknown): value is ControllerLike {
 
 /** 解析一个模式串；返回 null 表示模式本身非法（启动时报错）。 */
 export function parsePattern(
-  method: HttpMethod | string,
+  method: RouteMethod | string,
   pattern: string,
   controller: Route['controller'],
 ): { route?: Route; issue?: RouteIssue } {
@@ -60,12 +64,12 @@ export function parsePattern(
   if (!normalized) {
     return {
       issue: {
-        message: `不支持的方法 '${String(method)}'（支持：${HTTP_METHODS.join(', ')}）`,
+        message: `不支持的方法 '${String(method)}'（支持：${ROUTE_METHODS.join(', ')}）`,
         route: pattern,
       },
     };
   }
-  const methodValue: HttpMethod = normalized;
+  const methodValue: RouteMethod = normalized;
   if (!pattern.startsWith('/')) {
     return { issue: { message: `路由必须以 / 开头：'${pattern}'`, route: pattern } };
   }
@@ -137,7 +141,7 @@ export function buildRouteTable(
     if (existing) {
       issues.push({
         message:
-          `路由重复：${method} ${route.path}（已由 ${existing.pattern} 注册；` +
+          `路由重复：${String(method)} ${route.path}（已由 ${existing.pattern} 注册；` +
           `查询声明不参与匹配，若要区分请求请把参数放进路径）`,
         route: pattern,
       });
@@ -206,10 +210,15 @@ export function matchRoute(routes: readonly Route[], input: MatchInput): MatchRe
     }
   }
   if (pathMatches.length > 0) {
-    const allow = [...new Set(pathMatches.map((candidate) => candidate.route.method))];
-    // OPTIONS 无专门路由时按标准返回 Allow（204），而不是 405
-    if (method === 'OPTIONS') return { kind: 'options', allow };
-    return { kind: 'method_not_allowed', allow };
+    // Allow 只列 HTTP 方法（WS 不是 HTTP 方法）；若该路径只有 WS 路由，对 HTTP 请求就是 404
+    const allow = [...new Set(pathMatches.map((candidate) => candidate.route.method))].filter(
+      (m): m is HttpMethod => m !== 'WS',
+    );
+    if (allow.length > 0) {
+      // OPTIONS 无专门路由时按标准返回 Allow（204），而不是 405
+      if (method === 'OPTIONS') return { kind: 'options', allow };
+      return { kind: 'method_not_allowed', allow };
+    }
   }
   return { kind: 'not_found' };
 }
@@ -221,6 +230,9 @@ export const patch = (pattern: string, controller: Route['controller']): readonl
 export const del = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['DELETE', pattern, controller];
 export const head = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['HEAD', pattern, controller];
 export const options = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['OPTIONS', pattern, controller];
+
+/** WebSocket 路由：与 HTTP 路由共用模式语法（路径参数 / 查询参数 / 启动期检查）。 */
+export const ws = (pattern: string, controller: Route['controller']): readonly [RouteMethod, string, Route['controller']] => ['WS', pattern, controller];
 
 /** 声明一组路由（在 `defineModule({ routes })` 里使用）。 */
 export function defineRoutes(

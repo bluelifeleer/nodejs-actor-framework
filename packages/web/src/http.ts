@@ -132,9 +132,10 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       bound = typeof addr === 'object' && addr !== null ? { host, port: addr.port } : null;
       console.log(`[@actor/web] http listening on ${host}:${String(bound?.port)}`);
     },
-    async onStopping() {
+    async onStopping(app: Application) {
       if (!server) return;
-      const timeoutMs = options.shutdownTimeoutMs ?? 5000;
+      const config = app.config;
+      const timeoutMs = options.shutdownTimeoutMs ?? config.get<number>('plugins.http.shutdownTimeoutMs');
       await new Promise<void>((resolve) => {
         const timer = setTimeout(() => {
           server?.closeAllConnections?.();

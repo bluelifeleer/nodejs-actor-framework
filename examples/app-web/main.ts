@@ -28,4 +28,4 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 
 await application.start();
 const address = http.address();
-console.log(`[main] listening on http://127.0.0.1:${String(address?.port)}`);
+console.log(`[main] listening on http://${String(address?.host)}:${String(address?.port)}`);

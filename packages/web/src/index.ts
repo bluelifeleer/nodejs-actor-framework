@@ -45,10 +45,13 @@ export {
   patch,
   post,
   put,
+  ROUTE_METHODS,
+  ws,
   type ControllerLike,
   type HttpMethod,
   type MatchInput,
   type MatchResult,
   type Route,
+  type RouteMethod,
   type RouteIssue,
 } from './routes.ts';
