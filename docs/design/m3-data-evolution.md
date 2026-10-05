@@ -16,7 +16,7 @@
 | **1** | **schema 演进地基**：事件信封 + upcast 注册表（读取期）+ 快照版本策略 + 内核 `evolution` 最小 hook | **v1 数据在 v3 代码下可读**（upcast 链单测 + 真实 Actor 重放集成测试）；旧原始 JSON **不改一行**即可读；快照版本不匹配时迁移或**拒启动**；内核不回归 | ✅ 已完成（§2/§4） |
 | **2** | **Aggregate**：命令→事件、`expectedVersion` 乐观并发、快照缓存 + 事件重放（含 offset） | 同一聚合被两个节点同时拥有时，旧 epoch 的写入被拒；崩溃重启后状态一致 | 🚧 **2a 完成**（§3）；2b/2c 待做 |
 | 3 | **Repository**：file / memory / SQL 薄适配 + **游标分页**（不用 offset） | 并发写入下游标分页不漏不重；外部 ORM 适配示例可跑 | — |
-| 4 | **迁移框架**：版本表 + 幂等 `up/down` + 启动校验 | 中途崩溃可重入；有未应用迁移时默认**拒绝启动** | — |
+| 4 | **迁移框架**：版本表 + 幂等 `up/down` + 启动校验 | 中途崩溃可重入；有未应用迁移时默认**拒绝启动** | ✅ 已完成（§8） |
 | 5 | **Outbox**：事件与 outbox 同批写入 + dispatcher + 至少一次投递 | 投递至少一次；消费方按 `eventId` 去重有测试；失败进死信、积压进指标 | — |
 | 6 | **投影**：订阅 / checkpoint / 去重 / 重建 | 从 0 重建**不丢不重**；离线重建 + 原子切换 | — |
 
@@ -524,3 +524,37 @@ const repo = createSqlRepository<Order>({
 
 > 反面例子（**别这么做**）：把 `Repository` 做成"隐藏 SQL 的魔法层"，或让框架去猜你的表结构。
 > doc 06 §3 把"自研 ORM / 查询构建器"列为不做的事，这里的每条设计都在守那条线。
+
+## 8. 第 4 步：迁移框架（已实现）
+
+三条纪律，实现都围绕它们（doc 04 §5）：
+
+| # | 纪律 | 落实方式 |
+|---|---|---|
+| 1 | **版本表是真相** | `MigrationStore`（memory / file / sql 三个适配器）记 `{version, status, description, at}`；SQL 版只建框架自己的账本表（`schema_migrations`），**业务 schema 仍然是你的事** |
+| 2 | **默认拒绝启动** | `assertApplied()` 在三种"结构不确定"下都抛错：① 有未应用迁移 → `MigrationPendingError`（列出 v 号）；② 上次执行中断 → `MigrationInterruptedError`；③ **数据里的版本比代码还新** → `MigrationVersionError`（"请先升级代码"，绝不降级跑） |
+| 3 | **幂等 + 可重入** | 每个迁移**先记 `started`、成功后再记 `completed`**。跑一半崩了，版本表里留的是 `started`——框架能**指出是哪一个**，`migrate()` 下次会重跑它（所以 `up()` 必须幂等）。有测试用"第一次必抛错"的迁移证明：v1 保持 completed、v2 留 started、重跑时 v2 再执行一次并继续 v3（调用序列 `[1,2,2,3]`） |
+
+```ts
+const runner = createMigrationRunner({
+  store: createFileMigrationStore({ dir: './data' }),      // 或 memory / sql
+  migrations: [
+    { version: 7, description: 'order events gain currency',
+      async up({ store, log }) { /* 幂等 */ },
+      async down({ store }) { /* 能回滚就写 */ } },
+  ],
+  log: (message, meta) => console.log(message, meta),
+});
+
+await runner.assertApplied();            // 启动时：不允许"结构不确定"，默认拒绝启动
+const { applied } = await runner.migrate();
+await runner.rollback({ to: 6 });        // 按版本降序执行 down()；缺 down 的迁移明确报错
+const status = await runner.status();    // { applied, pending, interrupted, unknown }
+```
+
+**边界**：`rollback` 只做"回滚迁移"（改结构）；doc 04 §5 说的"回填搬数据"是另一件事
+（大表、要能在线跑），不在本步。**CLI**（`actor migrate status|up|down`）属 M5（doc 06）——
+本步只提供可编程 API，CLI 到时候接上去即可。
+
+**与仓储/聚合的关系**：迁移改的是存储结构（表、列、索引），聚合与仓储只是它的使用者。
+所以迁移测试不依赖内核：`store` 就是版本表，`up({ store })` 里可以拿任意数据层能力去做事。

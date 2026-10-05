@@ -9,8 +9,9 @@
  * 已实现（第 1 步）：事件信封 + upcast 注册表、快照信封 + 版本策略、
  * `defineEvolution()`（编译成内核 hook）。
  * 已实现（第 2 步）：事件溯源聚合 `defineAggregate()`（命令 → 事件、纯 applyEvent、信封接入）。
- * 已实现（第 3 步，进行中）：仓储契约 + 内存适配器（游标分页 / 等值过滤 / version 乐观锁）。
- * 后续：file 与 SQL 适配器、迁移框架（第 4 步）、Outbox（第 5 步）、投影（第 6 步）。
+ * 已实现（第 3 步）：仓储契约 + memory / file / SQL 适配器（游标分页 / 等值过滤 / version 乐观锁）。
+ * 已实现（第 4 步）：迁移框架（版本表 + 幂等 up/down + 默认拒绝启动）。
+ * 后续：Outbox（第 5 步）、投影（第 6 步）。
  */
 export {
   createEventEnvelope,
@@ -44,6 +45,26 @@ export {
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
+
+export {
+  createFileMigrationStore,
+  createMemoryMigrationStore,
+  createMigrationRunner,
+  createSqlMigrationStore,
+  MigrationError,
+  MigrationInterruptedError,
+  MigrationPendingError,
+  MigrationVersionError,
+  type FileMigrationStoreOptions,
+  type Migration,
+  type MigrationContext,
+  type MigrationRecord,
+  type MigrationRunnerOptions,
+  type MigrationSqlRunner,
+  type MigrationStatus,
+  type MigrationStore,
+  type SqlMigrationStoreOptions,
+} from './migration/index.ts';
 
 export {
   compareRows,
