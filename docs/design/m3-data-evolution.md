@@ -18,7 +18,7 @@
 | 3 | **Repository**：file / memory / SQL 薄适配 + **游标分页**（不用 offset） | 并发写入下游标分页不漏不重；外部 ORM 适配示例可跑 | — |
 | 4 | **迁移框架**：版本表 + 幂等 `up/down` + 启动校验 | 中途崩溃可重入；有未应用迁移时默认**拒绝启动** | ✅ 已完成（§8） |
 | 5 | **Outbox**：事件与 outbox 同批写入 + dispatcher + 至少一次投递 | 投递至少一次；消费方按 `eventId` 去重有测试；失败进死信、积压进指标 | ✅ 已完成（§9） |
-| 6 | **投影**：订阅 / checkpoint / 去重 / 重建 | 从 0 重建**不丢不重**；离线重建 + 原子切换 | — |
+| 6 | **投影**：订阅 / checkpoint / 去重 / 重建 | 从 0 重建**不丢不重**；离线重建 + 原子切换 | ✅ 已完成（§10） |
 
 ## 2. 第 1 步详细设计
 
@@ -609,3 +609,73 @@ await system.spawn(dispatcher.asActor(), { id: 'outbox' });   // 或当 Actor �
 
 **证据（测试）**：`packages/data/test/outbox.test.ts` 8 例，含"至少一次"的注入式崩溃、
 "毒消息跳过"、"三种仓储的去重"、以及**用真内核 spawn `asActor()` 轮询投递 / 停掉后不再投**。
+
+## 10. 第 6 步：投影 / 读模型（已实现）
+
+**为什么需要**：列表 / 搜索 / 统计用 Actor 做不了（Actor 是单实体串行）。写路径走 Actor，
+读路径走投影（普通仓储 + 索引）。
+
+**它几乎不用新地基**——第 5 步的三件东西正好复用：
+
+| 复用 | 作用 |
+|---|---|
+| `OutboxCursorStore`（游标） | **断点续跑**：崩了从上次处理到的序号继续 |
+| `createDedupeSet`（仓储主键） | **恰好一次**：至少一次投递下的去重 |
+| `registry.readEntries` + `createOutboxLogReader` | 事件来源（含升级与序号连续性检查） |
+
+```ts
+const runner = createProjectionRunner({
+  projection: {
+    name: 'user-list',
+    subscriptions: ['UserCreated', 'UserRenamed'],       // 不订阅的也会推进游标
+    async handle(entry, ctx) {                            // 必须幂等
+      const e = entry.event as { userId: string; name?: string };
+      const row = await ctx.repository.findById(e.userId);
+      if (row === null) await ctx.repository.insert({ id: e.userId, name: e.name, events: 1 });
+      else await ctx.repository.update(e.userId, { name: e.name, events: Number(row.events) + 1 },
+                                      { expectedVersion: Number(row.version) });
+    },
+  },
+  reader, repository: userListRepo, dedupeRepository: dedupeRepo, cursor: createFileOutboxCursor({ dir }),
+});
+
+await runner.catchUp();          // 从断点追到最新
+await runner.waitFor(offset);    // "读己之写"：等追到某个序号（**超时报错**，不无限等）
+await runner.rebuild();          // 从 0 重建（也可 rebuild({ repository: shadow }) 灌影子读模型）
+await system.spawn(runner.asActor(), { id: 'user-list' });
+```
+
+### 10.1 三个容易踩的点（都写进了实现与测试）
+
+1. **重建必须同时清空去重集合**。只清读模型的话，重放会被自己的去重记录全部挡成"重复"，
+   结果读模型是空的——所以 `rebuild()` 默认清三样：读模型、游标、去重集合
+   （`keepDedupe: true` 可以保留，但你要知道自己在干什么）。
+2. **handler 失败时要撤掉那条去重记录**。否则"失败 → 游标不推进 → 下次重试"会变成
+   "下次被当成重复而**永久跳过**"——那才是真正的丢数据。测试专门验了这条：
+   失败一次的事件在重试时**确实会再执行**。
+3. **`backlog` 必须是真实总量**。第一版用"读一批的条数"当积压，于是 batchSize=2 时积压永远
+   ≤2——`status()` 会骗人。测试抓到后改成按批读到尾（`status()` 是诊断调用，不在热路径上），
+   outbox 的 `stats()` 同样修了。
+
+### 10.2 与 doc 04 §7 的对应
+
+| doc 04 §7 的要求 | 本步的做法 |
+|---|---|
+| 投影用普通仓储 + 索引 | `ctx.repository` 就是第 3 步的任意仓储（memory/file/**SQL**） |
+| 按 `eventId` 去重 | `deliveryId`（= `eventId`，老事件回退到 `path#seq`）→ 仓储主键 |
+| `checkpoint(event.offset)` | runner 在 handler 成功后推进游标（ctx.checkpoint 也开放给用户） |
+| `rebuild --from 0` | `rebuild()`；**离线重建 + 原子切换**用 `rebuild({ repository: shadow })`，指针切换由调用方做（数据层不假设你的"表"怎么切） |
+| 最终一致 + 读己之写 | 默认最终一致；`waitFor(offset)` 给需要"读己之写"的接口用 |
+| 一致性字段 | 读模型行自带 `version`（仓储维护），接口可以把它返回给前端 |
+
+## 11. M3 验收对照（doc 06 的三条，逐条给证据）
+
+| doc 06 的验收 | 证据 |
+|---|---|
+| **改一次状态结构的真实演习：v1 数据在 v3 代码下可读（有 upcast 单测）** | §2/§4 的 upcast 链单测 + **真实内核 + 真实文件**的集成测试（旧代码写 v1 原始 JSON → 新代码读出 6000 分，且盘上日志一字节不改）；聚合侧还有 v1→v2 的端到端（`items=1` 只可能来自事件重放，证明状态不是从旧快照来的） |
+| **投影可从 0 重建且不丢不重（带去重用例）** | §10 的 `rebuild()` 用例：重建前后读模型**逐行一致**，每个事件只计一次；另有"游标回退后重放被去重挡住"的用例（业务恰好一次） |
+| **outbox 至少一次 + 消费幂等有测试** | §9：注入"发布成功但游标未落盘"的崩溃 → 投递序列出现重复（`[evt-1, evt-1, …]`）；三种仓储（memory/file/**SQL 主键**）的去重用例都在 |
+
+**M3 六步全部完成**：schema 演进 → 聚合 → 仓储 → 迁移 → outbox → 投影。数据层只依赖内核的
+**结构型**接缝（`persistence.evolution`），`packages/data/src` 里没有一行 `import` 内核或 app
+（有守卫测试钉住）。

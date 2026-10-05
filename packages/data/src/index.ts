@@ -12,7 +12,9 @@
  * 已实现（第 3 步）：仓储契约 + memory / file / SQL 适配器（游标分页 / 等值过滤 / version 乐观锁）。
  * 已实现（第 4 步）：迁移框架（版本表 + 幂等 up/down + 默认拒绝启动）。
  * 已实现（第 5 步）：Outbox（事件日志即 outbox + 投递游标 + 至少一次 + 消费幂等去重）。
- * 后续：投影（第 6 步）。
+ * 已实现（第 6 步）：投影 / 读模型（断点续跑 + 去重 + 从 0 重建 / 影子重建）。
+ *
+ * M3（数据层与 schema 演进）的六步到此齐全，见 docs/design/m3-data-evolution.md。
  */
 export {
   createEventEnvelope,
@@ -46,6 +48,19 @@ export {
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
+
+export {
+  clearRepository,
+  createProjectionRunner,
+  ProjectionError,
+  ProjectionHandleError,
+  type ProjectionCatchUpResult,
+  type ProjectionContext,
+  type ProjectionRunner,
+  type ProjectionRunnerOptions,
+  type ProjectionSpec,
+  type ProjectionStatus,
+} from './projection/index.ts';
 
 export {
   createDedupeSet,

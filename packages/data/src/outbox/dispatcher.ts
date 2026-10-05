@@ -75,9 +75,18 @@ export function createOutboxDispatcher(options: OutboxDispatcherOptions): Outbox
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight: Promise<unknown> | null = null;
 
+  /** 真实积压总量：按批一直读到尾（`stats()` 是诊断调用，不在投递热路径上）。 */
   async function readBacklog(fromSeq: number): Promise<number> {
-    const entries = await options.reader.read(fromSeq, batchSize);
-    return entries.length;
+    let cursor = fromSeq;
+    let total = 0;
+    for (;;) {
+      const entries = await options.reader.read(cursor, batchSize);
+      if (entries.length === 0) break;
+      total += entries.length;
+      cursor = entries[entries.length - 1]?.seq ?? cursor;
+      if (entries.length < batchSize) break;
+    }
+    return total;
   }
 
   async function drainOnce(): Promise<OutboxDrainResult> {
