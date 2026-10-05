@@ -158,16 +158,32 @@ ring owner，且没有更新的声明被观察到），本地**无法**识别它
 |---|---|---|
 | 1 | `proto.ts`：字段 15 `shardEpoch`（另加 16 `capsJson`、17 `shardCount`）；`.proto` 参考文档补到 17 并加"字段只追加"纪律 | ✅ |
 | 2 | `gateway.ts`：出站 tell/stop/deliver 带 `shardEpoch`（拿不到就**不带**字段）；hello **双向**交换 `caps`/`shardCount`；不一致或硬门不满足 → 明确拒绝；`verifyOwnership` 钩子 | ✅ |
-| 3 | `plugins/cluster.ts`：接守卫、成员视图喂环、`system.ownership`（`epochFor` / `verifyIncoming`）、`system.cluster.ownership` | ✅（`shard:<id>` 声明**自动走 gossip 传播尚未接**——见下） |
-| 4 | 能力可见性：`system.cluster.fencing()`（`skipped` / `rejected` 计数） | ✅（按对端列出能力还没做） |
-| 5 | 两节点端到端：旧 epoch 被拒、非成员转发仍可用 | ✅（见 `test/integration-cluster-fencing.test.js`；旧↔新**互发**的跨版本用例待补） |
+| 3 | `plugins/cluster.ts`：接守卫、成员视图喂环、`system.ownership`（`epochFor` / `verifyIncoming`）、`cluster.ownership`、**声明自动走 gossip** | ✅ |
+| 4 | 能力可见性：`cluster.fencing()`（`skipped` / `rejected` / `conflicts`） | ✅（按对端列出能力还没做） |
+| 5 | 两节点端到端：声明自动传播、旧 epoch 被拒、非成员转发仍可用、双主声明被拒 | ✅（3 个用例，见 `test/integration-cluster-fencing.test.js`） |
 
-**尚未做（2b 的剩余部分）**：
-- **声明自动传播**：目前 epoch 换代要靠调用方/上层显式 `guard.observe(...)`（测试里就是这么模拟
-  gossip 的）。把它接成 gossip 注册表的 `shard:<id>` JSON 条目是零格式改动的（§3.4.1），但要走
-  "谁在什么条件下发布声明、发布哪些 shard（256 个还是按需）"的取舍；
-- **跨版本互发**：真正的"老节点 ↔ 新节点"用例（老节点不发 `shardEpoch`、不声明 `caps`）目前由
-  网关单测覆盖（无 caps 的对端被放行 + `fencing_skipped`），还没有两进程的端到端版。
+### 3.4.6 声明的传播：每节点一条映射，按需发布
+
+注册表是**整体复制**的（每轮 gossip 带上整个 map），所以"一个 shard 一条条目"会把 256 个 shard
+变成 256 条记录、每轮都传。取舍如下：
+
+| 点 | 决定 |
+|---|---|
+| 载体 | **每节点一条**：`shard-claims:<nodeId>` = `{ claims: { [shard]: epoch } }`（JSON，零格式改动） |
+| 发布时机 | **按需**：本节点真的要为某个 shard 声明所有权时（即 `epochFor` 被调用时）才把它写进映射并发布 |
+| 效果 | 声明数量被"实际用到的 shard"自然限制；测试断言注册表条目数 < 20（而不是 ~256） |
+| 换代 | 新 epoch 覆盖（LWW + 每 shard 取最大）；同 epoch 换人 = **双主声明** → 拒绝 + `conflicts` 计数 + 日志 |
+| 观测 | 对端条目到达时逐条 `guard.observe`；冲突**必须报出来**，不允许静默覆盖 |
+
+**残余的两处诚实边界**（都在这里写清，避免以后被误当成"已解决"）：
+1. **故障接管的 epoch 归属未定**：节点失联后新 owner 该用第几代，需要"知道旧 owner 的声明"才好
+   +1；若那条声明从未复制过来，新 owner 只能从 1 开始，而见过旧声明的对端会拒它。这个策略属于
+   **第 3 步（优雅交接）**——那里 epoch+1 是显式协议的一部分；故障路径按 doc 05 §1.3 本就是
+   "无交接、靠状态恢复"的低一档质量。现在**只发布与观察，不做自动接管加代**。
+2. **`observe` 不校验声明者的身份**：声明里声称的 owner 与本节点环不一致时仍然接受（否则接管会被
+   挡住）。也就是说，集群内一个错误/恶意节点能抬高某个 shard 的 epoch，让真 owner 的消息被拒。
+   这正是"gossip 是信任域内协议"的边界：身份由 TLS/成员准入负责，`shard-claims` 不做签名。
+   要更强保证就得引入共识或签名声明——都不在本里程碑范围内（doc 06 已把"不做 Raft"列为非目标）。
 
 **第二个踩出来的 bug（值得记）**：出站帧是由 `Peer` 自己创建的**客户端网关**发出去的，而我只给
 服务端网关装了所有权选项——于是"发帧的网关不带 token、收帧的网关却要求 token"，跨节点调用被**自己
@@ -188,7 +204,7 @@ ring owner，且没有更新的声明被观察到），本地**无法**识别它
 （JSON 路径照带）。第一版只往帧对象里加了 `caps`/`shardCount`，于是 proto 模式下 hello 的能力信息
 凭空消失——正是 §3.4.1 里我自己写下的那条规则。现在 16/17 已登记，并有测试同时验两条编码路径。
 
-### 3.4.6 2b 实施清单（原始，供 3/4/5 对照）
+### 3.4.7 2b 实施清单（原始，供对照）
 
 | # | 改动 | 验收 |
 |---|---|---|

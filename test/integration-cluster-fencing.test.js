@@ -85,12 +85,26 @@ test('cluster fencing: 旧 owner 的消息在两台真节点之间被拒（且�
       '有 token 的正常路径不该有降级/拒绝',
     );
 
-    // ② b 学到"这个 shard 已经换到 b、epoch 2"（真实系统里来自 gossip 声明；这里直接观察）
+    // ② a 的声明**经 gossip 自动传播**到 b（不是测试手工塞进去的）
     const shard = ring.shardOf(victimId, SHARDS);
+    await waitFor(
+      () => {
+        const claim = b.cluster.ownership.bestClaim(shard);
+        return claim !== null && claim.ownerNodeId === 'node-a' && claim.epoch >= 1;
+      },
+      { timeoutMs: 15000, intervalMs: 50 },
+    );
+    assert.strictEqual(b.cluster.ownership.bestClaim(shard).ownerNodeId, 'node-a', 'b 学到了 a 的声明');
+
+    // 声明是"每节点一条"的映射，而不是"每 shard 一条"：注册表不该因为声明而膨胀
+    const registrySize = b.cluster.gossip.info().registrySize;
+    assert.ok(registrySize < 20, `注册表条目应当很少（实际 ${registrySize}）——声明走每节点一条映射`);
+
+    // ③ b 学到"这个 shard 已经换到 b、epoch 2"（真实系统里这就是交接的 epoch+1）
     const learned = b.cluster.ownership.observe({ shard, ownerNodeId: 'node-b', epoch: 2, at: Date.now() });
     assert.strictEqual(learned.accepted, true);
 
-    // ③ a 还在用 epoch 1 发消息 → **在线上被拒**
+    // ④ a 还在用 epoch 1 发消息 → **在线上被拒**
     await assert.rejects(
       () => a.resolve(victimId).ask({ type: 'ping' }),
       (err) => {
@@ -101,10 +115,10 @@ test('cluster fencing: 旧 owner 的消息在两台真节点之间被拒（且�
     );
     assert.strictEqual(b.cluster.fencing().rejected, 1, '拒绝次数要能看见');
 
-    // ④ 新 owner（b）自己发起的调用不受影响：它不是"旧 epoch"
+    // ⑤ 新 owner（b）自己发起的调用不受影响：它不是"旧 epoch"
     assert.strictEqual(b.cluster.ownership.verify({ shard, ownerNodeId: 'node-b', epoch: 2 }).ok, true);
 
-    // ⑤ 没有 token 的**第三方转发者**照常工作（否则跨节点路由就废了）
+    // ⑥ 没有 token 的**第三方转发者**照常工作（否则跨节点路由就废了）
     //    —— 用一个不属于环的节点 c 来当转发者
     const c = createSystem({ name: 'node-c', logger: false });
     try {
@@ -121,7 +135,7 @@ test('cluster fencing: 旧 owner 的消息在两台真节点之间被拒（且�
   }
 });
 
-test('cluster fencing: 声明支持支持 fencing 却带不出 token 的节点会被拒（协议违规）', async () => {
+test('cluster fencing: 跨版本——老节点（不带 token、不声明能力）照常服务，但降级必须可见', async () => {
   const a = createSystem({ name: 'node-a', logger: false });
   const b = createSystem({
     name: 'node-b',
@@ -133,10 +147,60 @@ test('cluster fencing: 声明支持支持 fencing 却带不出 token 的节点�
     await b.listen({ host: '127.0.0.1', port: 0 });
     await b.spawn({ preStart() {}, receive: () => 'ok' }, { id: 'plain-actor' });
 
-    // a 没有所有权信息（没装集群插件）→ 不带 token，也不声明支持 → b 的守卫认出它"不是 owner 且没 token"
+    // a 没有所有权信息（没装集群插件）→ 不带 token，也不声明支持 —— 这就是"老节点/未升级节点"的形态
     const peer = await a.connect({ host: '127.0.0.1', port: b.server.boundPort });
     const result = await peer.ref('plain-actor').ask({ type: 'ping' });
-    assert.strictEqual(result, 'ok', '没有 token 的非 owner 请求照常服务');
+    assert.strictEqual(result, 'ok', '软升级：老节点照常服务（不能因为升级就把老节点踢出去）');
+    assert.strictEqual(b.cluster.fencing().skipped, 1, '但降级**必须可见**：计数 +1');
+    assert.strictEqual(b.cluster.fencing().rejected, 0, '这不是拒绝，是降级');
+  } finally {
+    await b.stop();
+    await a.stop();
+  }
+});
+
+test('cluster fencing: 双主声明经 gossip 传播 → 被拒并报出来（不静默覆盖）', async () => {
+  const gossipPort = await freePort();
+  const a = createSystem({
+    name: 'node-a',
+    logger: false,
+    plugins: [plugins.cluster({ nodeId: 'node-a', port: gossipPort, shardCount: SHARDS })],
+  });
+  const b = createSystem({
+    name: 'node-b',
+    logger: false,
+    plugins: [plugins.cluster({ nodeId: 'node-b', port: 0, seeds: [`127.0.0.1:${gossipPort}`], shardCount: SHARDS })],
+  });
+  try {
+    await a.listen({ host: '127.0.0.1', port: 0 });
+    await b.listen({ host: '127.0.0.1', port: 0 });
+
+    // a 发布一条声明：shard 7 的 epoch 3 属于 node-a
+    a.cluster.gossip.setLocal('shard-claims:node-a', {
+      type: 'shard-claims',
+      nodeId: 'node-a',
+      claims: { 7: 3 },
+      ts: Date.now(),
+    });
+    await waitFor(() => b.cluster.ownership.bestClaim(7)?.ownerNodeId === 'node-a', {
+      timeoutMs: 15000,
+      intervalMs: 50,
+    });
+
+    // a 又发布"同 epoch，但 owner 换成 node-b"——这正是双主的形状（且 ts 更新，LWW 会覆盖）
+    a.cluster.gossip.setLocal('shard-claims:node-a', {
+      type: 'shard-claims',
+      nodeId: 'node-b',
+      claims: { 7: 3 },
+      ts: Date.now() + 1,
+    });
+    await waitFor(() => b.cluster.fencing().conflicts === 1, { timeoutMs: 15000, intervalMs: 50 });
+
+    assert.strictEqual(
+      b.cluster.ownership.bestClaim(7).ownerNodeId,
+      'node-a',
+      '冲突被拒之后，已知声明不能被静默覆盖',
+    );
   } finally {
     await b.stop();
     await a.stop();

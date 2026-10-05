@@ -123,7 +123,36 @@ function cluster(options = {}) {
       // epoch：本节点只在自己确实是 owner 时给出声明（claimFor，不自封）。
       const shardCount = Number.isInteger(options.shardCount) ? options.shardCount : 256;
       const guard = createOwnershipGuard({ nodeId: gossip.nodeId, shardCount });
-      const fencingStats = { skipped: 0, rejected: 0 };
+      const fencingStats = { skipped: 0, rejected: 0, conflicts: 0 };
+
+      /**
+       * 声明怎么走 gossip：**每个节点一条**注册表条目（`shard-claims:<nodeId>`）里放
+       * `{ [shard]: epoch }` 的映射，而不是"一个 shard 一条"——后者会让 256 个 shard 变成
+       * 256 条注册表记录，每一轮 gossip 都要把它们全带上（注册表是整体复制的）。
+       *
+       * 发布时机：**按需**（本节点真的要为某个 shard 声明所有权时才发布它）。这样声明数量被
+       * "实际用到的 shard"自然限制住，而不是一上来就 256 条。
+       */
+      const CLAIM_PREFIX = 'shard-claims:';
+      const publishedClaims = new Map();
+      let claimsDirty = false;
+
+      const publishClaims = () => {
+        gossip.setLocal(`${CLAIM_PREFIX}${gossip.nodeId}`, {
+          type: 'shard-claims',
+          nodeId: gossip.nodeId,
+          claims: Object.fromEntries(publishedClaims),
+          ts: Date.now(),
+        });
+        claimsDirty = false;
+      };
+
+      /** 记住"我声明过这个 shard 的第几代"，有变化才重新发布。 */
+      const rememberClaim = (shard, epoch) => {
+        if (publishedClaims.get(shard) === epoch) return;
+        publishedClaims.set(shard, epoch);
+        claimsDirty = true;
+      };
 
       /**
        * 环 = 成员视图的纯函数，缓存只是优化。所以**按需刷新**（而不是只靠事件）：
@@ -147,8 +176,12 @@ function cluster(options = {}) {
         /** 出站：只有本节点**确实是**这个 shard 的 owner 时才给出 epoch（否则不带字段）。 */
         epochFor(path) {
           refreshRing();
-          const claim = guard.claimFor(ringUtil.shardOf(String(path), shardCount));
-          return claim === null ? null : claim.epoch;
+          const shard = ringUtil.shardOf(String(path), shardCount);
+          const claim = guard.claimFor(shard);
+          if (claim === null) return null;
+          rememberClaim(shard, claim.epoch);
+          if (claimsDirty) publishClaims(); // 按需发布：只发我们真的用到的 shard
+          return claim.epoch;
         },
         /** 入站判定：见 docs/design/m4-cluster-governance.md §3.4.5 的三条规则。 */
         verifyIncoming({ targetActorId, shardEpoch, peerNodeId }) {
@@ -204,6 +237,24 @@ function cluster(options = {}) {
       const onUpdate = (key, value) => {
         if (key.startsWith('subs:')) return;
         refreshRing(); // 成员视图可能变了（谁在环上决定所有权）
+        if (key.startsWith(CLAIM_PREFIX)) {
+          // 对端的声明：epoch 更高 = 所有权换代；同 epoch 换人 = **双主声明**，必须报出来
+          if (value && value.type === 'shard-claims' && value.claims) {
+            for (const [shardText, epoch] of Object.entries(value.claims)) {
+              const result = guard.observe({
+                shard: Number(shardText),
+                ownerNodeId: value.nodeId || key.slice(CLAIM_PREFIX.length),
+                epoch: Number(epoch),
+                at: value.ts || Date.now(),
+              });
+              if (!result.accepted && String(result.reason).includes('双主声明')) {
+                fencingStats.conflicts += 1;
+                system._log('cluster_shard_claim_conflict', { shard: Number(shardText), reason: result.reason });
+              }
+            }
+          }
+          return;
+        }
         if (!value || value.type !== 'actor') return;
         index.set(key, value);
       };
@@ -247,6 +298,7 @@ function cluster(options = {}) {
           requireFencing: system.ownership.requireFencing,
           skipped: fencingStats.skipped,
           rejected: fencingStats.rejected,
+          conflicts: fencingStats.conflicts,
         }),
         /** 某个 actor 在本地环上归谁（诊断用）。 */
         ownerOfActor: (path) => {
