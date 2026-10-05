@@ -23,3 +23,5 @@ export { compareRows, compareValues, decodeCursor, encodeCursor, normalizeQuery 
 export { createMemoryRepository, type MemoryRepositoryOptions } from './memory.ts';
 
 export { createFileRepository, type FileRepository, type FileRepositoryOptions } from './file.ts';
+
+export { createSqlRepository, type SqlRepositoryOptions, type SqlRunner } from './sql.ts';

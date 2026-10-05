@@ -39,7 +39,7 @@ export function createMemoryRepository<T extends Entity = Entity>(
 ): Repository<T> {
   const { idField, versionField } = resolveRepositoryOptions(options);
   const rows = new Map<string, Entity>();
-  const capabilities: RepositoryCapabilities = { conditionalUpdate: 'in-process' };
+  const capabilities: RepositoryCapabilities = { conditionalUpdate: 'in-process', transaction: 'in-process' };
 
   if (options.seed) for (const row of options.seed) rows.set(String(row[idField]), clone(row));
 

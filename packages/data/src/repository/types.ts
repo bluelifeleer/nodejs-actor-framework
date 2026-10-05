@@ -32,6 +32,8 @@ export interface RepositoryCapabilities {
    * `'atomic'` = 后端条件写（SQL 等）；`'in-process'` = 只保证本进程（file / memory）。
    */
   conditionalUpdate: 'atomic' | 'in-process' | false;
+  /** `transaction()` 的隔离来自哪里：数据库真事务，还是本进程串行。 */
+  transaction?: 'database' | 'in-process';
 }
 
 export interface Repository<T, Id = string> {

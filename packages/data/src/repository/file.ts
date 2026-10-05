@@ -70,7 +70,7 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
   const entitiesDir = path.join(dir, 'entities');
   const indexPath = path.join(dir, 'index.jsonl');
   const compactThreshold = options.compactThreshold ?? 5000;
-  const capabilities: RepositoryCapabilities = { conditionalUpdate: 'in-process' };
+  const capabilities: RepositoryCapabilities = { conditionalUpdate: 'in-process', transaction: 'in-process' };
 
   let indexCache: Map<string, boolean> | null = null;
   let indexEntryCount = 0;

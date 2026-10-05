@@ -31,7 +31,19 @@ export interface RepoHarness {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function repositoryContract(name: string, create: () => Promise<RepoHarness>): void {
+export interface ContractFeatures {
+  /**
+   * 排序键类型混乱时是否**当场报错**。memory / file 在 JS 里比较（能报），SQL 把排序交给数据库
+   * （类型语义由库决定）——这是真实差异，写进套件而不是假装三个后端一样。
+   */
+  mixedTypeGuard?: boolean;
+}
+
+export function repositoryContract(
+  name: string,
+  create: () => Promise<RepoHarness>,
+  features: ContractFeatures = {},
+): void {
   const withRepo = async (fn: (repo: Repository<RepoDoc>) => Promise<void>): Promise<void> => {
     const { repo, cleanup } = await create();
     try {
@@ -187,8 +199,10 @@ export function repositoryContract(name: string, create: () => Promise<RepoHarne
       await assert.rejects(() => repo.findMany({ direction: 'sideways' as never }), /direction 只能是/);
       await assert.rejects(() => repo.findMany({ cursor: 'not-a-cursor' }), /cursor 无法解析/);
 
-      await repo.insert({ id: 'mixed', owner: 'a', rank: 'two' as never });
-      await assert.rejects(() => repo.findMany({ orderBy: 'rank', limit: 10 }), /必须是可比较的 string 或 number/);
+      if (features.mixedTypeGuard !== false) {
+        await repo.insert({ id: 'mixed', owner: 'a', rank: 'two' as never });
+        await assert.rejects(() => repo.findMany({ orderBy: 'rank', limit: 10 }), /必须是可比较的 string 或 number/);
+      }
     }));
 
   test(`${name}: transaction 串行化——并发读改写不丢更新`, () =>

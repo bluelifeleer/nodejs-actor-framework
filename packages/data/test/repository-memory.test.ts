@@ -17,7 +17,7 @@ test('repository(memory): 能力如实上报 + seed 预置数据', async () => {
       { id: 'b', version: 3, owner: 'bob', rank: 2 },
     ],
   });
-  assert.deepStrictEqual(repo.capabilities(), { conditionalUpdate: 'in-process' });
+  assert.deepStrictEqual(repo.capabilities(), { conditionalUpdate: 'in-process', transaction: 'in-process' });
 
   const page = await repo.findMany({ orderBy: 'id' });
   assert.deepStrictEqual(

@@ -416,7 +416,7 @@ interface Repository<T, Id> {
 |---|---|---|
 | ① | **memory 适配器 + 游标分页语义**（它同时是**语义基准**：file / SQL 必须逐条对齐） | ✅ |
 | ② | `file` 适配器（一实体一文件 + 追加式索引 + tombstone + 索引重建/压缩） | ✅ |
-| ③ | SQL 薄适配器（用户提供 `query`）+ 外部 ORM（Prisma/Drizzle/Kysely）示例 | ⏳ |
+| ③ | SQL 薄适配器（用户提供 runner）+ 外部 ORM 示例 | ✅ |
 | ④ | 示例应用（CRUD + Actor 组合） | ⏳ |
 
 **① 定下的语义（后面两个适配器必须对齐这 7 条）**：
@@ -448,3 +448,79 @@ interface Repository<T, Id> {
 | 索引膨胀 | `compactIndex()` 折叠同一 id 的重复条目；条目超过 `compactThreshold`（默认 5000）自动压 | 追加式索引迟早要压 |
 | 撕裂尾巴 | 索引解析遇到第一条读不通的行就停（与内核的事件日志同一规则） | 崩溃中断的追加不该让整个仓储读不出来 |
 | 契约对齐的方式 | **共享契约测试**（`packages/data/test/repository-suite.ts`）：一份断言跑在两个适配器上 | 抄一遍测试会漂移；共享套件让"对齐"变成机械事实。file 适配器现在还额外验证了"跨实例存在 / 索引丢失后自愈 / 压缩 / 非 id 排序" |
+
+### 7.6 第 3 步③ 的实现说明（SQL 薄适配器）
+
+**"薄"到什么程度**：框架只发固定形状的 CRUD（`SELECT` / `INSERT` / `UPDATE … WHERE version = ?` /
+`DELETE`），**连接数据库的能力全部由你提供**（`SqlRunner`：`all` / `run` / 可选 `transaction`）。
+不接管 schema、不引驱动、不做查询构建器——`fields` 白名单就是"你的表长什么样"的唯一声明。
+
+```ts
+const runner: SqlRunner = {
+  all: async (sql, params) => (await pool.query(sql, params)).rows,          // pg
+  run: async (sql, params) => (await pool.query(sql, params)).rowCount,
+  transaction: async (fn) => { /* 见下：必须把事务范围的 runner 交给回调 */ },
+};
+const repo = createSqlRepository<Order>({ runner, table: 'orders', fields: ['id', 'version', 'total', 'status'] });
+```
+
+| 点 | 做法与理由 |
+|---|---|
+| 乐观锁 | **真 CAS**：`UPDATE … SET version = version + 1 WHERE id = ? AND version = ?`；受影响行数为 0 时再回查一次，以区分"版本冲突"与"实体不存在"。所以 `capabilities().conditionalUpdate === 'atomic'`——三个适配器里唯一的一档 |
+| 事务 | `SqlRunner.transaction` **必须把"事务范围的 runner"交给回调**。这一点是必须的：仓储内部的语句走 runner，如果事务只是"你自己 BEGIN 了一下"，仓储的语句仍然走连接池，根本不在那个事务里——那样 `transaction: 'database'` 就是假承诺。有测试专门钉住这件事（事务内的读与写必须落在事务 runner 上） |
+| 标识符 | 白名单：表名/列名是**配置**（构造期校验为简单标识符），`where`/`orderBy`/patch 里的字段必须在 `fields` 内，否则抛 `RepositoryQueryError` |
+| 值 | **永远参数化**（含 `LIMIT` 与 keyset 参数）。有一条测试往 `owner` 里塞 `"'; DROP TABLE docs; --"`，断言表还在、查询照常 |
+| NULL | `where: {field: null}` 生成 `IS NULL`（SQL 里 `= NULL` 永远不成立）；**cursor 的排序键是 null 时直接拒绝**——SQL 的 NULL 比较恒为 NULL，键值分页在这里会静默漏行 |
+| 类型守卫 | `orderBy` 的比较交给数据库，所以"混合类型当场报错"这条守卫（memory/file 在 JS 里比较时有）在 SQL 上不成立——这是**真实差异**，写进契约测试的 `features` 而不是假装三个后端一样 |
+| 唯一约束 | insert 撞 id 的判定由你给（`isUniqueViolation`）：驱动各不相同，框架不猜。给了它就会抛 `RepositoryDuplicateError`（与 memory/file 一致） |
+
+**参考 runner（本仓库**真的跑过**的那个）**：`packages/data/test/repository-sql.test.ts` 用 Node 24
+内置的 `node:sqlite` 包了一个 runner（零依赖，与框架"不引驱动"的取向一致），SQL 适配器的**共享契约
+测试就是跑在真 SQL 上的**：
+
+```ts
+function makeRunner(): SqlRunner {
+  const db = new DatabaseSync(':memory:');
+  const scoped: SqlRunner = {
+    all: async (sql, params) => db.prepare(sql).all(...params),      // 单连接：事务内外的 runner 相同
+    run: async (sql, params) => Number(db.prepare(sql).run(...params).changes),
+  };
+  return {
+    ...scoped,
+    transaction: async (fn) => {
+      db.exec('BEGIN');
+      try { const r = await fn(scoped); db.exec('COMMIT'); return r; }
+      catch (err) { db.exec('ROLLBACK'); throw err; }
+    },
+  };
+}
+```
+
+**外部 ORM 示意**（doc 04 §2 承诺的"约 30 行、框架不接管你的 schema"）。下面这段是**示意代码**：
+本仓库没有 Prisma 依赖，所以它没有测试覆盖——但形状就是这么简单，`all` / `run` / `transaction`
+三个方法包一层即可：
+
+```ts
+// Prisma（示意）
+const repo = createSqlRepository<Order>({
+  table: 'Order',
+  fields: ['id', 'version', 'total', 'status'],
+  runner: {
+    all: (sql, params) => prisma.$queryRawUnsafe(sql, ...params),
+    run: async (sql, params) => Number(await prisma.$executeRawUnsafe(sql, ...params)),
+    transaction: (fn) =>
+      prisma.$transaction((tx) =>
+        fn({
+          all: (sql, params) => tx.$queryRawUnsafe(sql, ...params),
+          run: async (sql, params) => Number(await tx.$executeRawUnsafe(sql, ...params)),
+        }),
+      ),
+  },
+});
+```
+
+任何驱动（pg / mysql2 / better-sqlite3 / Drizzle / Kysely）同理——**关键是事务里要把
+"事务范围的 runner"交给回调**，否则仓储的语句会跑到连接池上。
+
+> 反面例子（**别这么做**）：把 `Repository` 做成"隐藏 SQL 的魔法层"，或让框架去猜你的表结构。
+> doc 06 §3 把"自研 ORM / 查询构建器"列为不做的事，这里的每条设计都在守那条线。

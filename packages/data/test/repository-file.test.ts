@@ -140,6 +140,6 @@ test('repository(file): 索引压缩把重复条目折叠掉（自动/手动都�
 test('repository(file): 能力如实上报（文件后端没有跨进程条件写）', async () => {
   const dir = tempDir();
   const repo = createFileRepository<RepoDoc>({ dir });
-  assert.deepStrictEqual(repo.capabilities(), { conditionalUpdate: 'in-process' });
+  assert.deepStrictEqual(repo.capabilities(), { conditionalUpdate: 'in-process', transaction: 'in-process' });
   fs.rmSync(dir, { recursive: true, force: true });
 });
