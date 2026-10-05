@@ -422,3 +422,148 @@ test('FilePersistence tolerates a torn event tail', async () => {
   assert.deepStrictEqual(await memory.loadSnapshot('b'), { ok: true });
   assert.strictEqual(await memory.loadSnapshot('missing'), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// 条件写（乐观并发）与后端能力
+// ---------------------------------------------------------------------------
+
+test('persistence: 条件写——版本对不上就抛冲突且不写入（memory 与 file 都要）', async () => {
+  const adopters = [
+    ['memory', () => new MemoryPersistence()],
+    ['file', () => new FilePersistence({ baseDir: uniqueDir('cond') })],
+  ];
+  for (const [name, make] of adopters) {
+    const store = make();
+    assert.deepStrictEqual(
+      store.capabilities(),
+      { conditionalAppend: 'in-process' },
+      `${name}: 能力要如实报（file 没有跨进程原子性，不能报 atomic）`,
+    );
+
+    await store.appendEvent('agg', { n: 1 }, { expectedVersion: 0 });
+    await assert.rejects(
+      () => store.appendEvent('agg', { n: 2 }, { expectedVersion: 0 }),
+      (err) => {
+        assert.strictEqual(err.name, 'PersistenceConflictError');
+        assert.strictEqual(err.actorId, 'agg');
+        assert.strictEqual(err.expectedVersion, 0);
+        assert.strictEqual(err.actualVersion, 1);
+        return true;
+      },
+      `${name}: 冲突要抛 PersistenceConflictError`,
+    );
+    assert.strictEqual((await store.loadEvents('agg')).length, 1, `${name}: 失败的写入不得落盘`);
+
+    await store.appendEvent('agg', { n: 2 }, { expectedVersion: 1 });
+    assert.deepStrictEqual(await store.loadEvents('agg'), [{ n: 1 }, { n: 2 }]);
+
+    // 不传 expectedVersion 时行为与以前一致（纯追加）
+    await store.appendEvent('agg', { n: 3 });
+    assert.strictEqual((await store.loadEvents('agg')).length, 3);
+
+    // 非法 expectedVersion 明确报错，而不是被当成"期望 0"
+    await assert.rejects(() => store.appendEvent('agg', { n: 4 }, { expectedVersion: 1.5 }), /expectedVersion 必须是/);
+  }
+});
+
+test('persistence: file 后端的条件写在"另一个实例"（冷缓存）下也会先数日志再判断', async () => {
+  const dir = uniqueDir('cond-cold');
+  const writer = new FilePersistence({ baseDir: dir });
+  await writer.appendEvent('agg', { n: 1 }, { expectedVersion: 0 });
+
+  // 模拟另一个进程/另一个实例：本地缓存是空的，必须自己去读文件数条数
+  const other = new FilePersistence({ baseDir: dir });
+  await assert.rejects(
+    () => other.appendEvent('agg', { n: 2 }, { expectedVersion: 0 }),
+    (err) => err.name === 'PersistenceConflictError' && err.actualVersion === 1,
+  );
+  await other.appendEvent('agg', { n: 2 }, { expectedVersion: 1 });
+  assert.strictEqual((await new FilePersistence({ baseDir: dir }).loadEvents('agg')).length, 2);
+});
+
+test('persistence: 内核把日志版本带上做条件写；两个实例抢同一个聚合时后来者被拒', async () => {
+  const dir = uniqueDir('cond-actor');
+  const definition = {
+    preStart() {
+      this.state = { n: 0 };
+    },
+    async receive(msg, ctx) {
+      await ctx.persist({ type: 'Bump', n: 1 });
+      return this.state.n;
+    },
+    applyEvent(event) {
+      if (event.type === 'Bump') this.state.n += event.n;
+    },
+  };
+
+  // 两个系统各自持有一个指向**同一个目录**的 FilePersistence 实例 ≈ 两个节点共用一个存储
+  const a = createSystem({ ...quiet, persistence: { dir } });
+  const b = createSystem({ ...quiet, persistence: { dir } });
+  try {
+    const options = { id: 'shared', persistence: { mode: 'events' } };
+    const refA = await a.spawn(definition, options);
+    const refB = await b.spawn(definition, options);
+
+    // B 在 A 写入之前就读完了日志（版本 0），此后再写就会撞上 A 的写入
+    assert.strictEqual(await refA.ask({ type: 'bump' }), 1);
+    await assert.rejects(
+      () => refB.ask({ type: 'bump' }),
+      (err) => {
+        assert.strictEqual(err.name, 'PersistenceConflictError');
+        assert.match(err.message, /期望日志版本 0，实际 1/);
+        return true;
+      },
+      '第二个拥有者必须被拦住，而不是把重复的事件写进同一个日志',
+    );
+
+    // 日志里只有 A 写的那一条（B 没有落盘）
+    const store = new FilePersistence({ baseDir: dir });
+    assert.deepStrictEqual(await store.loadEvents('shared'), [{ type: 'Bump', n: 1 }]);
+    assert.strictEqual(a.persistenceCapabilities().conditionalAppend, 'in-process');
+  } finally {
+    await b.stop();
+    await a.stop();
+  }
+});
+
+test('persistence: 没有 capabilities() 的自定义适配器 → 能力为 false，且不传条件（不误报有保护）', async () => {
+  const events = [];
+  const plainAdapter = {
+    async loadSnapshot() {
+      return undefined;
+    },
+    async saveSnapshot() {},
+    async appendEvent(id, event) {
+      events.push(event);
+    },
+    async loadEvents() {
+      return [...events];
+    },
+    async deleteEvents() {
+      events.length = 0;
+    },
+  };
+  const system = createSystem({ ...quiet, persistence: plainAdapter });
+  try {
+    assert.deepStrictEqual(system.persistenceCapabilities(), { conditionalAppend: false });
+    const ref = await system.spawn(
+      {
+        preStart() {
+          this.state = { n: 0 };
+        },
+        async receive(msg, ctx) {
+          await ctx.persist({ type: 'Bump', n: 1 });
+          return this.state.n;
+        },
+        applyEvent(event) {
+          if (event.type === 'Bump') this.state.n += event.n;
+        },
+      },
+      { id: 'plain', persistence: { mode: 'events' } },
+    );
+    assert.strictEqual(await ref.ask({}), 1, '不支持条件写也要能正常写（只是没有并发保护）');
+    assert.strictEqual(events.length, 1);
+  } finally {
+    await system.stop();
+  }
+});

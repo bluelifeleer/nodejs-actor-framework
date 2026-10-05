@@ -88,6 +88,18 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events',   evol
 await system.spawn(Tank,  { id: 'tank',    persistence: { mode: 'snapshot', evolution } });
 ```
 
+**条件写（乐观并发）**：`events` 模式下内核会把「日志版本」（= 已写入的记录条数）带上一起写，
+后端版本对不上就抛 `PersistenceConflictError` 且**不写入**——挡的是"同一个聚合被两个节点同时拥有"。
+后端到底能保证什么可以查：
+
+```js
+system.persistenceCapabilities().conditionalAppend;   // 'atomic' | 'in-process' | false
+```
+
+`file` / `memory` 只能保证**同进程**（两个进程写同一目录不会被拦住，能力如实报 `'in-process'`）；
+要真正的跨进程原子性，请换支持 CAS 的后端（SQL 等）。自定义适配器不实现 `capabilities()`
+就是 `false`，内核不会传条件——也就不会让人误以为有保护。
+
 这些 hook 都可选、默认恒等（不配置时行为与以前完全一致）；必须是**同步**函数，返回 Promise
 会直接报错而不是被当成事件；**写入期与重放期走同一条 `upcast`**，所以"内存里的状态"与
 "重启后重放出来的状态"不会漂移。`readLog` 是批量版本：**序号连续性只有看得到整段日志才能判断**

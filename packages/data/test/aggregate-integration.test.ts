@@ -227,3 +227,40 @@ test('aggregate: 重启后 seq 从重放位置继续；日志断号 → 拒绝�
   );
   await system3.stop();
 });
+
+test('aggregate: 两个拥有者抢同一个聚合 → 后来者的命令被拒（乐观并发），日志里没有重复事件', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+  const Order = orderAggregate();
+  const options = { id: 'order-7', persistence: persistenceFor(Order) };
+
+  // 两个 system 指向同一个目录 ≈ 两个节点共用一个存储（doc 04 §3 想防的正是这个）
+  const a = createSystem({ logger: false, persistence: { dir } });
+  const b = createSystem({ logger: false, persistence: { dir } });
+  const refA = await a.spawn(Order, options);
+  const refB = await b.spawn(Order, options);
+
+  assert.deepStrictEqual(await refA.ask({ type: 'addItem', price: 100 }), {
+    status: 'created',
+    totalCents: 100,
+    items: 1,
+  });
+
+  await assert.rejects(
+    () => refB.ask({ type: 'addItem', price: 200 }),
+    (err: unknown) => {
+      assert.strictEqual((err as Error).name, 'PersistenceConflictError');
+      return true;
+    },
+    '第二个拥有者的写入必须被拦住（它是按"日志版本 0"在写，而日志已经到 1）',
+  );
+
+  const raw = (await store.loadEvents('order-7')) as { seq: number; payload: { price: number } }[];
+  assert.deepStrictEqual(raw.map((e) => e.seq), [1], '冲突的写入不得落盘');
+  assert.deepStrictEqual(raw.map((e) => e.payload.price), [100]);
+
+  // 能力如实上报：file 后端只保证同进程
+  assert.strictEqual(a.persistenceCapabilities().conditionalAppend, 'in-process');
+  await b.stop();
+  await a.stop();
+});

@@ -274,6 +274,18 @@ class ActorSystem extends EventEmitter {
     return this.server ? this.server.boundPort : null;
   }
 
+  /**
+   * 持久化后端能保证什么（见 store/persistence.ts 的 DEFAULT_CAPABILITIES）。
+   *
+   * 存在的理由：没有它时，"以为有乐观并发保护、其实没有"是最危险的状态——
+   * `file` 后端只能保证**同进程**，两个进程写同一目录不会被拦住。
+   */
+  persistenceCapabilities() {
+    const store = this.persistenceStore;
+    const reported = store && typeof store.capabilities === 'function' ? store.capabilities() : null;
+    return { conditionalAppend: false, ...(reported || {}) };
+  }
+
   /** Connect to a peer node and get a handle that hands out remote ActorRefs. */
   async connect(options = {}) {
     if (!options.host || options.port === undefined) {

@@ -63,6 +63,12 @@ class ActorCell {
     });
 
     this.persistence = resolvePersistence(this.options.persistence, system.persistenceStore);
+    /**
+     * 事件日志的"已写入版本"（= 条数；数据层有 seq 时就是最后一条的 seq）。
+     * 恢复时由 `_restore` 填上，之后每次成功追加 +1 —— 用它做**条件写**（乐观并发）。
+     */
+    this._eventVersion = null;
+    this._concurrencyWarned = false;
     // A durable mailbox is a system-level capability; fall back to it, and fail
     // loudly if the strategy cannot actually persist anything.
     if (!this.persistence.mailboxStore) this.persistence.mailboxStore = system.mailboxStore || null;
@@ -214,7 +220,9 @@ class ActorCell {
       // so an upgrade is rollback-able and replays stay reproducible.
       // Prefer the batch hook: sequence continuity can only be checked when the
       // whole log is visible at once (a gap means events were lost).
-      const events = this._evolveLog(raw);
+      const { events, lastVersion } = this._evolveLog(raw);
+      this._eventVersion = lastVersion;
+      this._warnIfConcurrencyUnsupported();
       for (const event of events) this.instance.applyEvent(event);
       this.context.restored = events.length > 0;
       this.counters.recovered += events.length;
@@ -725,21 +733,51 @@ class ActorCell {
    */
   _evolveLog(raw) {
     const { evolution } = this.persistence;
-    if (!evolution) return raw;
+    if (!evolution) return { events: raw, lastVersion: raw.length };
     if (evolution.readLog) {
       const result = callEvolution(evolution.readLog, raw, 'readLog');
       if (!result || !Array.isArray(result.events)) {
         throw new PersistenceError('persistence.evolution.readLog must return { events: [...] }');
       }
-      return result.events;
+      const lastSeq = Number.isInteger(result.lastSeq) ? result.lastSeq : null;
+      // 数据层跟踪 seq 时以它为准；否则退回"记录条数"（后端只认条数，格式无关）
+      return { events: result.events, lastVersion: lastSeq === null ? raw.length : lastSeq };
     }
-    if (evolution.upcast) return raw.map((item) => callEvolution(evolution.upcast, item, 'upcast'));
-    return raw;
+    if (evolution.upcast) {
+      return { events: raw.map((item) => callEvolution(evolution.upcast, item, 'upcast')), lastVersion: raw.length };
+    }
+    return { events: raw, lastVersion: raw.length };
+  }
+
+  /** 后端不支持条件写时说一次（而不是让用户"以为有乐观并发保护"）。 */
+  _warnIfConcurrencyUnsupported() {
+    if (this._concurrencyWarned || this.persistence.mode !== 'events') return;
+    this._concurrencyWarned = true;
+    if (this._conditionalAppend()) return;
+    this.system._log('persistence_concurrency_unsupported', {
+      path: this.path,
+      hint: '该后端不支持条件写（capabilities().conditionalAppend === false）：并发写入不会被拦住',
+    });
+  }
+
+  /** 后端是否支持条件写（'atomic' 或 'in-process' 都算；默认 false）。 */
+  _conditionalAppend() {
+    const store = this.persistence.store;
+    if (!store || typeof store.capabilities !== 'function') return false;
+    const capability = (store.capabilities() || {}).conditionalAppend;
+    return capability === 'atomic' || capability === 'in-process';
   }
 
   async persistEvent(event) {
     const { mode, store, evolution } = this.persistence;
-    if (mode === 'events' && store) await store.appendEvent(this.path, event);
+    if (mode === 'events' && store) {
+      // 乐观并发：把"我以为日志到哪了"带上；后端版本对不上就抛 PersistenceConflictError 且不写入
+      const version = this._eventVersion;
+      const options =
+        this._conditionalAppend() && version !== null ? { expectedVersion: version } : {};
+      await store.appendEvent(this.path, event, options);
+      this._eventVersion = (version ?? 0) + 1;
+    }
     if (mode === 'snapshot') this._snapshotDirty = true;
     // Apply **exactly what a replay would apply**: run the same evolution pipeline
     // here too. Otherwise a live write of an envelope would hand `applyEvent` the

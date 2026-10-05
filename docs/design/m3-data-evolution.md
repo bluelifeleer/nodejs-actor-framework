@@ -217,7 +217,7 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | 测试（第 1 步） | ✅ | `packages/data/test/*` 24 例；真实内核 + 真实文件（旧代码写、新代码读；混合日志重放；拒绝启动不破坏数据） |
 | **第 2a 步：聚合基类** | ✅ | `defineAggregate`（命令→事件、纯 `applyEvent`、信封接入、元数据不可枚举）；单元 16 例 + 集成 4 例（内核直连 / 应用层两条路径） |
 | **第 2b-① 步：`seq` + 批量读取 hook** | ✅ | 信封加**每聚合单调 `seq`**（聚合写入时发号、重放时把计数器推到同一位置）；注册表新增 `readLog(raws, {fromSeq})` —— 旧日志**按位置补号**、**断号当场报错**；内核 `_restore` 优先走批量 hook |
-| 第 2c-① 步：`appendEvent(expectedSeq)` + 后端能力 | ⏳ | 见 §6.5 第 2 条 |
+| **第 2c-① 步：条件写 + 后端能力** | ✅ | `appendEvent(id, event, { expectedVersion })`（不匹配抛 `PersistenceConflictError` 且不写入）；`capabilities().conditionalAppend` = `'atomic' \| 'in-process' \| false`，`file`/`memory` 如实报**仅同进程**；内核自动带上日志版本，聚合因此开箱就有乐观并发 |
 | 第 2b-② 步：快照缓存 + 增量重放 | ⏳ | 需要内核支持"快照 + 事件日志"共存；顺带补上 doc 04 §4.2 的"无迁移则从事件重建" |
 | 第 2c 步：`expectedVersion` 乐观并发 | ⏳ | 需要事件日志加**每聚合单调序号** + 条件追加；动手前先把格式决策摆出来 |
 | 第 3–6 步 | ⏳ | Repository / 迁移框架 / Outbox / 投影 |
@@ -329,9 +329,26 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 
 ### 6.5 实施顺序（已定，按此执行）
 
+> 进度：① ✅ ② ✅ ③ ⏳ ④ ⏳（④ 与 ② 是同一件事的两半：② 提供条件写，④ 让聚合把整批事件
+> 作为原子批次使用它）
+
 1. ✅ **已完成**：事件信封加 `seq` + 批量读取 hook（`readLog`，读取期给旧日志补号、检查序号连续、
    断号当场报错）；内核 `_restore` 优先用批量 hook；
-2. ⏳ `appendEvent` 支持 `expectedSeq` + 后端能力查询；
+2. ✅ **已完成**：`appendEvent` 支持条件写（`expectedVersion`）+ 后端能力查询
+   （`system.persistenceCapabilities()`）；内核 `persistEvent` 自动带上日志版本；
 3. `mode: 'events'` 支持可选快照：恢复时"快照 + 增量重放"（用 `readLog({ fromSeq })`），
    快照不可用时**丢弃并全量重放**（补上 doc 04 §4.2 规则 2）；
 4. 聚合层接上 `expectedSeq`（命令产出的整批事件作为一个原子批次），并在不支持的 backend 上明确报/记降级。
+
+### 6.6 条件写的实现说明（第 2c-① 步）
+
+| 点 | 做法与理由 |
+|---|---|
+| "版本"用什么表示 | **已写入的记录条数**，而不是"事件信封里的 `seq`"。理由：后端要保持**格式无关**（它们不认识信封）；而 `readLog` 已保证 `seq` 连续，所以条数 == 最后一条的 `seq` |
+| 谁提供期望值 | 内核：`_restore` 时把日志版本记下来（数据层有 `seq` 就用 `lastSeq`，否则用条数），每次成功追加 +1，写入时作为 `expectedVersion` 带上。所以**聚合与普通 Actor 都自动获得**这个保护，不需要业务代码配合 |
+| `file` 后端怎么做 | 缓存 `{size, count}`：靠**文件大小**判断有没有别人追加过（同进程里可能有第二个指向同一目录的实例），只解析新增的那段字节。跨进程**不保证**，能力如实报 `'in-process'` |
+| 不支持的后端 | 内核不传条件（避免"以为有保护"），并在 spawn 时记一条 `persistence_concurrency_unsupported` 日志；`system.persistenceCapabilities()` 可查 |
+| 失败语义 | `PersistenceConflictError`（`PersistenceError` 子类），带 `{ actorId, expectedVersion, actualVersion }`；**不写入**。第二个拥有者必须重新加载后才能继续 |
+
+**边界（写清楚，避免误用）**：这一层挡的是"同一份存储被两个 writer 抢"。它**不是**分布式锁，
+也不解决"两个节点都自认为拥有这个聚合"的选主问题（那属于 M4 的分片所有权 + fencing token）。

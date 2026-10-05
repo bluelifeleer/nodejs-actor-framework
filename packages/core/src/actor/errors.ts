@@ -31,6 +31,17 @@ class ActorNotFoundError extends ActorFrameworkError {}
 class PersistenceError extends ActorFrameworkError {}
 
 /**
+ * A conditional append lost the race: the log already moved past the version the
+ * caller expected. Nothing was written.
+ *
+ * This is the storage-level half of optimistic concurrency (see
+ * docs/design/m3-data-evolution.md §6.4): it catches "the same aggregate is owned
+ * by two nodes at once". Whether the check is atomic across processes depends on
+ * the backend — `adapter.capabilities().conditionalAppend` says which.
+ */
+class PersistenceConflictError extends PersistenceError {}
+
+/**
  * Raised inside a supervisor when a child exceeded its restart intensity:
  * the supervisor escalates by failing itself, so its own parent decides.
  */
@@ -44,5 +55,6 @@ module.exports = {
   ActorStoppedError,
   ActorNotFoundError,
   PersistenceError,
+  PersistenceConflictError,
   EscalationError,
 };
