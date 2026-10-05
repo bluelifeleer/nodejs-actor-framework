@@ -199,6 +199,12 @@ async function loadFileLayers(
       const data = await readConfigFile(file);
       if (data) {
         const label = path.relative(process.cwd(), file);
+        // `config/default.ts` 常常直接导出 defineConfig(...) 的**定义**（含 schema 与校验规则），
+        // 它是 schema 而不是配置值：不能参与值合并（否则会被当成一堆未知配置项）。
+        if ((data as { __kind?: unknown }).__kind === 'actor.config') {
+          sources.push(`${label} (schema)`);
+          break;
+        }
         mergeKnown(merged, data, known, label, issues);
         sources.push(label);
         break; // 每个 base 只取第一个存在的文件

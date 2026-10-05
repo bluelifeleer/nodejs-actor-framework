@@ -2,6 +2,7 @@ import { createSystem, defineActor } from 'nodejs-actor-framework';
 
 import {
   defineConfig,
+  type ConfigSchema,
   loadConfig,
   type ConfigDefinition,
   type LoadedConfig,
@@ -16,6 +17,27 @@ import {
  * 依赖是**按名字**解析的，因此未知依赖与循环依赖都能在 `start()` 时立刻报错，
  * 而不是等到运行期才炸。
  */
+
+/** 配置读取器（结构上与 LoadedConfig 一致，便于用户在自己的 Actor 里声明类型）。 */
+export interface ConfigReader {
+  get<T = unknown>(dottedPath: string): T;
+  all(): Record<string, unknown>;
+  redacted(): Record<string, unknown>;
+  readonly sources: readonly string[];
+}
+
+export interface Logger {
+  info(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+}
+
+/** 注入给 Actor/provider 的依赖上下文：内置 config/log + 已解析的 provider。 */
+export interface AppDeps {
+  config: ConfigReader;
+  log: Logger;
+  [providerName: string]: unknown;
+}
 
 /** 应用层可见的 Actor 句柄（结构化类型，避免把内核类型暴露给用户）。 */
 export interface ActorHandle {
@@ -53,8 +75,8 @@ export interface ModuleSpec {
   onStop?: (app: Application) => void | Promise<void>;
 }
 
-export interface AppSpec {
-  config?: ConfigDefinition<never>;
+export interface AppSpec<S extends ConfigSchema = ConfigSchema> {
+  config?: ConfigDefinition<S>;
   modules: readonly ModuleSpec[];
 }
 
@@ -105,7 +127,7 @@ export function defineModule(spec: ModuleSpec): ModuleSpec {
 }
 
 /** 声明一个应用。 */
-export function defineApp(spec: AppSpec): AppSpec {
+export function defineApp<S extends ConfigSchema>(spec: AppSpec<S>): AppSpec<S> {
   return spec;
 }
 
@@ -118,13 +140,14 @@ export class Application {
   private readonly disposedProviders: string[] = [];
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
+  private keepAlive: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private stopped = false;
 
-  private readonly spec: AppSpec;
+  private readonly spec: AppSpec<ConfigSchema>;
   private readonly options: CreateAppOptions;
 
-  constructor(spec: AppSpec, options: CreateAppOptions = {}) {
+  constructor(spec: AppSpec<ConfigSchema>, options: CreateAppOptions = {}) {
     this.spec = spec;
     this.options = options;
   }
@@ -161,7 +184,7 @@ export class Application {
     this.started = true;
 
     // 1) 配置：最先执行，失败即启动失败（一次性报出全部问题）
-    const definition = (this.spec.config ?? defineConfig({})) as ConfigDefinition<never>;
+    const definition = (this.spec.config ?? defineConfig({})) as ConfigDefinition<ConfigSchema>;
     this.loadedConfig = await loadConfig(definition, {
       ...(this.options.configDir === undefined ? {} : { configDir: this.options.configDir }),
       ...(this.options.env === undefined ? {} : { env: this.options.env }),
@@ -189,6 +212,10 @@ export class Application {
 
     // 5) 模块 onStart（按声明顺序）
     for (const mod of this.modules) await mod.onStart?.(this);
+
+    // 6) 保持进程存活：应用 start() 之后应当一直运行，直到 stop()。
+    // 否则一个"没有端口/定时器"的应用会在事件循环排空后自己退出（实测就是如此）。
+    this.keepAlive = setInterval(() => {}, 2 ** 31 - 1);
     return this;
   }
 
@@ -203,6 +230,10 @@ export class Application {
       } catch {
         /* onStop 不应阻断停止流程 */
       }
+    }
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
     }
     if (this.system) {
       const system = this.system as { stop: (o?: unknown) => Promise<void> };
@@ -272,9 +303,9 @@ export class Application {
     return value;
   }
 
-  private builtins(): Record<string, unknown> {
+  private builtins(): AppDeps {
     return {
-      config: this.loadedConfig,
+      config: this.config,
       log: { info: console.info, warn: console.warn, error: console.error },
     };
   }
@@ -319,6 +350,9 @@ export class Application {
 }
 
 /** 创建应用（不启动）。`application.start()` 才会校验配置并装配。 */
-export function createApp(spec: AppSpec, options: CreateAppOptions = {}): Application {
-  return new Application(spec, options);
+export function createApp<S extends ConfigSchema>(
+  spec: AppSpec<S>,
+  options: CreateAppOptions = {},
+): Application {
+  return new Application(spec as AppSpec<ConfigSchema>, options);
 }

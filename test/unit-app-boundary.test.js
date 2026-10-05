@@ -55,7 +55,9 @@ test('app boundary: 用户示例不得直接 import 内核或深路径源码', (
   const apps = fs.existsSync(examplesDir)
     ? fs.readdirSync(examplesDir).filter((name) => name.startsWith('app-'))
     : [];
-  const forbidden = /(?:from|require\()\s*['"]@actor\/core['"]|packages\/core\/src|nodejs-actor-framework\/src/;
+  // 用户示例不得直接依赖内核：包名、深路径、源码路径都算
+  const forbidden =
+    /(?:from|require\()\s*['"](?:@actor\/core|nodejs-actor-framework)(?:\/[^'"]*)?['"]|packages\/core\/src/;
   for (const name of apps) {
     for (const file of walk(path.join(examplesDir, name))) {
       const text = fs.readFileSync(file, 'utf8');
