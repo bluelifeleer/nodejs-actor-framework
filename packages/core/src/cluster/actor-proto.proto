@@ -11,8 +11,13 @@
 //   codec 1 = Protocol Buffers (the message below)
 //
 // The codec byte is part of every frame, so a node accepts both encodings and
-// mixed peers interoperate without negotiation. Field numbers and names below
-// match proto.js exactly.
+// mixed peers interoperate without negotiation.
+//
+// Field numbers are append-only: new fields get the next free number and old
+// numbers are never reused or renumbered (decoders skip unknown fields, which is
+// what makes rolling upgrades work). Keep this file in sync with proto.ts — it
+// drifted once (this schema used to stop at field 9 while proto.ts was at 14),
+// and a stale schema is worse than none because people copy field numbers from it.
 
 syntax = "proto3";
 
@@ -31,6 +36,14 @@ message GatewayFrame {
   bool ok = 7;              // result: success flag
   string error = 8;         // result/error: failure description
   bytes dataJson = 9;       // result: utf-8 JSON of the actor's reply
+  uint64 timeoutMs = 10;    // deliver: caller's timeout, so a remote call keeps local semantics
+  string senderPath = 11;   // deliver: who is asking (so the callee can reply)
+  bytes traceJson = 12;     // deliver: utf-8 JSON of the trace context
+  string senderHost = 13;   // deliver: sender's gateway host (reply without waiting for gossip)
+  uint64 senderPort = 14;   // deliver: sender's gateway port
+  uint64 shardEpoch = 15;   // fencing token: which generation owns the target's shard (optional)
+  bytes capsJson = 16;      // hello: utf-8 JSON array of capability names, e.g. ["fence"]
+  uint64 shardCount = 17;   // hello: the sender's shard count (mismatch => refuse the connection)
 }
 
 // Actor payloads are JSON objects with a `type` discriminator plus arbitrary

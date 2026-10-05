@@ -104,8 +104,14 @@ class Peer {
       kind: 'tell',
       targetActorId: String(path),
       payload: msg,
+      ...this.epochField(String(path)),
       ...this._selfAddress(sender, trace),
     });
+  }
+
+  /** fencing token：本节点认为目标 shard 是第几代（没装守卫时是空对象）。 */
+  epochField(path) {
+    return typeof this.gateway.epochField === 'function' ? this.gateway.epochField(path) : {};
   }
 
   ask(path, msg, timeoutMs = config.actor.requestTimeoutMs, sender = null, trace = null) {
@@ -123,7 +129,7 @@ class Peer {
     const res = await this.gateway.request(
       this.host,
       this.port,
-      { kind: 'stop', targetActorId: String(path) },
+      { kind: 'stop', targetActorId: String(path), ...this.epochField(String(path)) },
       config.actor.requestTimeoutMs,
     );
     if (!res || res.kind !== 'result') throw new ActorStoppedError(`unexpected stop response: ${JSON.stringify(res)}`);

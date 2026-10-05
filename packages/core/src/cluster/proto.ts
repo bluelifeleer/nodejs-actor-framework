@@ -183,6 +183,14 @@ const GATEWAY_FRAME_SCHEMA = [
   // remote sender without waiting for gossip to learn about it.
   { name: 'senderHost', no: 13, type: 'string' },
   { name: 'senderPort', no: 14, type: 'uint64' },
+  // 15: fencing token 的"第几代"。**可选**：老节点不写它，新解码器读不到就当作"没有 token"
+  // （见 docs/design/m4-cluster-governance.md §3.4：软升级是默认策略）。
+  { name: 'shardEpoch', no: 15, type: 'uint64' },
+  // 16-17: hello 的能力与分片数。caps 用 JSON bytes（数组；不引入 repeated 支持，
+  // 与 payload/trace/registry 的做法一致）。**注意**：任何新字段都必须在这里登记，
+  // 否则 protobuf 路径会静默丢掉它（JSON 路径照带）——我自己就踩过这个坑。
+  { name: 'capsJson', no: 16, type: 'bytes' },
+  { name: 'shardCount', no: 17, type: 'uint64' },
 ];
 
 function toJsonBytes(value) {
@@ -216,6 +224,9 @@ function encodeGatewayFrame(frame) {
     traceJson: toJsonBytes(frame.trace),
     senderHost: frame.senderHost,
     senderPort: frame.senderPort,
+    shardEpoch: frame.shardEpoch,
+    capsJson: toJsonBytes(frame.caps),
+    shardCount: frame.shardCount,
   });
 }
 
@@ -234,6 +245,8 @@ function decodeGatewayFrame(buf) {
   if (wire.senderPath !== undefined) frame.senderPath = wire.senderPath;
   if (wire.senderHost !== undefined) frame.senderHost = wire.senderHost;
   if (wire.senderPort !== undefined) frame.senderPort = wire.senderPort;
+  if (wire.shardEpoch !== undefined) frame.shardEpoch = wire.shardEpoch;
+  if (wire.shardCount !== undefined) frame.shardCount = wire.shardCount;
   try {
     const payload = fromJsonBytes(wire.payloadJson);
     if (payload !== undefined) frame.payload = payload;
@@ -241,6 +254,8 @@ function decodeGatewayFrame(buf) {
     if (data !== undefined) frame.data = data;
     const trace = fromJsonBytes(wire.traceJson);
     if (trace !== undefined) frame.trace = trace;
+    const caps = fromJsonBytes(wire.capsJson);
+    if (caps !== undefined) frame.caps = caps;
   } catch (err) {
     throw new Error(`gateway frame carries invalid JSON: ${err.message}`);
   }

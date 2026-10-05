@@ -146,7 +146,31 @@ ring owner，且没有更新的声明被观察到），本地**无法**识别它
 > - **D6**：`hello` 交换 `shardCount`，**不一致就拒绝连接**并给出明确错误——算错 shard 比拒绝连接
 >   危险得多（会静默放行/拒绝错误的帧），而 `shardCount` 本就是运维常量，不一致属于配置事故。
 
-### 3.4.5 2b 实施清单（照着做即可）
+### 3.4.5 2b 进展（协议半边已完成）
+
+| # | 改动 | 状态 |
+|---|---|---|
+| 1 | `proto.ts`：字段 15 `shardEpoch`（另加 16 `capsJson`、17 `shardCount`）；`.proto` 参考文档补到 17 并加"字段只追加"纪律 | ✅ |
+| 2 | `gateway.ts`：出站 tell/stop/deliver 带 `shardEpoch`（拿不到就**不带**字段）；hello **双向**交换 `caps`/`shardCount`；不一致或硬门不满足 → 明确拒绝；`verifyOwnership` 钩子 | ✅ |
+| 3 | `plugins/cluster.ts`：接守卫、成员视图喂环、`shard:<id>` 声明走 gossip、`system.cluster.ownership` | ⏳ |
+| 4 | 能力可见性：`system.cluster.fencing()`（supported + 每个对端是否支持 + 降级计数） | ⏳ |
+| 5 | 两节点端到端：旧 epoch 被拒、声明传播后旧 owner 失效、新旧节点互发 | ⏳ |
+
+**协议半边的三条判定规则**（`Gateway._checkOwnership`，都有测试）：
+1. 帧上**有** `epoch` → 交给 `verifyOwnership` 钩子判（旧 epoch 被拒）；
+2. 帧上**没有** `epoch` 但对端**声明支持** fencing → **拒绝**（协议违规：它知道规则却没带）；
+3. 帧上**没有** `epoch` 且对端**不支持** → 放行 + `fencing_skipped` 事件（软升级，但降级**可见**）。
+
+**能力默认值必须诚实**：`caps` 只在真的装了 `epochFor`（能产出 token）时才包含 `fence`。
+第一版把默认写成"永远声明支持"，结果**没装守卫的节点也宣称支持却带不出 epoch** → 每条帧都被
+判成协议违规，`unit-tls` 的"滚动升级"用例当场抓到（真实回归）。这条与 §3.4.3 的"降级必须可见"
+是一体两面：**不能声明自己做不到的事**。
+
+**编码路径的坑（我自己踩了）**：protobuf 编码器只写 schema 里登记过的字段，**没登记就被静默丢弃**
+（JSON 路径照带）。第一版只往帧对象里加了 `caps`/`shardCount`，于是 proto 模式下 hello 的能力信息
+凭空消失——正是 §3.4.1 里我自己写下的那条规则。现在 16/17 已登记，并有测试同时验两条编码路径。
+
+### 3.4.6 2b 实施清单（原始，供 3/4/5 对照）
 
 | # | 改动 | 验收 |
 |---|---|---|

@@ -75,6 +75,24 @@ class Gateway extends EventEmitter {
     this.tls = options.tls || config.tls;
     // With TLS on, identity matters: no data before a verified hello.
     this.requireHello = tlsUtil.isEnabled(this.tls) && this.tls.verifyNodeId !== false;
+    /**
+     * fencing（M4 第 2b 步）：本节点声明自己支持 fencing，并在 hello 里带 `shardCount`。
+     * 两个决策见 docs/design/m4-cluster-governance.md §3.4.4：
+     *   - 默认**软升级**：对端不支持 fencing 时放行，但必须**可见**（`fencing_skipped` 事件）；
+     *   - `requireFencing: true` 时切**硬门**：对端不支持就直接拒绝握手。
+     */
+    /**
+     * 能力默认值**取决于我们是否真的能产出 token**：装了 `epochFor` 才声明 `fence`。
+     * 反过来（声明支持却产不出 epoch）会让每条帧都变成"协议违规"——这是自己在说谎，
+     * 会把滚动升级中的老配置一脚踢出集群（真实回归：unit-tls 的滚动升级用例）。
+     */
+    this.caps = options.caps === undefined ? (typeof options.epochFor === 'function' ? ['fence'] : []) : options.caps;
+    this.shardCount = options.shardCount === undefined ? null : options.shardCount;
+    this.requireFencing = options.requireFencing === true;
+    /** 所有权判定钩子：网关不认识守卫，只把 (kind, target, epoch, peer) 交给它。 */
+    this.verifyOwnership = options.verifyOwnership || null;
+    /** 出站时"本节点认为目标 shard 是第几代"（没装守卫时返回 null，即不带字段）。 */
+    this.epochFor = options.epochFor || null;
 
     this.server = null;
     this.boundPort = null;
@@ -144,6 +162,13 @@ class Gateway extends EventEmitter {
     });
   }
 
+  /** 出站帧上的 fencing 字段：拿不到 epoch 就**不写这个字段**（老节点会忽略它）。 */
+  epochField(targetActorId) {
+    if (typeof this.epochFor !== 'function') return {};
+    const epoch = this.epochFor(targetActorId);
+    return Number.isInteger(epoch) && epoch >= 1 ? { shardEpoch: epoch } : {};
+  }
+
   _send(socket, obj) {
     if (socket.destroyed) return;
     try {
@@ -151,6 +176,57 @@ class Gateway extends EventEmitter {
     } catch (err) {
       this.emit('protocol_error', err);
     }
+  }
+
+  /**
+   * 握手检查（两个决策都在这里）：
+   *   - D6：`shardCount` 两边都有且不一致 → **拒绝连接**（算错 shard 会静默放行/拒绝错误的帧）；
+   *   - D5：`requireFencing` 时对端必须声明支持 fencing，否则拒绝握手。
+   * 返回 `null` = 通过；返回字符串 = 拒绝原因。
+   */
+  _checkHandshake(frame) {
+    const peerShardCount = Number.isInteger(frame.shardCount) ? frame.shardCount : null;
+    if (peerShardCount !== null && this.shardCount !== null && peerShardCount !== this.shardCount) {
+      return (
+        `shardCount 不一致：对端 ${peerShardCount}，本节点 ${this.shardCount}` +
+        '（两边会算出不同的 shard，fencing 判定就失去意义——请统一这个运维常量）'
+      );
+    }
+    const peerCaps = Array.isArray(frame.caps) ? frame.caps : [];
+    if (this.requireFencing && !peerCaps.includes('fence')) {
+      return '本节点要求 fencing（requireFencing: true），但对端没有声明支持：拒绝连接';
+    }
+    return null;
+  }
+
+  /**
+   * 所有权判定（返回 `null` = 通过）：
+   *   - 对端**声明支持 fencing 却没有带 epoch** → 拒绝（协议违规，不是"老节点"）；
+   *   - 对端不支持 fencing 且没带 epoch → 放行，但发 `fencing_skipped` 事件（**降级必须可见**）；
+   *   - 带了 epoch → 交给 `verifyOwnership` 钩子判（旧 epoch 会被它拒掉）。
+   */
+  _checkOwnership(frame, state) {
+    const epoch = Number.isInteger(frame.shardEpoch) ? frame.shardEpoch : null;
+    const peerSupportsFencing = Array.isArray(state.peerCaps) && state.peerCaps.includes('fence');
+    if (epoch === null) {
+      if (peerSupportsFencing) {
+        return '对端声明支持 fencing，却没有在帧上带 shardEpoch：拒绝（协议违规）';
+      }
+      this.emit('fencing_skipped', {
+        kind: frame.kind,
+        targetActorId: frame.targetActorId || null,
+        peerNodeId: state.peerNodeId || null,
+      });
+      return null;
+    }
+    if (!this.verifyOwnership) return null; // 没装守卫：epoch 只是随行信息
+    const verdict = this.verifyOwnership({
+      kind: frame.kind,
+      targetActorId: frame.targetActorId || null,
+      shardEpoch: epoch,
+      peerNodeId: state.peerNodeId || null,
+    });
+    return verdict && verdict.ok === false ? verdict.reason || '所有权判定拒绝' : null;
   }
 
   async _handleFrame(frame, socket) {
@@ -164,9 +240,24 @@ class Gateway extends EventEmitter {
         socket.destroy();
         return;
       }
+      const refuse = this._checkHandshake(frame);
+      if (refuse !== null) {
+        this.emit('handshake_rejected', refuse, { nodeId: frame.nodeId || null });
+        socket.destroy();
+        return;
+      }
       state.helloOk = true;
+      state.peerNodeId = frame.nodeId || null;
+      state.peerCaps = Array.isArray(frame.caps) ? frame.caps : [];
       this.inboundState.set(socket, state);
-      this._send(socket, { kind: 'hello', id: frame.id, nodeId: this.nodeId, codec: this.codecName });
+      this._send(socket, {
+        kind: 'hello',
+        id: frame.id,
+        nodeId: this.nodeId,
+        codec: this.codecName,
+        caps: this.caps,
+        ...(this.shardCount === null ? {} : { shardCount: this.shardCount }),
+      });
       return;
     }
 
@@ -179,6 +270,24 @@ class Gateway extends EventEmitter {
     if (frame.kind === 'ping') {
       this._send(socket, { kind: 'pong', id: frame.id, nodeId: this.nodeId, ts: Date.now() });
       return;
+    }
+
+    // fencing：跨节点的"改状态"动作（tell/stop/deliver）在派发之前先过所有权判定
+    if (frame.kind === 'tell' || frame.kind === 'stop' || frame.kind === 'deliver') {
+      const rejection = this._checkOwnership(frame, state);
+      if (rejection !== null) {
+        this.emit('ownership_rejected', rejection, {
+          kind: frame.kind,
+          targetActorId: frame.targetActorId || null,
+          shardEpoch: frame.shardEpoch === undefined ? null : frame.shardEpoch,
+          peerNodeId: state.peerNodeId || null,
+        });
+        // tell 没有回信通道（只记事件）；stop/deliver 有 id，回一个明确的错误
+        if (frame.kind !== 'tell' && frame.id !== undefined) {
+          this._send(socket, { kind: 'result', id: frame.id, ok: false, error: rejection });
+        }
+        return;
+      }
     }
 
     if (frame.kind === 'tell') {
@@ -265,7 +374,18 @@ class Gateway extends EventEmitter {
         this.emit('connected', addr);
         // Announce ourselves first: the peer rejects data before hello.
         try {
-          socket.write(encodeFrame({ kind: 'hello', nodeId: this.nodeId, codec: this.codecName }, this.codec));
+          socket.write(
+            encodeFrame(
+              {
+                kind: 'hello',
+                nodeId: this.nodeId,
+                codec: this.codecName,
+                caps: this.caps,
+                ...(this.shardCount === null ? {} : { shardCount: this.shardCount }),
+              },
+              this.codec,
+            ),
+          );
         } catch (err) {
           reject(err);
           return;
@@ -298,7 +418,17 @@ class Gateway extends EventEmitter {
         conn.socket.destroy();
         return;
       }
+      // 发起方**也要**检查对端：shardCount 不一致（D6）与 requireFencing（D5）是双向规则，
+      // 否则"我拒绝别人"却"被别人的不一致配置牵着走"。
+      const refuse = this._checkHandshake(frame);
+      if (refuse !== null) {
+        this.emit('handshake_rejected', refuse, { nodeId: frame.nodeId || null, direction: 'outbound' });
+        conn.socket.destroy();
+        return;
+      }
       conn.helloOk = true;
+      conn.peerNodeId = frame.nodeId || null;
+      conn.peerCaps = Array.isArray(frame.caps) ? frame.caps : [];
       this.emit('hello', conn.host, conn.port, frame.nodeId);
       return;
     }
@@ -386,6 +516,7 @@ class Gateway extends EventEmitter {
         senderHost: sender.host || null,
         senderPort: sender.port || null,
         trace: sender.trace || null,
+        ...this.epochField(targetActorId),
       },
       timeoutMs + 500,
     );
