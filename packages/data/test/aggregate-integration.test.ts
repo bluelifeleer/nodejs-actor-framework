@@ -8,7 +8,7 @@ import { createSystem } from 'nodejs-actor-framework';
 import { FilePersistence } from 'nodejs-actor-framework/src/store/persistence.ts';
 import { createApp, defineApp, defineModule } from '@actor/app';
 
-import { defineAggregate, defineEventSchema, type AggregateEvent } from '../src/index.ts';
+import { createEventEnvelope, defineAggregate, defineEventSchema, type AggregateEvent } from '../src/index.ts';
 
 /**
  * 聚合的端到端验证：真实内核 + 真实文件 + 真实重启。
@@ -90,12 +90,18 @@ test('aggregate: 内核直连——命令落盘为信封，重启后状态由事
   const raw = await store.loadEvents('order-1');
   assert.strictEqual(raw.length, 3, '两条 ItemAdded + 一条 Confirmed');
   assert.deepStrictEqual(
-    (raw as { type: string; version: number; payload: unknown }[]).map((e) => [e.type, e.version, e.payload]),
+    (raw as { type: string; version: number; seq: number; payload: unknown }[]).map((e) => [
+      e.type,
+      e.version,
+      e.seq,
+      e.payload,
+    ]),
     [
-      ['ItemAdded', 2, { type: 'ItemAdded', price: 100 }],
-      ['ItemAdded', 2, { type: 'ItemAdded', price: 50 }],
-      ['Confirmed', 1, { type: 'Confirmed' }],
+      ['ItemAdded', 2, 1, { type: 'ItemAdded', price: 100 }],
+      ['ItemAdded', 2, 2, { type: 'ItemAdded', price: 50 }],
+      ['Confirmed', 1, 3, { type: 'Confirmed' }],
     ],
+    '每条事件都带连续的 seq',
   );
 
   // 重启：状态必须由事件重建，与写入期完全一致
@@ -185,4 +191,39 @@ test('aggregate: 未知命令走内核错误通道（ask 拿到真实错误，Ac
   await rejects;
   assert.deepStrictEqual(await afterRestart, { status: 'created', totalCents: 1, items: 1 });
   await system.stop();
+});
+
+test('aggregate: 重启后 seq 从重放位置继续；日志断号 → 拒绝启动（而不是静默少放一条）', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+  const Order = orderAggregate();
+
+  const system1 = createSystem({ logger: false, persistence: { dir } });
+  const ref1 = await system1.spawn(Order, { id: 'order-5', persistence: persistenceFor(Order) });
+  await ref1.ask({ type: 'addItem', price: 1 });
+  await ref1.ask({ type: 'addItem', price: 2 });
+  await system1.stop();
+
+  // 重启：重放把序号计数器推到 2，所以下一条必须是 3（而不是又从 1 开始）
+  const system2 = createSystem({ logger: false, persistence: { dir } });
+  const ref2 = await system2.spawn(Order, { id: 'order-5', persistence: persistenceFor(Order) });
+  await ref2.ask({ type: 'addItem', price: 3 });
+  await system2.stop();
+  assert.deepStrictEqual(
+    ((await store.loadEvents('order-5')) as { seq: number }[]).map((e) => e.seq),
+    [1, 2, 3],
+  );
+
+  // 制造断号（模拟"事件丢了"或有人手工动了日志）
+  await store.appendEvent(
+    'order-5',
+    createEventEnvelope({ type: 'ItemAdded', version: 2, payload: { type: 'ItemAdded', price: 9 }, seq: 5 }),
+  );
+  const system3 = createSystem({ logger: false, persistence: { dir } });
+  await assert.rejects(
+    () => system3.spawn(Order, { id: 'order-5', persistence: persistenceFor(Order) }),
+    /序号不连续：第 4 条的 seq=5，期望 4/,
+    '序号不连续必须当场报错——静默读下去会得到错的状态',
+  );
+  await system3.stop();
 });

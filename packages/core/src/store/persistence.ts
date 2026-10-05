@@ -219,20 +219,22 @@ function resolvePersistence(spec, fallbackStore) {
  * can own the on-disk format without the kernel importing it.
  *
  *   upcast(raw)          events 模式：每条事件在 applyEvent 之前调用
+ *   readLog(raws)        events 模式：**整段日志一起读**（升级 + 序号连续性检查）；重放优先用它，
+ *                        因为"序号是否连续"只有看得到整段日志才能判断
  *   decodeSnapshot(raw)  snapshot 模式：读取快照时调用（版本校验/迁移在这里；抛错 = 拒绝启动）
  *   encodeSnapshot(state) snapshot 模式：写入快照时调用
  *
- * All three must be **synchronous pure functions**; a Promise would be applied /
+ * All of them must be **synchronous pure functions**; a Promise would be applied /
  * stored as an opaque object, which is a silent data corruption, so it is
  * rejected loudly instead.
  */
 function resolveEvolution(evolution) {
   if (evolution === undefined || evolution === null) return null;
   if (typeof evolution !== 'object') {
-    throw new PersistenceError('persistence.evolution must be an object with optional upcast/decodeSnapshot/encodeSnapshot');
+    throw new PersistenceError('persistence.evolution must be an object with optional upcast/readLog/decodeSnapshot/encodeSnapshot');
   }
   const resolved = {};
-  for (const key of ['upcast', 'decodeSnapshot', 'encodeSnapshot']) {
+  for (const key of ['upcast', 'readLog', 'decodeSnapshot', 'encodeSnapshot']) {
     const hook = evolution[key];
     if (hook === undefined) continue;
     if (typeof hook !== 'function') {

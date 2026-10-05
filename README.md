@@ -80,6 +80,7 @@ await system.stop();
 ```js
 const evolution = {
   upcast: (raw) => currentShapeEvent,   // events：每条事件在 applyEvent 之前调用（写入期与重放期都走）
+  readLog: (raws) => ({ events }),      // events：整段日志一起读（升级 + 序号连续性检查）；重放优先用它
   decodeSnapshot: (raw) => state,       // snapshot：读取时校验版本/迁移；**抛错 = 该 Actor 拒绝启动**
   encodeSnapshot: (state) => stored,    // snapshot：写入时套信封
 };
@@ -87,10 +88,11 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events',   evol
 await system.spawn(Tank,  { id: 'tank',    persistence: { mode: 'snapshot', evolution } });
 ```
 
-三个 hook 都可选、默认恒等（不配置时行为与以前完全一致）；必须是**同步**函数，返回 Promise
+这些 hook 都可选、默认恒等（不配置时行为与以前完全一致）；必须是**同步**函数，返回 Promise
 会直接报错而不是被当成事件；**写入期与重放期走同一条 `upcast`**，所以"内存里的状态"与
-"重启后重放出来的状态"不会漂移。`@actor/data`（M3）在此之上提供事件信封、upcast 注册表与
-快照版本策略，见 `docs/design/m3-data-evolution.md`。
+"重启后重放出来的状态"不会漂移。`readLog` 是批量版本：**序号连续性只有看得到整段日志才能判断**
+（断号意味着事件丢了，必须当场报错而不是静默少放一条）。`@actor/data`（M3）在此之上提供事件
+信封（含每聚合单调 `seq`）、upcast 注册表与快照版本策略，见 `docs/design/m3-data-evolution.md`。
 
 ### 隔离：进程内（默认）与 worker（按 Actor 可选）
 

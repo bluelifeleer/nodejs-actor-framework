@@ -201,7 +201,7 @@ class ActorCell {
   }
 
   async _restore() {
-    const { mode, store, mailboxStore, evolution } = this.persistence;
+    const { mode, store, mailboxStore } = this.persistence;
     if (mode === 'snapshot' && store) {
       const restoredState = await this._loadSnapshotForRestore();
       if (restoredState !== undefined) {
@@ -212,9 +212,9 @@ class ActorCell {
       const raw = await store.loadEvents(this.path);
       // Structure evolution happens **on read**: the stored log is never rewritten,
       // so an upgrade is rollback-able and replays stay reproducible.
-      const events = evolution && evolution.upcast
-        ? raw.map((item) => callEvolution(evolution.upcast, item, 'upcast'))
-        : raw;
+      // Prefer the batch hook: sequence continuity can only be checked when the
+      // whole log is visible at once (a gap means events were lost).
+      const events = this._evolveLog(raw);
       for (const event of events) this.instance.applyEvent(event);
       this.context.restored = events.length > 0;
       this.counters.recovered += events.length;
@@ -714,6 +714,27 @@ class ActorCell {
     if (raw === undefined) return undefined;
     if (!evolution || !evolution.decodeSnapshot) return raw;
     return callEvolution(evolution.decodeSnapshot, raw, 'decodeSnapshot');
+  }
+
+  /**
+   * Turn the stored records into the events to apply.
+   *
+   * `readLog` (batch) is preferred over `upcast` (per event) because sequence
+   * continuity — "no event was lost" — can only be established with the whole log
+   * in hand. A data layer that only provides `upcast` keeps working unchanged.
+   */
+  _evolveLog(raw) {
+    const { evolution } = this.persistence;
+    if (!evolution) return raw;
+    if (evolution.readLog) {
+      const result = callEvolution(evolution.readLog, raw, 'readLog');
+      if (!result || !Array.isArray(result.events)) {
+        throw new PersistenceError('persistence.evolution.readLog must return { events: [...] }');
+      }
+      return result.events;
+    }
+    if (evolution.upcast) return raw.map((item) => callEvolution(evolution.upcast, item, 'upcast'));
+    return raw;
   }
 
   async persistEvent(event) {

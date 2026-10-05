@@ -52,7 +52,8 @@ function orderSpec(overrides: OrderSpec = {}) {
  */
 function harness(definition: AggregateDefinition<OrderState>, wireEvolution = false) {
   const persisted: unknown[] = [];
-  const holder: { state: OrderState } = { state: definition.state() };
+  const holder: { state: OrderState; __aggregateSeq?: number } = { state: definition.state() };
+  definition.preStart?.call(holder, {}); // 真实内核在 spawn 时会调 preStart（聚合靠它初始化序号计数器）
   const upcast = wireEvolution ? definition.evolution?.upcast : undefined;
   const ctx: AggregateContext = {
     persist: async (event: unknown) => {
@@ -71,9 +72,10 @@ test('aggregate: 命令产出的事件被套上信封（type/version/payload）�
   const returned = await Order.receive.call(h.holder, { type: 'addItem', price: 100 }, h.ctx);
 
   assert.strictEqual(h.persisted.length, 1);
-  const envelope = h.persisted[0] as { type: string; version: number; payload: unknown; eventId: string };
+  const envelope = h.persisted[0] as { type: string; version: number; payload: unknown; eventId: string; seq: number };
   assert.strictEqual(envelope.type, 'ItemAdded');
   assert.strictEqual(envelope.version, 2, '版本来自 events schema 的当前版本');
+  assert.strictEqual(envelope.seq, 1, 'seq 从 1 开始，由聚合在写入时确定');
   assert.deepStrictEqual(envelope.payload, { type: 'ItemAdded', price: 100 });
   assert.match(envelope.eventId, /^evt-/);
 
@@ -127,6 +129,36 @@ test('aggregate: 接了 evolution 时旧版本事件被升级后应用', async (
   assert.deepStrictEqual(h.holder.state, { status: 'created', totalCents: 300 });
 });
 
+test('aggregate: seq 跨命令连续递增（重启后由重放推到同一位置，不重复发号）', async () => {
+  const Order = orderSpec();
+  const h = harness(Order);
+  await Order.receive.call(h.holder, { type: 'addItem', price: 1 }, h.ctx);
+  await Order.receive.call(h.holder, { type: 'addItem', price: 2 }, h.ctx);
+  await Order.receive.call(h.holder, { type: 'addItem', price: 3 }, h.ctx);
+  assert.deepStrictEqual(
+    (h.persisted as { seq: number }[]).map((e) => e.seq),
+    [1, 2, 3],
+  );
+
+  // 模拟"重启"：新宿主 + preStart（计数器归零）+ 重放两条（信封带 seq）
+  const restarted = harness(Order, true);
+  const envelopes = h.persisted.slice(0, 2);
+  for (const envelope of envelopes) {
+    Order.applyEvent.call(restarted.holder, Order.evolution?.upcast?.(envelope) ?? envelope);
+  }
+  const { ctx, persisted } = { ctx: restarted.ctx, persisted: restarted.persisted };
+  await Order.receive.call(restarted.holder, { type: 'addItem', price: 9 }, ctx);
+  assert.strictEqual((persisted[0] as { seq: number }).seq, 3, '重放两条之后，下一条应该是 3');
+});
+
+test('aggregate: preStart 总会定义（初始化序号计数器），用户钩子仍被调用', async () => {
+  const calls: string[] = [];
+  const Order = orderSpec({ preStart: () => calls.push('user') } as never);
+  assert.strictEqual(typeof Order.preStart, 'function');
+  Order.preStart?.call({ state: Order.state() }, {});
+  assert.deepStrictEqual(calls, ['user']);
+});
+
 test('aggregate: 一个命令可以产出多个事件；不产出事件也合法', async () => {
   const Order = defineAggregate<OrderState>({
     name: 'Order',
@@ -144,6 +176,11 @@ test('aggregate: 一个命令可以产出多个事件；不产出事件也合法
     ['A', 'B'],
   );
   assert.strictEqual((h.persisted[0] as { version: number }).version, 1, '未声明的类型按 v1 落盘');
+  assert.deepStrictEqual(
+    (h.persisted as { seq: number }[]).map((e) => e.seq),
+    [1, 2],
+    '一个命令产出的多条事件拿到连续的 seq',
+  );
 
   const h2 = harness(Order);
   const returned = await Order.receive.call(h2.holder, { type: 'none' }, h2.ctx);
@@ -236,7 +273,11 @@ test('aggregate: 定义写错在构造期就报错', () => {
 
 test('aggregate: 元数据不可枚举（内核的 unknown-keys 拼写检查不会被误触发）', () => {
   const Order = orderSpec();
-  assert.deepStrictEqual(Object.keys(Order).sort(), ['applyEvent', 'receive', 'state'], '暴露给内核的键只有 handler 名');
+  assert.deepStrictEqual(
+    Object.keys(Order).sort(),
+    ['applyEvent', 'preStart', 'receive', 'state'],
+    '暴露给内核的键只有 handler 名',
+  );
   for (const metadata of ['name', 'events', 'registry', 'evolution']) {
     assert.ok(metadata in Order, `${metadata} 应可通过属性访问到`);
   }

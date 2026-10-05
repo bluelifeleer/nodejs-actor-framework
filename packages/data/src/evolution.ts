@@ -1,9 +1,10 @@
 /**
  * 把"事件/快照的演进规则"编译成内核对得上的 **`persistence.evolution` hook 对象**。
  *
- * 内核不认识信封，只认三个可选的同步纯函数（见 packages/core/src/store/persistence.ts）：
+ * 内核不认识信封，只认这几个可选的同步纯函数（见 packages/core/src/store/persistence.ts）：
  *
- *   upcast(raw)           events 模式：每条事件在 applyEvent 之前调用
+ *   upcast(raw)           events 模式：每条事件在 applyEvent 之前调用（写入期也走）
+ *   readLog(raws)         events 模式：**整段日志一起读**（升级 + 序号连续性检查）；重放优先用它
  *   decodeSnapshot(raw)   snapshot 模式：读取时校验版本 / 迁移；抛错 = 拒绝启动
  *   encodeSnapshot(state) snapshot 模式：写入时套信封
  *
@@ -34,6 +35,8 @@ export interface EvolutionSpec {
 /** 内核 `persistence.evolution` 期望的形状（结构类型，不 import 内核）。 */
 export interface PersistenceEvolution {
   upcast?(raw: unknown): unknown;
+  /** 批量读取整段日志（升级 + 序号连续性检查）。内核重放时优先用它。 */
+  readLog?(raws: readonly unknown[], options?: { fromSeq?: number }): { events: unknown[]; lastSeq: number | null };
   decodeSnapshot?(raw: unknown): unknown;
   encodeSnapshot?(state: unknown): unknown;
 }
@@ -43,6 +46,7 @@ function isEventRegistry(value: readonly EventSchema[] | EventRegistry): value i
   return (
     typeof candidate.upcast === 'function' &&
     typeof candidate.upcastAll === 'function' &&
+    typeof candidate.readLog === 'function' &&
     typeof candidate.types === 'function'
   );
 }
@@ -69,6 +73,7 @@ export function defineEvolution(spec: EvolutionSpec): PersistenceEvolution {
       ? events
       : createEventRegistry(events, legacy === undefined ? {} : { legacy });
     evolution.upcast = (raw: unknown) => registry.upcast(raw);
+    evolution.readLog = (raws: readonly unknown[], options?: { fromSeq?: number }) => registry.readLog(raws, options);
   } else if (legacy !== undefined) {
     throw new Error('defineEvolution: 只给 legacy 而没有给 events —— 旧格式读取器需要配合升级链才有意义');
   }

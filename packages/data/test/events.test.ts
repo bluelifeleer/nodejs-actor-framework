@@ -211,3 +211,75 @@ test('events: 信封工具（isEventEnvelope / createEventEnvelope）', () => {
 
   assert.throws(() => createEventEnvelope({ type: 'A', version: 0, payload: null }), /version 必须是 >= 1/);
 });
+
+test('events: readLog —— 序号连续性检查（跳号 / 重复 / 倒退都当场报错）', () => {
+  const registry = createEventRegistry([chain]);
+  const env = (seq: number, price: number) =>
+    createEventEnvelope({ type: 'ItemAdded', version: 3, payload: { type: 'ItemAdded', price }, seq });
+
+  const ok = registry.readLog([env(1, 1), env(2, 2), env(3, 3)]);
+  assert.strictEqual(ok.lastSeq, 3);
+  assert.strictEqual(ok.events.length, 3);
+
+  assert.throws(() => registry.readLog([env(1, 1), env(3, 3)]), /序号不连续：第 2 条的 seq=3，期望 2/);
+  assert.throws(() => registry.readLog([env(1, 1), env(1, 1)]), /没有大于前一条/);
+  assert.throws(
+    () => registry.readLog([env(2, 1)]),
+    /第 1 条的 seq=2，期望 1/,
+    '日志从 2 开始同样算断号（确实要从中间读，就用 fromSeq 明确起点）',
+  );
+});
+
+test('events: readLog —— 旧格式按位置补号（可与信封混排），fromSeq 用于增量重放', () => {
+  const registry = createEventRegistry([chain]);
+  const legacy = { type: 'ItemAdded', price: 1 }; // 无信封 → 补 1
+  const second = createEventEnvelope({ type: 'ItemAdded', version: 1, payload: { type: 'ItemAdded', price: 2 }, seq: 2 });
+  const third = createEventEnvelope({ type: 'ItemAdded', version: 1, payload: { type: 'ItemAdded', price: 3 } }); // 无 seq → 补 3
+
+  const all = registry.readLog([legacy, second, third]);
+  assert.strictEqual(all.lastSeq, 3);
+  assert.deepStrictEqual(
+    all.events.map((e) => (e as { price: number }).price),
+    [100, 200, 300],
+    '混排也要逐条升级',
+  );
+
+  const from2 = registry.readLog([legacy, second, third], { fromSeq: 2 });
+  assert.deepStrictEqual(
+    from2.events.map((e) => (e as { price: number }).price),
+    [200, 300],
+  );
+  assert.strictEqual(from2.lastSeq, 3, 'lastSeq 始终是整段日志的最后序号（与过滤无关）');
+
+  assert.deepStrictEqual(registry.readLog([]), { events: [], lastSeq: null });
+});
+
+test('events: seq 是可选字段（M3 第 2b 步之前写的信封没有它），写法与校验', () => {
+  const withSeq = createEventEnvelope({ type: 'A', version: 1, payload: null, seq: 7 });
+  assert.strictEqual(withSeq.seq, 7);
+  const without = createEventEnvelope({ type: 'A', version: 1, payload: null });
+  assert.strictEqual('seq' in without, false, '不传就完全不写这个字段');
+  assert.ok(isEventEnvelope(without), '没有 seq 的老信封仍然是合法信封');
+  assert.throws(() => createEventEnvelope({ type: 'A', version: 1, payload: null, seq: 0 }), /seq 必须是 >= 1/);
+});
+
+test('events: readLog —— fromSeq 允许"日志正好从起点开始"（快照截断后的正常形态）', () => {
+  const registry = createEventRegistry([chain]);
+  const env = (seq: number, price: number) =>
+    createEventEnvelope({ type: 'ItemAdded', version: 3, payload: { type: 'ItemAdded', price }, seq });
+
+  // 日志被截断到 3 开始：fromSeq=3 时合法，且只返回 3 之后（含 3）
+  const resumed = registry.readLog([env(3, 1), env(4, 2)], { fromSeq: 3 });
+  assert.deepStrictEqual(resumed.events.map((e) => (e as { price: number }).price), [1, 2]);
+  assert.strictEqual(resumed.lastSeq, 4);
+
+  // 起点与 fromSeq 不一致 → 仍然是断号
+  assert.throws(
+    () => registry.readLog([env(4, 1)], { fromSeq: 3 }),
+    /第 1 条的 seq=4，期望 1（完整日志）或 3（从快照续跑）/,
+  );
+
+  // 完整日志 + fromSeq：第一条仍是 1，不受影响
+  const full = registry.readLog([env(1, 1), env(2, 2), env(3, 3)], { fromSeq: 3 });
+  assert.deepStrictEqual(full.events.map((e) => (e as { price: number }).price), [3]);
+});

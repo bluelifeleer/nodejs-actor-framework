@@ -60,7 +60,10 @@ export interface AggregateSpec<S = unknown> {
   legacy?: LegacyReader;
   /** 自定义"从消息取命令名"的方式。 */
   commandOf?: (msg: unknown) => string | null | undefined;
-  /** 可选生命周期钩子（原样转交内核）。 */
+  /**
+   * 可选生命周期钩子（原样转交内核）。注意：聚合**总会**定义一个 preStart 来初始化
+   * 事件序号计数器，你的钩子会被调用，但计数器由聚合自己维护。
+   */
   preStart?: (ctx: unknown) => unknown;
   postRecover?: (ctx: unknown) => unknown;
   postStop?: (ctx: unknown) => unknown;
@@ -70,8 +73,8 @@ export interface AggregateSpec<S = unknown> {
 export interface AggregateDefinition<S = unknown> {
   /** 内核 handler：每个实例一份全新的初始状态。 */
   state(): S;
-  receive(this: { state: S }, msg: unknown, ctx: AggregateContext): Promise<S>;
-  applyEvent(this: { state: S }, event: AggregateEvent): void;
+  receive(this: AggregateHost<S>, msg: unknown, ctx: AggregateContext): Promise<S>;
+  applyEvent(this: AggregateHost<S>, event: AggregateEvent): void;
   preStart?(ctx: unknown): unknown;
   postRecover?(ctx: unknown): unknown;
   postStop?(ctx: unknown): unknown;
@@ -145,6 +148,17 @@ export function defaultCommandOf(msg: unknown): string | null {
   return null;
 }
 
+/**
+ * 内核交给 handler 的宿主（= `HandlerActor` 实例）：`state` 是 cell 的状态，
+ * `__aggregateSeq` 是本聚合已应用到的事件序号（不是用户状态的一部分，重放时由事件推出来）。
+ */
+interface AggregateHost<S> {
+  state: S;
+  __aggregateSeq?: number;
+}
+
+const SEQ_KEY = '__aggregateSeq' as const;
+
 /** 顶层冻结的浅拷贝：拦住"命令直接改状态"（严格模式下赋值会 TypeError）。 */
 function freezeTop(value: unknown): unknown {
   if (Array.isArray(value)) return Object.freeze([...value]);
@@ -159,19 +173,25 @@ function shallowCopy<T>(value: T): T {
   return value;
 }
 
-/**
- * `applyEvent` 收到的东西可能是三种之一：
- *   1. 当前版本的信封（用户忘了把 evolution 接上）→ 拆出 payload，**安全**；
+/** `applyEvent` 收到的东西可能是三种之一：
+ *   1. 当前版本的信封（用户忘了把 evolution 接上）→ 拆出 payload（连同它的 seq），**安全**；
  *   2. 旧版本的信封（同理，但升级链没跑）→ **报错**（否则会用旧结构套新代码）；
  *   3. 已经升级好的事件体（正常路径：内核的 evolution.upcast 产出）→ 原样使用。
  */
-function resolveIncoming(event: unknown, registry: EventRegistry, aggregate: string): AggregateEvent {
-  if (!isEventEnvelope(event)) return event as AggregateEvent;
+function resolveIncoming(
+  event: unknown,
+  registry: EventRegistry,
+  aggregate: string,
+): { event: AggregateEvent; seq: number | null } {
+  if (!isEventEnvelope(event)) return { event: event as AggregateEvent, seq: null };
   const current = registry.currentVersion(event.type);
   if (current !== null && event.version < current) {
     throw new AggregateEvolutionError(aggregate, event.type, event.version, current);
   }
-  return event.payload as AggregateEvent;
+  return {
+    event: event.payload as AggregateEvent,
+    seq: Number.isInteger(event.seq) ? (event.seq as number) : null,
+  };
 }
 
 function toEventList(produced: AggregateCommandResult, aggregate: string, command: string): AggregateEvent[] {
@@ -242,7 +262,13 @@ export function defineAggregate<S>(spec: AggregateSpec<S>): AggregateDefinition<
   const definition = {
     state: () => spec.initialState(),
 
-    async receive(this: { state: S }, msg: unknown, ctx: AggregateContext): Promise<S> {
+    preStart(this: AggregateHost<S>, ctx: unknown): unknown {
+      // 每个 incarnation 从 0 开始计数；重放时 applyEvent 会把它推到"最后一条已应用事件"的序号
+      this[SEQ_KEY] = 0;
+      return spec.preStart?.(ctx);
+    },
+
+    async receive(this: AggregateHost<S>, msg: unknown, ctx: AggregateContext): Promise<S> {
       const commandOf = spec.commandOf ?? defaultCommandOf;
       const command = commandOf(msg) ?? null;
       const handler = command === null ? undefined : spec.commands[command];
@@ -250,19 +276,24 @@ export function defineAggregate<S>(spec: AggregateSpec<S>): AggregateDefinition<
 
       // 命令只能"读状态 + 产出事件"：给一份顶层冻结的副本
       const produced = handler(msg, freezeTop(this.state) as S);
+      let seq = this[SEQ_KEY] ?? 0;
       for (const event of toEventList(produced, name, command as string)) {
         const version = registry.currentVersion(event.type) ?? 1;
-        await ctx.persist(createEventEnvelope({ type: event.type, version, payload: event }));
+        seq += 1;
+        // seq 在这里（写入方）确定，并在 persist → applyEvent 的回程里被计数器确认
+        await ctx.persist(createEventEnvelope({ type: event.type, version, seq, payload: event }));
       }
       return shallowCopy(this.state);
     },
 
-    applyEvent(this: { state: S }, event: AggregateEvent): void {
-      this.state = spec.applyEvent(this.state, resolveIncoming(event, registry, name));
+    applyEvent(this: AggregateHost<S>, event: AggregateEvent): void {
+      const incoming = resolveIncoming(event, registry, name);
+      this.state = spec.applyEvent(this.state, incoming.event);
+      // 信封带 seq 时以它为准（未接 evolution 的路径）；否则按"应用了几条"递增
+      this[SEQ_KEY] = incoming.seq ?? (this[SEQ_KEY] ?? 0) + 1;
     },
   } as unknown as AggregateDefinition<S>;
 
-  if (spec.preStart) definition.preStart = (ctx: unknown) => spec.preStart?.(ctx);
   if (spec.postRecover) definition.postRecover = (ctx: unknown) => spec.postRecover?.(ctx);
   if (spec.postStop) definition.postStop = (ctx: unknown) => spec.postStop?.(ctx);
   if (spec.preRestart) {

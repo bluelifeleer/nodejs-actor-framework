@@ -216,7 +216,9 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | **第 1 步：schema 演进** | ✅ | 内核 `evolution` hook + `@actor/data` 信封/注册表/快照策略；集成验证 v1→v3 |
 | 测试（第 1 步） | ✅ | `packages/data/test/*` 24 例；真实内核 + 真实文件（旧代码写、新代码读；混合日志重放；拒绝启动不破坏数据） |
 | **第 2a 步：聚合基类** | ✅ | `defineAggregate`（命令→事件、纯 `applyEvent`、信封接入、元数据不可枚举）；单元 16 例 + 集成 4 例（内核直连 / 应用层两条路径） |
-| 第 2b 步：快照缓存 + offset 重放 | ⏳ | 需要内核支持"快照 + 事件日志"共存；顺带补上 doc 04 §4.2 的"无迁移则从事件重建" |
+| **第 2b-① 步：`seq` + 批量读取 hook** | ✅ | 信封加**每聚合单调 `seq`**（聚合写入时发号、重放时把计数器推到同一位置）；注册表新增 `readLog(raws, {fromSeq})` —— 旧日志**按位置补号**、**断号当场报错**；内核 `_restore` 优先走批量 hook |
+| 第 2c-① 步：`appendEvent(expectedSeq)` + 后端能力 | ⏳ | 见 §6.5 第 2 条 |
+| 第 2b-② 步：快照缓存 + 增量重放 | ⏳ | 需要内核支持"快照 + 事件日志"共存；顺带补上 doc 04 §4.2 的"无迁移则从事件重建" |
 | 第 2c 步：`expectedVersion` 乐观并发 | ⏳ | 需要事件日志加**每聚合单调序号** + 条件追加；动手前先把格式决策摆出来 |
 | 第 3–6 步 | ⏳ | Repository / 迁移框架 / Outbox / 投影 |
 
@@ -327,7 +329,9 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 
 ### 6.5 实施顺序（已定，按此执行）
 
-1. 事件信封加 `seq` + **批量读取 hook**（读取期给旧日志补号、并检查序号连续；断号/错位当场报错）
-   + 内核 `appendEvent` 支持 `expectedSeq` + 后端能力查询；
-2. `mode: 'events'` 支持可选快照：恢复时"快照 + 增量重放"，快照不可用时**丢弃并全量重放**（补上 doc 04 §4.2 规则 2）；
-3. 聚合层接上 `expectedSeq`（命令产出的整批事件作为一个原子批次），并在不支持的 backend 上明确报/记降级。
+1. ✅ **已完成**：事件信封加 `seq` + 批量读取 hook（`readLog`，读取期给旧日志补号、检查序号连续、
+   断号当场报错）；内核 `_restore` 优先用批量 hook；
+2. ⏳ `appendEvent` 支持 `expectedSeq` + 后端能力查询；
+3. `mode: 'events'` 支持可选快照：恢复时"快照 + 增量重放"（用 `readLog({ fromSeq })`），
+   快照不可用时**丢弃并全量重放**（补上 doc 04 §4.2 规则 2）；
+4. 聚合层接上 `expectedSeq`（命令产出的整批事件作为一个原子批次），并在不支持的 backend 上明确报/记降级。

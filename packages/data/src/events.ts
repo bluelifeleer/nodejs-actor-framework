@@ -19,6 +19,14 @@ export interface EventEnvelope<P = unknown> {
   version: number;
   /** 写入时间（诊断/审计用，不参与状态推导）。 */
   at: number;
+  /**
+   * **每聚合单调序号**，从 1 开始（M3 第 2b 步加入）。
+   *
+   * 用途：快照记 `atSeq`、重放时只跑 `seq > atSeq` 的增量；序号不连续 = 日志被改动或事件丢了，
+   * **当场报错**而不是静默读到错状态。可选是因为 M3 第 2b 步之前写入的信封没有它——
+   * 那些日志在**读取期按位置补号**，盘上数据一个字节都不改。
+   */
+  seq?: number;
   /** 事件体；只有它参与状态推导。 */
   payload: P;
 }
@@ -163,6 +171,11 @@ export interface EventRegistry {
   upcast(raw: unknown): unknown;
   /** 批量（重放用）：语义与逐条调用完全一致。 */
   upcastAll(raw: readonly unknown[]): unknown[];
+  /**
+   * 批量读取整段日志（重放主路径）：升级 + **序号连续性检查**（不连续 = 事件丢了，当场报错），
+   * 旧格式按位置补号。`fromSeq` 用于第 2b 步的"快照 + 增量重放"。
+   */
+  readLog(raws: readonly unknown[], options?: { fromSeq?: number }): { events: unknown[]; lastSeq: number | null };
   /** 某个类型的当前版本；未注册则 `null`。 */
   currentVersion(type: string): number | null;
   /** 已注册的事件类型。 */
@@ -186,13 +199,14 @@ export function isEventEnvelope(value: unknown): value is EventEnvelope {
   );
 }
 
-/** 构造事件信封（`eventId`/`at` 可注入，便于测试与确定性重放）。 */
+/** 构造事件信封（`eventId`/`at`/`seq` 可注入，便于测试与确定性重放）。 */
 export function createEventEnvelope<P>(input: {
   type: string;
   version: number;
   payload: P;
   eventId?: string;
   at?: number;
+  seq?: number;
 }): EventEnvelope<P> {
   if (typeof input.type !== 'string' || input.type.length === 0) {
     throw new EventSchemaError(['createEventEnvelope: type 必须是非空字符串']);
@@ -200,11 +214,15 @@ export function createEventEnvelope<P>(input: {
   if (!Number.isInteger(input.version) || input.version < 1) {
     throw new EventSchemaError([`createEventEnvelope: version 必须是 >= 1 的整数（当前 ${String(input.version)}）`]);
   }
+  if (input.seq !== undefined && (!Number.isInteger(input.seq) || input.seq < 1)) {
+    throw new EventSchemaError([`createEventEnvelope: seq 必须是 >= 1 的整数（当前 ${String(input.seq)}）`]);
+  }
   return {
     eventId: input.eventId ?? randomEventId(),
     type: input.type,
     version: input.version,
     at: input.at ?? Date.now(),
+    ...(input.seq === undefined ? {} : { seq: input.seq }),
     payload: input.payload,
   };
 }
@@ -248,9 +266,8 @@ export function createEventRegistry(
     return legacy(raw) ?? null;
   };
 
-  const upcast = (raw: unknown): unknown => {
-    const interpreted = interpret(raw);
-    if (interpreted === null) return raw; // 旧格式认不出 ⇒ 与 M3 之前完全一致
+  /** 单条升级：`interpret` 的结果 → 当前形状的事件体。 */
+  const applyChain = (interpreted: LegacyEvent): unknown => {
     const schema = byType.get(interpreted.type);
     if (!schema) return interpreted.payload; // 未知类型 ⇒ 放行（滚动升级不能因"不认识"就崩）
 
@@ -274,9 +291,72 @@ export function createEventRegistry(
     return event;
   };
 
+  const upcast = (raw: unknown): unknown => {
+    const interpreted = interpret(raw);
+    if (interpreted === null) return raw; // 旧格式认不出 ⇒ 与 M3 之前完全一致
+    return applyChain(interpreted);
+  };
+
+  /**
+   * 批量读取：**序号与升级一起做**。
+   *
+   * 为什么需要批量（而不是逐条 upcast）：序号连续性只有"看得到整段日志"才能判断。
+   * 规则：
+   *   - 信封自带 `seq` 的，必须严格 = 前一条 + 1（重复/倒退/跳号都报错——那意味着事件丢了
+   *     或日志被改动，静默读下去只会得到错状态）；
+   *   - 没有 `seq` 的（M3 第 2b 步之前写的信封、或更早的原始 JSON）**按位置补号**，
+   *     盘上数据一个字节都不改。
+   *
+   * `fromSeq` 是给第 2b 步"快照 + 增量重放"用的：只要 `seq >= fromSeq` 的事件。
+   */
+  const readLog = (
+    raws: readonly unknown[],
+    readOptions: { fromSeq?: number } = {},
+  ): { events: unknown[]; lastSeq: number | null } => {
+    const fromSeq = readOptions.fromSeq ?? null;
+    const events: unknown[] = [];
+    let cursor = 0;
+    let lastSeq: number | null = null;
+
+    raws.forEach((raw, index) => {
+      const interpreted = interpret(raw);
+      const explicit = isEventEnvelope(raw) && Number.isInteger(raw.seq) ? (raw.seq as number) : null;
+
+      if (explicit === null) {
+        cursor += 1; // 旧格式：按位置补号
+      } else {
+        // 日志从 `fromSeq` 开始是**允许**的：那正是"快照已含前 atSeq 条、日志从这里开始"的
+        // 正常形态（调用方用 fromSeq = atSeq + 1 明确起点）。其它起点都算断号。
+        const resumesAtFromSeq = cursor === 0 && fromSeq !== null && explicit === fromSeq;
+        if (explicit <= cursor) {
+          throw new EventSchemaError([
+            `事件日志第 ${index + 1} 条的 seq=${explicit} 没有大于前一条的 seq=${cursor}（日志被改动或写入顺序错乱）`,
+          ]);
+        }
+        if (explicit !== cursor + 1 && !resumesAtFromSeq) {
+          const expected =
+            cursor === 0 && fromSeq !== null ? `1（完整日志）或 ${fromSeq}（从快照续跑）` : String(cursor + 1);
+          throw new EventSchemaError([
+            `事件日志序号不连续：第 ${index + 1} 条的 seq=${explicit}，期望 ${expected}` +
+              '（中间的事件丢了？确实从中间开始读，就用 fromSeq 明确起点）',
+          ]);
+        }
+        cursor = explicit;
+      }
+      lastSeq = cursor;
+
+      if (fromSeq !== null && cursor < fromSeq) return;
+      const event = interpreted === null ? raw : applyChain(interpreted);
+      events.push(event);
+    });
+
+    return { events, lastSeq };
+  };
+
   return {
     upcast,
     upcastAll: (raw) => raw.map(upcast),
+    readLog,
     currentVersion: (type) => byType.get(type)?.version ?? null,
     types: () => [...byType.keys()].sort(),
   };

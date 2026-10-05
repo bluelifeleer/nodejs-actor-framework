@@ -64,3 +64,26 @@ test('evolution: 什么都不声明 / 只写 legacy → 报错（防拼错字段
   // 拼错字段名等于什么都没声明
   assert.throws(() => defineEvolution({ event: [] } as never), /至少要声明 events 或 snapshot/);
 });
+
+test('evolution: 事件规则同时产出 readLog（批量读取 + 序号检查）', () => {
+  const evolution = defineEvolution({ events: [items] });
+  assert.strictEqual(typeof evolution.readLog, 'function');
+
+  const readLog = evolution.readLog as (raws: readonly unknown[]) => { events: unknown[]; lastSeq: number | null };
+  const log = [
+    createEventEnvelope({ type: 'ItemAdded', version: 1, payload: { price: 1 }, seq: 1 }),
+    createEventEnvelope({ type: 'ItemAdded', version: 1, payload: { price: 2 }, seq: 2 }),
+  ];
+  const result = readLog(log);
+  assert.strictEqual(result.lastSeq, 2);
+  assert.deepStrictEqual(result.events, [
+    { price: 1, currency: 'CNY' },
+    { price: 2, currency: 'CNY' },
+  ]);
+
+  // 跳号 = 事件丢了 → 必须报错，而不是静默少放一条
+  assert.throws(
+    () => readLog([log[0], createEventEnvelope({ type: 'ItemAdded', version: 1, payload: { price: 3 }, seq: 5 })]),
+    /序号不连续/,
+  );
+});
