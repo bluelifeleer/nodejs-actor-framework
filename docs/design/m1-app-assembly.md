@@ -86,7 +86,7 @@ process.on('SIGTERM', () => application.stop({ timeoutMs: 10_000 }));
 |---|---|
 | 声明 | `defineConfig({ key: { type, default, min/max/regex, secret? } })`，嵌套对象支持 |
 | 分层（后者覆盖前者） | ① schema 默认值 → ② `config/default.ts` → ③ `config/<APP_ENV>.ts` → ④ 环境变量 → ⑤ 启动参数 |
-| 环境变量映射 | `APP_TICK_MS` → `tickMs`（前缀可配；嵌套用 `__`：`APP_GATEWAY__URL`） |
+| 环境变量映射 | camelCase → UPPER_SNAKE：`tickMs` → `APP_TICK_MS`；嵌套用 `__`：`gateway.url` → `APP_GATEWAY__URL`（前缀可配） |
 | 校验时机 | `start()` 最先执行；失败即**启动失败**并打印**全部**错误（不吐半截） |
 | 访问 | 依赖注入（`deps.config`）或 `app.config.get('tickMs')`；**只读** |
 | 机密 | `secret: true` 的键在日志/诊断中一律打码；`app.config.redacted()` 供运维查看 |

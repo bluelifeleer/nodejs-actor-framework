@@ -2,6 +2,7 @@
   "name": "@actor/app",
   "version": "0.1.0",
   "private": false,
+  "type": "module",
   "description": "Application layer for nodejs-actor-framework: configuration, assembly (DI), modules and plugin SDK. User projects depend on this package, never on the kernel directly.",
   "license": "MIT",
   "main": "src/index.ts",
