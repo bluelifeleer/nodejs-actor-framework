@@ -366,3 +366,39 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 
 **边界（写清楚，避免误用）**：这一层挡的是"同一份存储被两个 writer 抢"。它**不是**分布式锁，
 也不解决"两个节点都自认为拥有这个聚合"的选主问题（那属于 M4 的分片所有权 + fencing token）。
+
+## 7. 第 3 步：Repository（设计 + 待确认）
+
+### 7.1 接口（doc 04 §2 已定，实现时不变）
+
+```ts
+interface Repository<T, Id> {
+  findById(id: Id): Promise<T | null>;
+  findMany(query: Query): Promise<{ items: T[]; cursor?: string }>;   // 游标分页，不用 offset
+  insert(entity: T): Promise<T>;
+  update(id: Id, patch: Partial<T>, opts?: { expectedVersion?: number }): Promise<T>;
+  delete(id: Id): Promise<boolean>;
+  transaction<R>(fn: (tx: Repository<T, Id>) => Promise<R>): Promise<R>;
+}
+```
+
+**非目标**（doc 06 §3）：不做自研 ORM / 查询构建器；SQL 走"薄适配器 + 用户提供的 `query` 函数"，
+外部 ORM（Prisma/Drizzle/Kysely）给约 30 行的实现示例。
+
+### 7.2 已定：游标里必须带 tie-breaker（这条没有别的正确选项）
+
+`cursor` = 不透明编码的 `{ orderBy 值, id }`。只放排序键值的话，"排序键相同的多行"在翻页边界
+会被漏掉或重复——而这正是 doc 04 §2 用游标替代 offset 要解决的那类问题。cursor 只由适配器解释，
+用户不得依赖其内部结构（换适配器即失效）。
+
+### 7.3 待确认的三个决策
+
+| # | 决策 | 选项 | 我的建议 |
+|---|---|---|---|
+| D-repo-1 | 查询表达力 | (a) `where` 等值过滤 + 单键 `orderBy` + 游标；(b) 支持 `gt/lt/in/prefix` 的小表达式树；(c) 完全不给 `findMany` | **(a)**：DTO 级够用，且**不滑向查询构建器**（非目标）。复杂查询交给 SQL/ORM 适配器 |
+| D-repo-3 | `file` 适配器形态 | (a) 一实体一文件 + **按排序键的追加式索引**（含 tombstone）；(b) 一实体一文件，`findMany` 扫目录；(c) 不提供 file 适配器 | **(a)**：`findMany` 不必 O(n)；并写清"索引是缓存，不自洽时以实体文件为准" |
+| D-repo-4 | `version`（乐观锁）谁维护 | (a) 适配器维护实体上的 `version`（insert=1、update 自增，`expectedVersion` 不匹配抛冲突）；(b) 用 `updatedAt` 时间戳；(c) 完全交给后端 | **(a)**，并沿用第 2c 步的思路：`repository.capabilities()` 如实说明本适配器的 `expectedVersion` 是 `'atomic'` 还是 `'in-process'`（SQL 可走真 CAS，file 只能同进程） |
+
+定下来之后的实施顺序：① memory 适配器 + 游标分页语义（并发写入下不漏不重的测试）→
+② `file` 适配器（索引 + tombstone + 重建索引）→ ③ SQL 薄适配器（用户提供 `query`）+ ORM 示例 →
+④ 接入文档与示例（`examples/` 里给一个 CRUD + Actor 的组合）。
