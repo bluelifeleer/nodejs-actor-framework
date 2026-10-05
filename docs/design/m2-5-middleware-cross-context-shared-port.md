@@ -146,4 +146,11 @@ HTTP 直连"别的节点上的 socket"不是设计目标。
 | **共享端口** | ✅ 完成并验证 | 未配置 `ws.port` 或与 HTTP 相同 → 附加同一 server；内核新增 `options.server`（纯增量）；`ws.port` 改为 **nullable**（去默认值会让它变必填） |
 | **路由嵌套 + 前缀** | ✅ 完成并验证 | `defineRouter({ prefix, middleware, routes, children, name })` + 纯函数 `flattenRouter`/`flattenRoutes`；子树中间件**构建期烘焙**；归属信息进 meta（重复路由报错指名模块）；模块侧 `defineModule({ router, middleware })`，`routes`+`router` 互斥（R3） |
 | 模块级中间件便捷写法 | ✅ 完成 | `defineModule({ middleware, routes })` 等价于"该模块根路由器带中间件"（子树语义 R1） |
-| 示例迁移（用前缀分组演示嵌套） | ⏳ 未做 | 属可选展示项；现有示例保持扁平写法 |
+| **路由语法糖** `routes({...})` + `withMiddleware` | ✅ 完成并验证 | 对象字面量表，编译成同一份 `RouterSpec` 数据（零新概念）；按方法分组；单条路由中间件用 Symbol 标记 |
+| 示例迁移（前缀分组 + 嵌套） | ✅ 完成并验证 | `examples/app-web` → `/api/*`；迁移过程抓出 3 个真问题（见下） |
+
+**示例迁移抓出的 3 个问题**（记录在案，因为它们是"真实使用反哺框架"的证据）：
+1. 框架 bug：`routes({...})` 产物是 `RouterSpec` 对象，而应用层 collect 假设 `mod.routes` 是数组
+   → `TypeError: object is not iterable`；修法：collect 归一化（数组 → routes，对象 → children）；
+2. 可诊断性：形状写错只给 TypeError；修法：`flattenRouter` 增加形状守卫并直接给出修法；
+3. 迁移者（我）漏写 `?verbose=` 查询声明 → 被**规则 3** 在启动期拦下（否则会成为静默故障）。
