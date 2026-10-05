@@ -125,3 +125,29 @@ test('ownership: 入参校验与 stats', () => {
 
   assert.deepStrictEqual(guard.claims().map((c) => c.shard), [...new Set(guard.claims().map((c) => c.shard))]);
 });
+
+test('ownership: 环只对**本集群成员**有权威——非成员（跨集群转发者）不被本地环拒掉', () => {
+  const guard = createOwnershipGuard({ nodeId: 'observer', shardCount: SHARDS });
+  guard.updateRing(['a', 'b']);
+  const shard = aShardOwnedBy(['a', 'b'], 'a');
+
+  // 成员却不是这个 shard 的 owner，还带了 token → 环说了算，拒绝
+  const member = guard.verify({ shard, ownerNodeId: 'b', epoch: 1 });
+  assert.strictEqual(member.ok, false);
+  assert.match(member.reason, /在本地环上的 owner 是 a，不是 b/);
+
+  // 非成员（例如另一个 gossip 组里的接入节点）：本地环对它没有权威 → 放行。
+  // 这条是踩出来的：接入节点与游戏节点是两个独立集群，它的环认为"自己拥有一切"，
+  // 于是转发的每个请求都带 token；按"必须等于本地环 owner"去拒，跨集群调用全断。
+  const foreign = guard.verify({ shard, ownerNodeId: 'access-1', epoch: 1 });
+  assert.strictEqual(foreign.ok, true, '跨集群转发者不该被本地环拒掉');
+
+  // 但一旦学到更新的声明，非成员照样被拦住（epoch 比较是真正的 fencing）
+  guard.observe({ shard, ownerNodeId: 'a', epoch: 5, at: 1 });
+  const fenced = guard.verify({ shard, ownerNodeId: 'access-1', epoch: 1 });
+  assert.strictEqual(fenced.ok, false);
+  assert.match(fenced.reason, /更旧/);
+
+  assert.strictEqual(guard.isMember('a'), true);
+  assert.strictEqual(guard.isMember('access-1'), false);
+});

@@ -107,7 +107,13 @@ test('fencing: 带上 epoch 时交给判定钩子——旧 epoch 被拒、新 ep
       /旧 epoch 2 已被 epoch 3 取代/,
       '旧 epoch 的投递必须失败',
     );
-    assert.deepStrictEqual(seen[0], { kind: 'deliver', targetActorId: 'x', shardEpoch: 2, peerNodeId: 'node-a' });
+    assert.deepStrictEqual(seen[0], {
+      kind: 'deliver',
+      targetActorId: 'x',
+      shardEpoch: 2,
+      peerNodeId: 'node-a',
+      peerSupportsFencing: true,
+    });
 
     // 换一个"认为自己是第 3 代"的网关 → 通过
     const fresh = new Gateway({ host: '127.0.0.1', port: 0, nodeId: 'node-c', epochFor: () => 3 });

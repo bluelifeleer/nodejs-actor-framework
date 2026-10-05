@@ -208,25 +208,30 @@ class Gateway extends EventEmitter {
   _checkOwnership(frame, state) {
     const epoch = Number.isInteger(frame.shardEpoch) ? frame.shardEpoch : null;
     const peerSupportsFencing = Array.isArray(state.peerCaps) && state.peerCaps.includes('fence');
-    if (epoch === null) {
-      if (peerSupportsFencing) {
-        return '对端声明支持 fencing，却没有在帧上带 shardEpoch：拒绝（协议违规）';
-      }
-      this.emit('fencing_skipped', {
-        kind: frame.kind,
-        targetActorId: frame.targetActorId || null,
-        peerNodeId: state.peerNodeId || null,
-      });
-      return null;
-    }
-    if (!this.verifyOwnership) return null; // 没装守卫：epoch 只是随行信息
-    const verdict = this.verifyOwnership({
+    const info = {
       kind: frame.kind,
       targetActorId: frame.targetActorId || null,
       shardEpoch: epoch,
       peerNodeId: state.peerNodeId || null,
-    });
-    return verdict && verdict.ok === false ? verdict.reason || '所有权判定拒绝' : null;
+      peerSupportsFencing,
+    };
+    if (!this.verifyOwnership) {
+      // 没装守卫：没有所有权信息可判。但"声明支持却带不出 token"仍然是自相矛盾，必须拒绝。
+      if (epoch === null) {
+        if (peerSupportsFencing) {
+          return '对端声明支持 fencing，却没有在帧上带 shardEpoch：拒绝（协议违规）';
+        }
+        this.emit('fencing_skipped', { kind: info.kind, targetActorId: info.targetActorId, peerNodeId: info.peerNodeId });
+      }
+      return null;
+    }
+    const verdict = this.verifyOwnership(info);
+    if (verdict && verdict.ok === false) return verdict.reason || '所有权判定拒绝';
+    if (epoch === null && !peerSupportsFencing) {
+      // 软升级：老节点照常工作，但**降级必须可见**
+      this.emit('fencing_skipped', { kind: info.kind, targetActorId: info.targetActorId, peerNodeId: info.peerNodeId });
+    }
+    return null;
   }
 
   async _handleFrame(frame, socket) {

@@ -7,10 +7,15 @@
  *     传播。**epoch 的权威来自 gossip 学习到的声明**，而不是消息自己说了算——这一点很关键：
  *     否则任何节点都能给自己 +1 然后被接受。
  *
- * 两条接受规则（`verify`）——挡住"旧 owner 说的话"：
- *   1. **与已知最佳声明一致**：`owner === best.owner && epoch === best.epoch`；
- *   2. **与本地环一致且不比已知声明旧**：`owner === ringOwner && (best === null || epoch >= best.epoch)`。
- * 其余一律拒绝，并给出可诊断的原因。
+ * 接受规则（`verify`）——挡住"旧 owner 说的话"：
+ *   1. **与已知最佳声明冲突就拒绝**：`epoch < best.epoch`，或同 epoch 换人；与最佳声明一致则通过；
+ *   2. **本集群成员受环约束**：发送者是本节点成员视图里的成员、却不是这个 shard 的环 owner → 拒绝
+ *      （环在本集群内是权威：它不该拥有这个 shard）；
+ *   3. **非成员（跨集群转发者）不受本地环约束**：环对它没有权威，只在"有更新的声明"时按规则 1 拒绝。
+ *
+ * 规则 3 是踩出来的：接入层节点与游戏节点是**两个独立 gossip 组**，接入节点的小环认为"自己拥有
+ * 一切"，于是它转发的每个请求都带 token——按"必须等于本地环 owner"去拒，跨集群调用就全断了
+ * （`integration-cluster-access` 抓到）。
  *
  * **挡不住的（如实写在文档与测试里）**：双方视图都还没更新时（旧 owner 在接收方眼里仍然是
  * ring owner，且没有更新的声明被观察到），本地无法识别它是旧的——这正是 doc 05 §1.5 说的
@@ -166,16 +171,26 @@ function createOwnershipGuard(options: OwnershipGuardOptions) {
     if (ringOwner !== null && incoming.ownerNodeId === ringOwner) {
       if (best === null || incoming.epoch >= best.epoch) return { ok: true };
     }
-    // 到这里：既不是已知最佳声明，也不是本地环上的 owner
     if (ringOwner === null) {
       return { ok: false, reason: `fencing：还没有成员视图，无法确认 shard ${incoming.shard} 的 owner` };
     }
-    return {
-      ok: false,
-      reason:
-        `fencing：shard ${incoming.shard} 在本地环上的 owner 是 ${ringOwner}，不是 ${incoming.ownerNodeId}` +
-        (best === null ? '' : `（已知声明：${best.ownerNodeId}@epoch ${best.epoch}）`),
-    };
+    // 规则 3：**本集群成员**却不拥有这个 shard → 环说了算，拒绝
+    //（非成员是跨集群/纯转发者，环对它没有权威：转发者本来就没有所有权信息）
+    if (isMember(incoming.ownerNodeId)) {
+      return {
+        ok: false,
+        reason:
+          `fencing：shard ${incoming.shard} 在本地环上的 owner 是 ${ringOwner}，不是 ${incoming.ownerNodeId}` +
+          (best === null ? '' : `（已知声明：${best.ownerNodeId}@epoch ${best.epoch}）`),
+      };
+    }
+    return { ok: true };
+  }
+
+  /** 这个 nodeId 是否在本节点的成员视图里（环只对本集群成员有权威）。 */
+  function isMember(candidate: string): boolean {
+    if (currentRing === null) return false;
+    return currentRing.tokens.some((token) => token.nodeId === candidate);
   }
 
   function claimsSnapshot(): ShardClaim[] {
@@ -198,6 +213,7 @@ function createOwnershipGuard(options: OwnershipGuardOptions) {
     claimFor,
     observe,
     verify,
+    isMember,
     bestClaim,
     claims: claimsSnapshot,
     stats,

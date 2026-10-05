@@ -85,9 +85,15 @@ ownerOfShard(ring: Ring, shard: number, shardCount: number): string | null
 | `observe(claim)` | 学习声明：更高 epoch → 换代；同 epoch 同 owner → 幂等；**同 epoch 换人 → 拒绝并报"双主声明"**；更低 epoch → 忽略 |
 | `verify({shard, ownerNodeId, epoch})` | 接收端判决，两条接受规则（见下），否则给出可诊断的拒绝原因 |
 
-**两条接受规则**：
-1. **与已知最佳声明一致**：`owner === best.owner && epoch === best.epoch`；
-2. **与本地环一致且不比已知声明旧**：`owner === ringOwner && (best === null || epoch >= best.epoch)`。
+**接受规则**（最终版，含两处踩出来的修正）：
+1. **与已知最佳声明冲突就拒**：`epoch < best.epoch`，或同 epoch 换人；一致则通过；
+2. **本集群成员受环约束**：发送者是本地成员视图里的成员、却不是这个 shard 的环 owner → 拒绝；
+3. **非成员（跨集群转发者）不受本地环约束**：环对它没有权威，只在"有更新的声明"时按规则 1 拒绝。
+
+**规则 3 是踩出来的**：接入层节点与游戏节点是**两个独立 gossip 组**，接入节点的小环认为"自己拥有
+一切"，于是它转发的每个请求都带 token；按"必须等于本地环 owner"去拒，跨集群调用**全断**
+（`integration-cluster-access` 抓到）。修正后语义更准：**环只对本集群成员有权威**，而真正的
+fencing 是 epoch 比较。
 
 其余一律拒绝。这样"旧 owner 用旧 epoch 发消息"在两种情况下都会被挡：
 - 接收方已经学到了新声明（规则 1 生效）；
@@ -152,9 +158,21 @@ ring owner，且没有更新的声明被观察到），本地**无法**识别它
 |---|---|---|
 | 1 | `proto.ts`：字段 15 `shardEpoch`（另加 16 `capsJson`、17 `shardCount`）；`.proto` 参考文档补到 17 并加"字段只追加"纪律 | ✅ |
 | 2 | `gateway.ts`：出站 tell/stop/deliver 带 `shardEpoch`（拿不到就**不带**字段）；hello **双向**交换 `caps`/`shardCount`；不一致或硬门不满足 → 明确拒绝；`verifyOwnership` 钩子 | ✅ |
-| 3 | `plugins/cluster.ts`：接守卫、成员视图喂环、`shard:<id>` 声明走 gossip、`system.cluster.ownership` | ⏳ |
-| 4 | 能力可见性：`system.cluster.fencing()`（supported + 每个对端是否支持 + 降级计数） | ⏳ |
-| 5 | 两节点端到端：旧 epoch 被拒、声明传播后旧 owner 失效、新旧节点互发 | ⏳ |
+| 3 | `plugins/cluster.ts`：接守卫、成员视图喂环、`system.ownership`（`epochFor` / `verifyIncoming`）、`system.cluster.ownership` | ✅（`shard:<id>` 声明**自动走 gossip 传播尚未接**——见下） |
+| 4 | 能力可见性：`system.cluster.fencing()`（`skipped` / `rejected` 计数） | ✅（按对端列出能力还没做） |
+| 5 | 两节点端到端：旧 epoch 被拒、非成员转发仍可用 | ✅（见 `test/integration-cluster-fencing.test.js`；旧↔新**互发**的跨版本用例待补） |
+
+**尚未做（2b 的剩余部分）**：
+- **声明自动传播**：目前 epoch 换代要靠调用方/上层显式 `guard.observe(...)`（测试里就是这么模拟
+  gossip 的）。把它接成 gossip 注册表的 `shard:<id>` JSON 条目是零格式改动的（§3.4.1），但要走
+  "谁在什么条件下发布声明、发布哪些 shard（256 个还是按需）"的取舍；
+- **跨版本互发**：真正的"老节点 ↔ 新节点"用例（老节点不发 `shardEpoch`、不声明 `caps`）目前由
+  网关单测覆盖（无 caps 的对端被放行 + `fencing_skipped`），还没有两进程的端到端版。
+
+**第二个踩出来的 bug（值得记）**：出站帧是由 `Peer` 自己创建的**客户端网关**发出去的，而我只给
+服务端网关装了所有权选项——于是"发帧的网关不带 token、收帧的网关却要求 token"，跨节点调用被**自己
+人**拒掉。修法是把所有权选项抽成 `ownershipOptions(system, { inbound })`，两条构造都用它。教训：
+**同一份策略只要有两个构造点，就一定会有一个被漏掉。**
 
 **协议半边的三条判定规则**（`Gateway._checkOwnership`，都有测试）：
 1. 帧上**有** `epoch` → 交给 `verifyOwnership` 钩子判（旧 epoch 被拒）；

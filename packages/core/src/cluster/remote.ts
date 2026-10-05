@@ -62,6 +62,28 @@ class RemoteRef {
 }
 
 /** One connected peer node. */
+/**
+ * fencing 相关选项（M4 第 2b 步）。
+ *
+ * **出站与入站两条网关构造都必须用同一份**：只给服务端装，就会出现"发帧的网关不带 token、
+ * 收帧的网关却要求 token"——跨节点调用被自己人拒掉（这是真实踩到的 bug，见提交信息）。
+ * 客户端网关不需要"判定钩子"（它不接收 tell/deliver），但**必须**能给出自己的 epoch。
+ */
+function ownershipOptions(system, { inbound }) {
+  const ownership = system.ownership || null;
+  if (ownership === null) return {};
+  return {
+    shardCount: ownership.shardCount ?? null,
+    ...(inbound
+      ? {
+          requireFencing: ownership.requireFencing === true,
+          verifyOwnership: (info) => ownership.verifyIncoming(info),
+        }
+      : {}),
+    epochFor: (path) => ownership.epochFor(path),
+  };
+}
+
 class Peer {
   constructor({ system, host, port, nodeId, tls, ownsGateway }) {
     this.system = system;
@@ -75,6 +97,7 @@ class Peer {
       nodeId: system.name,
       tls,
       codec: config.gateway.codec,
+      ...ownershipOptions(system, { inbound: false }),
     });
     this.ownsGateway = ownsGateway !== false;
   }
@@ -211,6 +234,8 @@ function createServerGateway(system, options = {}) {
     nodeId: options.nodeId || system.name,
     tls: options.tls || config.tls,
     codec: options.codec || config.gateway.codec,
+    // 所有权由插件装在 system.ownership 上；没装就是"没有所有权信息"，网关照旧工作（诚实降级）
+    ...ownershipOptions(system, { inbound: true }),
     onTell: (targetActorId, payload, meta) => {
       const ref = system.resolve(targetActorId);
       if (!ref) throw new ActorNotFoundError(`no actor registered as "${targetActorId}"`);
