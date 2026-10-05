@@ -115,27 +115,43 @@ function getDeep(source: Record<string, unknown>, dotted: string): unknown {
   return cursor;
 }
 
-function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): void {
-  for (const [key, value] of Object.entries(source)) {
-    const existing = target[key];
-    if (
-      typeof value === 'object' && value !== null && !Array.isArray(value) &&
-      typeof existing === 'object' && existing !== null && !Array.isArray(existing)
-    ) {
-      deepMerge(existing as Record<string, unknown>, value as Record<string, unknown>);
-    } else {
-      target[key] = value;
+/**
+ * 只写「已知配置项」的深合并。
+ *
+ * 为什么不用泛型版 `deepMerge<T, U>`：那里的 `T extends Record<string, unknown>`
+ * 并不能让 interface 类型的对象通过（TS 只给对象字面量类型隐式索引签名），函数体里
+ * 照样要强制转换，而签名却暗示了"类型级合并"这个运行时并不存在的承诺。
+ * 这里改成表达**真实契约**：只接受白名单内的路径，未知路径作为问题回报（附来源标签，
+ * 于是报错能指出是哪个文件写错了，而不只是"某处有 typo"）。
+ */
+function mergeKnown(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  known: ReadonlyMap<string, FieldSpec>,
+  sourceLabel: string,
+  issues: ConfigIssue[],
+): void {
+  const walk = (node: Record<string, unknown>, prefix: string): void => {
+    for (const [key, value] of Object.entries(node)) {
+      const dotted = prefix ? `${prefix}.${key}` : key;
+      const isPlainObject = typeof value === 'object' && value !== null && !Array.isArray(value);
+      if (isPlainObject && !known.has(dotted)) {
+        // 未知子树：继续下探，好让每个叶子都能单独报错（含已知叶子照常写入）
+        walk(value as Record<string, unknown>, dotted);
+        continue;
+      }
+      if (isPlainObject) {
+        setDeep(target, dotted, value); // json 类型字段：整体覆盖
+        continue;
+      }
+      if (!known.has(dotted)) {
+        issues.push({ path: dotted, message: `未知配置项（来自 ${sourceLabel}，拼写错误？）` });
+        continue;
+      }
+      setDeep(target, dotted, value);
     }
-  }
-}
-
-function flatKeys(obj: Record<string, unknown>, prefix = ''): string[] {
-  return Object.entries(obj).flatMap(([key, value]) => {
-    const dotted = prefix ? `${prefix}.${key}` : key;
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? flatKeys(value as Record<string, unknown>, dotted)
-      : [dotted];
-  });
+  };
+  walk(source, '');
 }
 
 function unflatten(values: Map<string, unknown>): Record<string, unknown> {
@@ -171,6 +187,8 @@ async function readConfigFile(file: string): Promise<Record<string, unknown> | n
 async function loadFileLayers(
   configDir: string,
   envName: string,
+  known: ReadonlyMap<string, FieldSpec>,
+  issues: ConfigIssue[],
 ): Promise<{ merged: Record<string, unknown>; sources: string[] }> {
   const merged: Record<string, unknown> = {};
   const sources: string[] = [];
@@ -180,8 +198,9 @@ async function loadFileLayers(
       const file = path.join(configDir, `${base}${ext}`);
       const data = await readConfigFile(file);
       if (data) {
-        deepMerge(merged, data);
-        sources.push(path.relative(process.cwd(), file));
+        const label = path.relative(process.cwd(), file);
+        mergeKnown(merged, data, known, label, issues);
+        sources.push(label);
         break; // 每个 base 只取第一个存在的文件
       }
     }
@@ -253,7 +272,8 @@ export async function loadConfig<S extends ConfigSchema>(
   const envName = env.APP_ENV ?? env.NODE_ENV ?? 'development';
   const configDir = options.configDir ?? path.join(process.cwd(), 'config');
 
-  const { merged, sources } = await loadFileLayers(configDir, envName);
+  const issues: ConfigIssue[] = [];
+  const { merged, sources } = await loadFileLayers(configDir, envName, definition.fields, issues);
 
   // 环境变量命名约定：camelCase 字段 → UPPER_SNAKE，嵌套层级用 `__`
   // 例：tickMs → APP_TICK_MS；gateway.url → APP_GATEWAY__URL
@@ -267,9 +287,7 @@ export async function loadConfig<S extends ConfigSchema>(
       sources.push(`env:${envKey}`);
     }
   }
-  if (options.overrides) deepMerge(merged, options.overrides);
-
-  const issues: ConfigIssue[] = [];
+  if (options.overrides) mergeKnown(merged, options.overrides, definition.fields, 'overrides', issues);
   const values = new Map<string, unknown>();
   for (const [dotted, spec] of definition.fields) {
     let raw = getDeep(merged, dotted);
@@ -283,9 +301,6 @@ export async function loadConfig<S extends ConfigSchema>(
     if (coerced === undefined) continue;
     validate(dotted, coerced, spec, issues);
     values.set(dotted, coerced);
-  }
-  for (const dotted of flatKeys(merged)) {
-    if (!definition.fields.has(dotted)) issues.push({ path: dotted, message: '未知配置项（拼写错误？）' });
   }
   if (issues.length > 0) throw new ConfigValidationError(issues);
 

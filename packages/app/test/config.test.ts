@@ -70,6 +70,9 @@ test('config: 校验一次性报出全部问题（范围/枚举/必填/未知项
     (err: unknown) => {
       assert.ok(err instanceof ConfigValidationError, 'should be ConfigValidationError');
       assert.deepStrictEqual(err.issues.map((i) => i.path).sort(), ['mode', 'required', 'tickMs', 'typo']);
+      // 未知项必须指出来源文件（而不是"某处有 typo"）
+      const typo = err.issues.find((i) => i.path === 'typo');
+      assert.ok(typo && typo.message.includes('default.json'), `未知项应带来源标签，实际: ${typo?.message}`);
       return true;
     },
   );
