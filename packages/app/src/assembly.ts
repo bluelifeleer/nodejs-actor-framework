@@ -102,6 +102,8 @@ export interface AppSpec<S extends ConfigSchema = ConfigSchema> {
   config?: ConfigDefinition<S>;
   modules: readonly ModuleSpec[];
   plugins?: readonly PluginSpec[];
+  /** 全局中间件（不透明类型：应用层不依赖 Web 层，由 web 插件解释）。 */
+  middleware?: readonly unknown[];
 }
 
 export interface CreateAppOptions {
@@ -198,6 +200,11 @@ export class Application {
   }
 
   /** 模块声明的路由（由 Web 层插件解释；应用层不做解释，保持依赖方向）。 */
+  /** 全局中间件（由 web 层插件解释；应用层不依赖 Web 层，保持依赖方向）。 */
+  get middleware(): readonly unknown[] {
+    return this.spec.middleware ?? [];
+  }
+
   get routes(): readonly unknown[] {
     return this.routeSpecs;
   }

@@ -12,6 +12,7 @@ import http from 'node:http';
 import type { Application, PluginSpec } from '@actor/app';
 
 import { dispatch } from './controller.ts';
+import type { Middleware } from './middleware.ts';
 import type { HeaderValue } from './context.ts';
 import { buildRouteTable, type ControllerLike, type HttpMethod, type Route } from './routes.ts';
 
@@ -107,6 +108,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
 
             const result = await dispatch({
               routes,
+              middleware: app.middleware as readonly Middleware[],
               request: {
                 method: req.method ?? 'GET',
                 url: req.url ?? '/',

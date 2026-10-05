@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 import { createApp, defineApp, defineModule } from '@actor/app';
 
-import { defineController, defineRoutes, ws, wsPlugin } from '../src/index.ts';
+import { defineController, defineMiddleware, defineRoutes, reply, ws, wsPlugin } from '../src/index.ts';
 
 // 内核是 CJS：客户端辅助函数也用 createRequire 取（与 wsPlugin 内部一致）
 const require = createRequire(import.meta.url);
@@ -82,5 +82,62 @@ test('ws: 真实连接 → 发消息 → 收回复（路径/查询/消息体输�
   unknown.close();
 
   client.close();
+  await app.stop();
+});
+
+
+test('ws: 每条消息走同一套中间件链（全局 → 路由 → 控制器），可短路', async () => {
+  const order: string[] = [];
+  const tag = (name: string) =>
+    defineMiddleware(async (ctx, next) => {
+      order.push(`${name}:before`);
+      (ctx.state as Record<string, unknown>)[name] = true;
+      const result = await next();
+      order.push(`${name}:after`);
+      return result;
+    });
+  const deny = defineMiddleware(() => reply.json({ error: 'denied' }, { status: 401 }));
+
+  const plugin = wsPlugin({ port: 0 });
+  const app = createApp(
+    defineApp({
+      middleware: [tag('global')],
+      modules: [
+        defineModule({
+          name: 'ws2',
+          routes: defineRoutes([
+            ws('/ok', defineController({ middleware: [tag('controller')], handle: (_i, ctx) => ({ state: Object.keys(ctx.state).sort() }) }), [tag('route')]),
+            ws('/deny', () => ({ unreachable: true }), [deny]),
+          ]),
+        }),
+      ],
+      plugins: [plugin],
+    }),
+    { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-ws2-')), env: {} },
+  );
+  await app.start();
+  const port = plugin.address()?.port;
+
+  const okClient = await connect(`ws://127.0.0.1:${String(port)}/ok`);
+  okClient.sendJson({ type: 'hi' });
+  const okReply = JSON.parse(String((await okClient.nextMessage(3000)).data));
+  assert.deepStrictEqual(okReply, { state: ['controller', 'global', 'route'] });
+  assert.deepStrictEqual(order, [
+    'global:before',
+    'route:before',
+    'controller:before',
+    'controller:after',
+    'route:after',
+    'global:after',
+  ]);
+  okClient.close();
+
+  // 短路：路由级中间件直接返回响应，控制器不执行
+  const denyClient = await connect(`ws://127.0.0.1:${String(port)}/deny`);
+  denyClient.sendJson({ type: 'hi' });
+  const denied = JSON.parse(String((await denyClient.nextMessage(3000)).data));
+  assert.deepStrictEqual(denied, { error: 'denied' });
+  denyClient.close();
+
   await app.stop();
 });

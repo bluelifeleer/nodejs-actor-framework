@@ -25,6 +25,7 @@ const { WebSocketServer } = require('nodejs-actor-framework/src/ops/index.ts') a
 };
 
 import { toErrorResponse, toResponse, createRequestContext, type HeaderValue } from './context.ts';
+import { composeMiddleware, type Middleware } from './middleware.ts';
 import { buildRouteTable, matchRoute, type ControllerLike, type Route, type RouteMethod } from './routes.ts';
 
 export interface WsPluginOptions {
@@ -46,13 +47,16 @@ interface WsSocket {
   on(event: string, listener: (...args: never[]) => void): void;
 }
 
-function isControllerSpec(value: unknown): value is { input?: ConfigSchema; handle: (...args: never[]) => unknown } {
+function isControllerSpec(
+  value: unknown,
+): value is { input?: ConfigSchema; middleware?: readonly Middleware[]; handle: (...args: never[]) => unknown } {
   return typeof value === 'object' && value !== null && 'handle' in (value as Record<string, unknown>);
 }
 
 async function handleMessage(
   app: Application,
   wsRoutes: readonly Route[],
+  appMiddleware: readonly Middleware[],
   socket: WsSocket,
   request: { url?: string; headers?: Record<string, HeaderValue> } | undefined,
   data: unknown,
@@ -103,20 +107,35 @@ async function handleMessage(
   });
 
   try {
-    let input: Record<string, unknown> = declared;
-    if (spec.input) {
-      const { values, issues } = validateValues(spec.input, declared, 'WebSocket 消息');
-      if (issues.length > 0) {
-        socket.sendJson({ error: { status: 400, message: 'input validation failed', details: { issues } } });
-        return;
+    // 与 HTTP 同一条链：全局 → 路由 → 控制器；输入校验紧贴 handle
+    const chain: Middleware[] = [
+      ...appMiddleware,
+      ...((route.middleware ?? []) as readonly Middleware[]),
+      ...((spec.middleware ?? []) as readonly Middleware[]),
+    ];
+    const result = await composeMiddleware(chain)(ctx, async () => {
+      let input: Record<string, unknown> = declared;
+      if (spec.input) {
+        const { values, issues } = validateValues(spec.input, declared, 'WebSocket 消息');
+        if (issues.length > 0) {
+          throw new Error(
+            `WS_INPUT_INVALID:${JSON.stringify(issues)}`,
+          );
+        }
+        input = values;
       }
-      input = values;
-    }
-    const result = await spec.handle(input as never, ctx as never);
+      return spec.handle(input as never, ctx as never);
+    });
     const response = toResponse(result);
     if (response.body === null) socket.sendJson({ status: response.status });
     else socket.send(response.body);
   } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('WS_INPUT_INVALID:')) {
+      const issues = JSON.parse(message.slice('WS_INPUT_INVALID:'.length)) as unknown;
+      socket.sendJson({ error: { status: 400, message: 'input validation failed', details: { issues } } });
+      return;
+    }
     console.error('[ws] handler error:', error);
     socket.send(String(toErrorResponse(error).body));
   }
@@ -161,7 +180,7 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
           if (sockets.size === 0) drained?.();
         }) as never);
         socket.on('message', ((data: unknown, isBinary: boolean) => {
-          void handleMessage(app, wsRoutes, socket, request, data, isBinary);
+          void handleMessage(app, wsRoutes, app.middleware as readonly Middleware[], socket, request, data, isBinary);
         }) as never);
       }) as never);
 
