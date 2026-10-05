@@ -304,3 +304,41 @@ test('cluster handover: 节点优雅离场——冻结/重定向、新 owner 自
     for (const sys of [c, b, a]) await sys.stop();
   }
 });
+
+test('fencing: 成员但**不声明**支持 fencing 时，不强制要求 token（否则老节点/工具会被踢出集群）', async () => {
+  const a = createSystem({
+    name: 'node-a',
+    logger: false,
+    plugins: [plugins.cluster({ nodeId: 'node-a', port: 0, shardCount: SHARDS, intervalMs: 100 })],
+  });
+  try {
+    await a.listen({ host: '127.0.0.1', port: 0 });
+    // 单成员环：node-a 拥有所有 shard，于是"某个成员 owner 不带 token"这一路可以被直接构造出来
+    const target = 'solo-actor';
+    const who = a.cluster.ownerOfActor(target);
+    assert.strictEqual(who, 'node-a');
+
+    const withoutCapability = a.ownership.verifyIncoming({
+      targetActorId: target,
+      shardEpoch: null,
+      peerNodeId: who,
+      peerSupportsFencing: false,
+    });
+    assert.strictEqual(
+      withoutCapability.ok,
+      true,
+      '不声明支持就不强制 token（降级由网关的 fencing_skipped 负责可见）',
+    );
+
+    const withCapability = a.ownership.verifyIncoming({
+      targetActorId: target,
+      shardEpoch: null,
+      peerNodeId: who,
+      peerSupportsFencing: true,
+    });
+    assert.strictEqual(withCapability.ok, false, '声明了支持却不带 token = 协议违规');
+    assert.match(withCapability.reason, /却没有带 shardEpoch/);
+  } finally {
+    await a.stop();
+  }
+});

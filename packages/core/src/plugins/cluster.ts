@@ -339,7 +339,7 @@ function cluster(options = {}) {
           return claim.epoch;
         },
         /** 入站判定：见 docs/design/m4-cluster-governance.md §3.4.5 的三条规则。 */
-        verifyIncoming({ targetActorId, shardEpoch, peerNodeId }) {
+        verifyIncoming({ targetActorId, shardEpoch, peerNodeId, peerSupportsFencing }) {
           if (!targetActorId) return { ok: true };
           refreshRing();
           const shard = ringUtil.shardOf(String(targetActorId), shardCount);
@@ -373,9 +373,13 @@ function cluster(options = {}) {
             };
           }
           if (shardEpoch === null) {
-            // 没有 token：转发者本来就没有 token 可带（合法）；但**本节点认为它是 owner**
-            // 却不带 token 就说明它拿的是旧视图 —— 拒绝，让它去重新同步。
-            if (guard.ownerOf(shard) === peerNodeId && guard.isMember(peerNodeId)) {
+            // 没有 token 的三种情况：
+            //   ① 转发者（不是这个 shard 的 owner）——合法，本来就没 token 可带；
+            //   ② **声明支持 fencing 的成员**却不带 token —— 说明它拿的是旧视图，拒绝让它重新同步；
+            //   ③ 不支持 fencing 的成员（老版本节点、控制台这类只连网关的工具）——放行，但网关会发
+            //      `fencing_skipped`（降级必须可见）。**不能因为"它是成员"就一律要 token**，
+            //      否则没跑所有权插件的成员会被一脚踢出集群（真踩过：控制台集成测试当场红）。
+            if (peerSupportsFencing === true && guard.ownerOf(shard) === peerNodeId && guard.isMember(peerNodeId)) {
               return {
                 ok: false,
                 reason:
