@@ -1,0 +1,7 @@
+{
+  "name": "app-data",
+  "private": true,
+  "type": "module",
+  "description": "数据层示例：@actor/app + @actor/web + @actor/data（CRUD 仓储 + 事件溯源聚合 + 投影读模型 + 迁移门）",
+  "dependencies": { "@actor/app": "*", "@actor/data": "*", "@actor/web": "*" }
+}
