@@ -137,6 +137,7 @@ export function createOutboxLogReader(options: OutboxLogReaderOptions): OutboxLo
         seq: entry.seq,
         eventId: entry.eventId,
         event: entry.event,
+        type: entry.type,
         deliveryId: entry.eventId ?? `${prefix}#${entry.seq}`,
       }));
     },

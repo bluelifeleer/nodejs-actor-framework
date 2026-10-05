@@ -183,11 +183,25 @@ export interface EventRegistry {
   readEntries(
     raws: readonly unknown[],
     options?: { fromSeq?: number },
-  ): { entries: { seq: number; eventId: string | null; event: unknown }[]; lastSeq: number | null };
+  ): { entries: EventLogEntry[]; lastSeq: number | null };
   /** 某个类型的当前版本；未注册则 `null`。 */
   currentVersion(type: string): number | null;
   /** 已注册的事件类型。 */
   types(): string[];
+}
+
+/**
+ * 日志里的一条事件（`readEntries` 的产物）。
+ *
+ * `type` 是**信封上的事件类型**（投影的订阅匹配、投递方路由都要用它）。以前只有 payload 里
+ * 约定俗成地放一个 `type` 字段，类型上却没有——写文档示例时发现"按类型订阅"因此变成隐式约定。
+ */
+export interface EventLogEntry {
+  seq: number;
+  type: string;
+  eventId: string | null;
+  /** 当前形状的事件体（已过 upcast 链）；`type` 不在里面。 */
+  event: unknown;
 }
 
 export interface EventRegistryOptions {
@@ -321,7 +335,7 @@ export function createEventRegistry(
   const walk = (
     raws: readonly unknown[],
     readOptions: { fromSeq?: number },
-    onEntry: (entry: { seq: number; eventId: string | null; event: unknown }) => void,
+    onEntry: (entry: EventLogEntry) => void,
   ): { lastSeq: number | null } => {
     const fromSeq = readOptions.fromSeq ?? null;
     let cursor = 0;
@@ -357,7 +371,14 @@ export function createEventRegistry(
       if (fromSeq !== null && cursor < fromSeq) return;
       const event = interpreted === null ? raw : applyChain(interpreted);
       const eventId = isEventEnvelope(raw) && typeof raw.eventId === 'string' ? raw.eventId : null;
-      onEntry({ seq: cursor, eventId, event });
+      // 事件类型：优先信封，其次是旧写法（payload 自带 type），都没有就是空串
+      const type =
+        interpreted !== null && typeof interpreted.type === 'string'
+          ? interpreted.type
+          : raw !== null && typeof raw === 'object' && typeof (raw as { type?: unknown }).type === 'string'
+            ? String((raw as { type: string }).type)
+            : '';
+      onEntry({ seq: cursor, type, eventId, event });
     });
 
     return { lastSeq };
@@ -373,7 +394,7 @@ export function createEventRegistry(
   };
 
   const readEntries = (raws: readonly unknown[], readOptions: { fromSeq?: number } = {}) => {
-    const entries: { seq: number; eventId: string | null; event: unknown }[] = [];
+    const entries: EventLogEntry[] = [];
     const { lastSeq } = walk(raws, readOptions, (entry) => entries.push(entry));
     return { entries, lastSeq };
   };

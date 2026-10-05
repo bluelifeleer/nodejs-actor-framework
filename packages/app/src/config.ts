@@ -78,15 +78,57 @@ function isFieldSpec(value: unknown): value is FieldSpec {
   return typeof value === 'object' && value !== null && typeof (value as FieldSpec).type === 'string';
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 只递归**纯对象**，并且对"把 defineConfig() 的结果当 schema 传进来"这种常见误用给出明确错误。
+ *
+ * 之前的写法是 `else flattenSchema(value as ConfigSchema, ...)`：遇到字符串/数组也会递归，
+ * 于是 `validateValues(defineConfig({...}), {})`（把定义当 schema）会**栈溢出**，
+ * 报错信息是一条 `Maximum call stack size exceeded`，完全指不到问题所在（写文档的示例时踩到）。
+ */
 function flattenSchema(
   schema: ConfigSchema,
   prefix = '',
   out = new Map<string, FieldSpec>(),
 ): Map<string, FieldSpec> {
+  if (!isPlainObject(schema)) {
+    throw new ConfigValidationError([
+      {
+        path: 'schema',
+        message:
+          '配置 schema 必须是普通对象（形如 { key: { type: ... } }）' +
+          `，当前是 ${schema === null ? 'null' : typeof schema}`,
+      },
+    ]);
+  }
+  if ((schema as { __kind?: unknown }).__kind === 'actor.config') {
+    throw new ConfigValidationError([
+      {
+        path: 'schema',
+        message:
+          '这里要的是**原始 schema**，不是 defineConfig() 的结果：' +
+          '请用 defineConfig({ ... }).schema（loadConfig 才接收定义本身）',
+      },
+    ]);
+  }
   for (const [key, value] of Object.entries(schema)) {
     const dotted = prefix ? `${prefix}.${key}` : key;
-    if (isFieldSpec(value)) out.set(dotted, value);
-    else flattenSchema(value as ConfigSchema, dotted, out);
+    if (isFieldSpec(value)) {
+      out.set(dotted, value);
+      continue;
+    }
+    if (!isPlainObject(value)) {
+      throw new ConfigValidationError([
+        {
+          path: dotted,
+          message: `配置项既不是字段声明（要有 type），也不是嵌套分组对象（当前是 ${typeof value}）`,
+        },
+      ]);
+    }
+    flattenSchema(value as ConfigSchema, dotted, out);
   }
   return out;
 }

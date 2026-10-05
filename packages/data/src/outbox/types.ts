@@ -17,9 +17,17 @@
 export interface OutboxEntry {
   /** 事件在日志里的序号（断点续跑靠它）。 */
   seq: number;
+  /**
+   * 事件类型（信封上的 `type`，例如 `ItemAdded`）。
+   *
+   * 为什么单独给一个字段：`event` 是**payload**（`type` 在信封上），而投影的订阅匹配、投递方的路由
+   * 都要按类型判断。以前只能去 payload 里翻 `type`（约定俗成但没写进类型），写文档的示例时才发现
+   * 这会让"按类型订阅"变成隐式约定——现在显式给出。
+   */
+  type: string;
   /** 事件的全局 id（消费方去重靠它）；旧日志可能没有。 */
   eventId: string | null;
-  /** 当前形状的事件体（已过 upcast 链）。 */
+  /** 当前形状的事件体（已过 upcast 链）；`type` 不在里面，见上面的 `type`。 */
   event: unknown;
   /** 稳定投递 id：`eventId ?? "<actorPath>#<seq>"`（没有 eventId 的老事件也能去重）。 */
   deliveryId: string;

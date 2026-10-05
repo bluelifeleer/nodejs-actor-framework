@@ -119,7 +119,11 @@ export function createProjectionRunner(options: ProjectionRunnerOptions): Projec
 
   const subscribed = (entry: OutboxEntry): boolean => {
     if (!subscriptions || subscriptions.length === 0) return true;
-    const type = (entry.event as { type?: unknown })?.type;
+    // 以信封上的 type 为准（`entry.type`）；兜底看 payload 里有没有 type（老事件体是自带 type 的）
+    const type =
+      typeof entry.type === 'string'
+        ? entry.type
+        : (entry.event as { type?: unknown } | null | undefined)?.type;
     return typeof type === 'string' && subscriptions.includes(type);
   };
 

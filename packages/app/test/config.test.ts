@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { defineConfig, loadConfig, ConfigValidationError } from '../src/index.ts';
+import { ConfigValidationError, defineConfig, loadConfig, validateValues } from '../src/index.ts';
 
 function tempConfigDir(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'actor-app-config-'));
@@ -99,4 +99,31 @@ test('config: secret 在 redacted() 中打码，get()/all() 仍为真实值', as
   assert.strictEqual(config.get('gateway.token'), 'super-secret');
   assert.strictEqual((config.redacted().gateway as Record<string, unknown>).token, '***');
   assert.strictEqual((config.all().gateway as Record<string, unknown>).token, 'super-secret');
+});
+
+test('config: 把 defineConfig() 的结果当 schema 传进来 → 明确报错，而不是栈溢出', () => {
+  // 写文档示例时发现的：flattenSchema 以前对字符串也会递归，
+  // 于是 validateValues(defineConfig({...}), {}) 会撞 "Maximum call stack size exceeded"，
+  // 报错完全指不到问题所在。
+  const definition = defineConfig({ step: { type: 'number', default: 1 } });
+  assert.throws(
+    () => validateValues(definition as never, {}),
+    (err: unknown) => {
+      assert.ok(err instanceof ConfigValidationError, `期望 ConfigValidationError，实际 ${(err as Error)?.name}`);
+      assert.match((err as Error).message, /原始 schema/);
+      return true;
+    },
+  );
+
+  // 非对象 schema 也一样要清楚
+  assert.throws(() => validateValues('nope' as never, {}), /必须是普通对象/);
+
+  // 字段既不是字段声明也不是分组 → 指出具体路径
+  assert.throws(
+    () => validateValues({ group: { broken: 42 } } as never, {}),
+    (err: unknown) => {
+      assert.match((err as Error).message, /group\.broken/);
+      return true;
+    },
+  );
 });

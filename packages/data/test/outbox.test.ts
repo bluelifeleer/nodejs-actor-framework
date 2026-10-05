@@ -183,7 +183,13 @@ test('outbox: select 可以只投一部分事件——被过滤的也会推进�
 });
 
 test('outbox: 消费幂等——同一 deliveryId 只处理一次（memory / file / SQL 三种仓储都验）', async () => {
-  const entry: OutboxEntry = { seq: 1, eventId: 'evt-1', deliveryId: 'evt-1', event: { type: 'ItemAdded' } };
+  const entry: OutboxEntry = {
+    seq: 1,
+    type: 'ItemAdded',
+    eventId: 'evt-1',
+    deliveryId: 'evt-1',
+    event: {},
+  };
 
   // memory
   const memoryRepo = createMemoryRepository<Record<string, unknown>>();

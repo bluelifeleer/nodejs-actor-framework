@@ -321,3 +321,20 @@ test('projection: 空日志 / 没有订阅事件时也能跑（游标不动、�
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'actor-projection-'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('projection: 订阅匹配用**信封上的事件类型**（entry.type），不靠 payload 里约定俗成的 type', () => {
+  // 写文档示例时发现的：payload 里没有 type 时，"按类型订阅"会静默变成"全部跳过"。
+  // 现在类型由 readEntries/reader 显式给出（EventLogEntry.type / OutboxEntry.type）。
+  const records = [
+    createEventEnvelope({ type: 'UserCreated', version: 1, seq: 1, eventId: 'e1', payload: { name: 'ada' } }),
+    createEventEnvelope({ type: 'ItemAdded', version: 1, seq: 2, eventId: 'e2', payload: { price: 1 } }),
+  ];
+  const registry = createEventRegistry([defineEventSchema({ type: 'UserCreated', version: 1 })]);
+  const { entries } = registry.readEntries(records);
+  assert.deepStrictEqual(
+    entries.map((entry) => entry.type),
+    ['UserCreated', 'ItemAdded'],
+    'readEntries 必须给出类型',
+  );
+  assert.deepStrictEqual(entries[0].event, { name: 'ada' }, 'event 是 payload（type 在信封上）');
+});
