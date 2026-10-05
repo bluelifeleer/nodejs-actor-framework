@@ -273,7 +273,15 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 而不是探测实例 + 状态拷贝。这样 `this.state`、`ref.state()`、快照、`applyEvent` 会是同一个对象。
 这是一个独立的小里程碑（改内核定义形态 + 应用层装配 + 回归测试），不属于 M3。
 
-## 6. 第 2b / 2c 步：待确认的两个决策
+## 6. 第 2b / 2c 步：设计（三个决策已确认）
+
+> **决策记录（已确认，不再改动）**：
+> - **D-2b**：扩展 `events` 模式 —— `persistence: { mode: 'events', snapshot: { every: N } }`，
+>   快照只是缓存，真相仍是事件日志；快照不可用时**丢弃并全量重放**；
+> - **D-seq**：事件信封**加 `seq`**（每聚合单调序号）—— 快照记 `atSeq`、重放按 `seq > atSeq` 过滤，
+>   且断号/错位能当场报错；旧日志在**读取期补号**，不重写盘上数据；
+> - **D-2c**：`expectedVersion` = 后端条件写（能真 CAS 的后端如 SQL 走真 CAS）+ 聚合层双保险，
+>   并**暴露后端能力**（`file` 后端如实标注为"仅同进程检查"）。
 
 ### 6.1 现状与缺口（已核实代码，不是推测）
 
@@ -292,7 +300,7 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | (b) 新增模式 `'events+snapshot'` | 语义更显式，但模式数量变多，且与 `'snapshot'` 的区别要靠文档解释 | 备选 |
 | (c) 数据层自己做（内核不参与） | 不行：恢复流程由 `_restore()` 独占，数据层拿不到"重放到一半"的控制权 | 排除 |
 
-**D-2b 推荐 (a)**：`mode: 'events'` + 可选 `snapshot: { every }`（也可以只在 `ctx.saveSnapshot()` 时手动存）。
+**D-2b 已确认 (a)**：`mode: 'events'` + 可选 `snapshot: { every }`（也可以只在 `ctx.saveSnapshot()` 时手动存）。
 
 ### 6.3 决策 D-seq：偏移量怎么表示
 
@@ -301,8 +309,10 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | **(a) 只在内核内部计数** | 快照里存"已包含 N 条事件"（内核元数据，写在快照的外层包装里）；重放时 `events.slice(N)`。**盘上事件格式一个字都不用改** | 日志被截断/手工改动后，计数会**静默错位**（读到错的状态） |
 | (b) 事件信封加 `seq`（每聚合单调序号） | 快照记 `atSeq`，重放时按 `seq > atSeq` 过滤；错位能**当场发现**（序号不连续即报错）；同时它是 2c 条件追加的基础 | 要再动一次盘上格式（读取期仍可兼容：无 `seq` 的旧日志按顺序补号） |
 
-**D-seq 推荐 (b)**，理由与第 1 步的 `eventId` 相同：**事后加字段会造成第二次格式变更**，而
+**D-seq 已确认 (b)**，理由与第 1 步的 `eventId` 相同：**事后加字段会造成第二次格式变更**，而
 `seq` 同时服务"快照续跑"与"乐观并发"两件事；且它能把手改日志从"静默错位"变成"明确报错"。
+实现上注意：读取期补号需要"看到整段日志"，而当前的 `evolution.upcast` 是**逐条** hook ——
+所以要新增一个**批量**读取 hook（`readLog`），内核 `_restore` 优先用它（没有就退回逐条 upcast）。
 
 ### 6.4 决策 D-2c：`expectedVersion` 到底在哪儿拦
 
@@ -312,11 +322,12 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | (b) 只在数据层/Repository 层做实体级乐观锁（实体自带 `version`） | 与事件日志解耦，实现简单，作用域是本进程 + 后端自身能力 | 挡不住"两节点同时拥有同一聚合"（doc 04 §3 想防的正是这个） |
 | **(c) (a) + (b)** | 后端能 CAS 就用 CAS；聚合层同时维护 `expectedSeq`，并在不支持的 backend 上**明确记录降级** | **推荐**：不假装 file 后端有跨进程原子性，也不放弃 SQL 上的真保护 |
 
-**D-2c 推荐 (c)**，并且实现时把"当前后端是否支持条件写"作为可查询能力暴露出来
+**D-2c 已确认 (c)**，并且实现时把"当前后端是否支持条件写"作为可查询能力暴露出来
 （`adapter.capabilities()` 之类），让"以为有保护、其实没有"这种情况不可能发生。
 
-### 6.5 实施顺序（定了就按这个走）
+### 6.5 实施顺序（已定，按此执行）
 
-1. 事件信封加 `seq`（读取期兼容：旧日志按顺序补号，且不重写盘上数据）+ 内核 `appendEvent` 支持 `expectedSeq`；
+1. 事件信封加 `seq` + **批量读取 hook**（读取期给旧日志补号、并检查序号连续；断号/错位当场报错）
+   + 内核 `appendEvent` 支持 `expectedSeq` + 后端能力查询；
 2. `mode: 'events'` 支持可选快照：恢复时"快照 + 增量重放"，快照不可用时**丢弃并全量重放**（补上 doc 04 §4.2 规则 2）；
 3. 聚合层接上 `expectedSeq`（命令产出的整批事件作为一个原子批次），并在不支持的 backend 上明确报/记降级。
