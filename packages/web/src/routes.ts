@@ -7,7 +7,18 @@
  *   get('/rooms/:id/players?limit=')   两者混用
  */
 
-export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+export const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
+
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
+/**
+ * 方法归一化：用户可能写小写（JS 侧尤其容易），也可能写错。
+ * 归一化后再存表，并在启动期对未知方法报错——否则会变成"路由永远打不中"的静默故障。
+ */
+export function normalizeMethod(method: string): HttpMethod | null {
+  const upper = String(method).trim().toUpperCase();
+  return (HTTP_METHODS as readonly string[]).includes(upper) ? (upper as HttpMethod) : null;
+}
 
 export interface RouteIssue {
   message: string;
@@ -41,10 +52,20 @@ function isControllerObject(value: unknown): value is ControllerLike {
 
 /** 解析一个模式串；返回 null 表示模式本身非法（启动时报错）。 */
 export function parsePattern(
-  method: HttpMethod,
+  method: HttpMethod | string,
   pattern: string,
   controller: Route['controller'],
 ): { route?: Route; issue?: RouteIssue } {
+  const normalized = normalizeMethod(method);
+  if (!normalized) {
+    return {
+      issue: {
+        message: `不支持的方法 '${String(method)}'（支持：${HTTP_METHODS.join(', ')}）`,
+        route: pattern,
+      },
+    };
+  }
+  const methodValue: HttpMethod = normalized;
   if (!pattern.startsWith('/')) {
     return { issue: { message: `路由必须以 / 开头：'${pattern}'`, route: pattern } };
   }
@@ -93,7 +114,7 @@ export function parsePattern(
     }
   }
   return {
-    route: { method, pattern, path, segments, pathParams, queryParams, controller },
+    route: { method: methodValue, pattern, path, segments, pathParams, queryParams, controller },
   };
 }
 
@@ -135,8 +156,17 @@ export interface MatchInput {
 }
 
 export type MatchResult =
-  | { kind: 'matched'; route: Route; params: Record<string, string>; query: Record<string, string> }
+  | {
+      kind: 'matched';
+      route: Route;
+      params: Record<string, string>;
+      query: Record<string, string>;
+      /** HEAD 请求命中了 GET 路由：响应照常计算，但不得返回 body。 */
+      headOnly?: true;
+    }
   | { kind: 'method_not_allowed'; allow: readonly HttpMethod[] }
+  /** OPTIONS 预检：无专门路由时按标准返回 Allow 列表（204）。 */
+  | { kind: 'options'; allow: readonly HttpMethod[] }
   | { kind: 'not_found' };
 
 /** 匹配一次请求。未声明的查询参数照常出现在 query 里（规则 1）。 */
@@ -148,7 +178,7 @@ export function matchRoute(routes: readonly Route[], input: MatchInput): MatchRe
   const query: Record<string, string> = {};
   for (const [key, value] of new URLSearchParams(rawQuery)) query[key] = value;
 
-  const method = input.method.toUpperCase();
+  const method = (normalizeMethod(input.method) ?? input.method.trim().toUpperCase()) as HttpMethod;
   const pathMatches: { route: Route; params: Record<string, string> }[] = [];
   for (const route of routes) {
     if (route.segments.length !== wanted.length) continue;
@@ -167,11 +197,19 @@ export function matchRoute(routes: readonly Route[], input: MatchInput): MatchRe
 
   const exact = pathMatches.find((candidate) => candidate.route.method === method);
   if (exact) return { kind: 'matched', route: exact.route, params: exact.params, query };
+
+  // HEAD 没专门路由时按 GET 处理（标准行为：curl -I / 健康检查），由服务器丢弃 body
+  if (method === 'HEAD') {
+    const asGet = pathMatches.find((candidate) => candidate.route.method === 'GET');
+    if (asGet) {
+      return { kind: 'matched', route: asGet.route, params: asGet.params, query, headOnly: true };
+    }
+  }
   if (pathMatches.length > 0) {
-    return {
-      kind: 'method_not_allowed',
-      allow: [...new Set(pathMatches.map((candidate) => candidate.route.method))],
-    };
+    const allow = [...new Set(pathMatches.map((candidate) => candidate.route.method))];
+    // OPTIONS 无专门路由时按标准返回 Allow（204），而不是 405
+    if (method === 'OPTIONS') return { kind: 'options', allow };
+    return { kind: 'method_not_allowed', allow };
   }
   return { kind: 'not_found' };
 }
@@ -181,6 +219,8 @@ export const post = (pattern: string, controller: Route['controller']): readonly
 export const put = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['PUT', pattern, controller];
 export const patch = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['PATCH', pattern, controller];
 export const del = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['DELETE', pattern, controller];
+export const head = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['HEAD', pattern, controller];
+export const options = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['OPTIONS', pattern, controller];
 
 /** 声明一组路由（在 `defineModule({ routes })` 里使用）。 */
 export function defineRoutes(

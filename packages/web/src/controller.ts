@@ -61,6 +61,8 @@ export interface DispatchResult {
   matched: boolean;
   route?: Route;
   status: number;
+  /** HEAD 命中 GET 路由：响应头照常，body 必须丢弃（由服务器实现处理）。 */
+  headOnly?: true;
 }
 
 function makeRequestId(): string {
@@ -84,6 +86,12 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
       status: 404,
       response: toErrorResponse(new HttpError(404, `no route for ${request.method.toUpperCase()} ${rawPath}`)),
     };
+  }
+  if (match.kind === 'options') {
+    // 标准行为：预检返回 204 + Allow，而不是 405
+    const response = toResponse(undefined);
+    response.headers.Allow = match.allow.join(', ');
+    return { matched: false, status: 204, response };
   }
   if (match.kind === 'method_not_allowed') {
     const response = toErrorResponse(new HttpError(405, `method not allowed for ${rawPath}`));
@@ -143,7 +151,13 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     }
     const result = await spec.handle(input, ctx);
     const response = toResponse(result);
-    return { matched: true, route, status: response.status, response };
+    return {
+      matched: true,
+      route,
+      status: response.status,
+      response,
+      ...(match.headOnly ? { headOnly: true as const } : {}),
+    };
   } catch (error) {
     const response = toErrorResponse(error);
     return { matched: true, route, status: response.status, response };

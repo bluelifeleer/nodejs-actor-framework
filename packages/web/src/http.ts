@@ -112,7 +112,8 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             const headers: Record<string, string> = { ...result.response.headers };
             headers['content-type'] = result.response.contentType;
             res.writeHead(result.response.status, headers);
-            if (result.response.body === null) res.end();
+            // HEAD：响应头照常，但不发送 body（标准行为）
+            if (result.response.body === null || result.headOnly) res.end();
             else res.end(result.response.body);
           } catch (error) {
             // 500 必须留痕：响应里不含细节（安全），但服务端日志要能定位

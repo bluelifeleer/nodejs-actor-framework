@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { buildRouteTable, defineRoutes, get, matchRoute, parsePattern, post } from '../src/index.ts';
+import { buildRouteTable, defineRoutes, get, matchRoute, normalizeMethod, parsePattern, post } from '../src/index.ts';
 
 const handler = async () => ({ ok: true });
 
@@ -96,4 +96,41 @@ test('routes: defineRoutes 保留声明顺序', () => {
     entries.map(([method, pattern]) => `${method} ${pattern}`),
     ['GET /a', 'POST /b'],
   );
+});
+
+
+test('routes: 方法归一化——小写/带空白可用，未知方法在启动期报错（不再静默失效）', () => {
+  assert.strictEqual(normalizeMethod(' get '), 'GET');
+  assert.strictEqual(normalizeMethod('Options'), 'OPTIONS');
+  assert.strictEqual(normalizeMethod('FETCH'), null);
+
+  // 小写注册（JS 侧常见）应可用，且结果与大写一致
+  const lower = buildRouteTable([['get', '/x', handler] as never]);
+  assert.deepStrictEqual(lower.issues, []);
+  assert.strictEqual(lower.routes[0]?.method, 'GET');
+  assert.strictEqual(matchRoute(lower.routes, { method: 'GET', url: '/x' }).kind, 'matched');
+
+  // 未知方法：启动期报错并列出支持的方法
+  const bad = buildRouteTable([['FETCH', '/y', handler] as never]);
+  assert.strictEqual(bad.routes.length, 0);
+  assert.match(bad.issues[0]?.message ?? '', /不支持的方法 'FETCH'/);
+  assert.match(bad.issues[0]?.message ?? '', /GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS/);
+});
+
+test('routes: HEAD 回退到 GET（headOnly），OPTIONS 返回 204 + Allow 而不是 405', () => {
+  const { routes } = buildRouteTable([get('/rooms', handler), post('/rooms', handler)]);
+
+  const asHead = matchRoute(routes, { method: 'HEAD', url: '/rooms' });
+  assert.strictEqual(asHead.kind, 'matched');
+  if (asHead.kind === 'matched') {
+    assert.strictEqual(asHead.headOnly, true);
+    assert.strictEqual(asHead.route.method, 'GET');
+  }
+
+  const preflight = matchRoute(routes, { method: 'OPTIONS', url: '/rooms' });
+  assert.strictEqual(preflight.kind, 'options');
+  if (preflight.kind === 'options') assert.deepStrictEqual([...preflight.allow].sort(), ['GET', 'POST']);
+
+  // 小写方法请求同样被归一化
+  assert.strictEqual(matchRoute(routes, { method: 'get', url: '/rooms' }).kind, 'matched');
 });
