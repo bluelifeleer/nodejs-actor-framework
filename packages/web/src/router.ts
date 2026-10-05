@@ -79,7 +79,14 @@ export function flattenRouter(
   };
 
   const entries: FlatRouteEntry[] = [];
-  for (const entry of spec.routes ?? []) {
+  if (spec.routes !== undefined && !Array.isArray(spec.routes)) {
+    issues.push({
+      message:
+        `路由器${routerName ? ` '${routerName}'` : ''}的 routes 必须是数组` +
+        `（若是 routes({...}) 的产物，请放到 children 或用 defineModule 的 router 字段）`,
+    });
+  }
+  for (const entry of (Array.isArray(spec.routes) ? spec.routes : [])) {
     const [method, pattern, controller, routeMiddleware] = entry;
     if (!pattern.startsWith('/')) {
       issues.push({ message: `路由模式必须以 / 开头：'${pattern}'${routerName ? `（${routerName}）` : ''}` });

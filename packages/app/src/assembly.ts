@@ -409,11 +409,15 @@ export class Application {
       } else if (mod.routes || mod.router || mod.middleware) {
         // 组装成"路由器形状的普通对象"：应用层不认识路由器类型，Web 层按结构识别。
         // 于是模块中间件 = 该模块根路由器的中间件（子树语义），模块名进入归属信息（诊断用）。
+        // mod.routes 有两种形态：元组数组（扁平声明）或路由器对象（routes({...}) 的产物）。
+        // 后者放进 children —— 与 router 一样按子树处理（模块中间件仍是它的父层）。
+        const routesIsArray = Array.isArray(mod.routes);
         this.routeSpecs.push({
           name: mod.name,
           ...(mod.middleware ? { middleware: mod.middleware } : {}),
-          ...(mod.routes ? { routes: mod.routes } : {}),
-          ...(mod.router ? { children: [mod.router] } : {}),
+          ...(routesIsArray ? { routes: mod.routes } : {}),
+          ...(!routesIsArray && mod.routes ? { children: [mod.routes] } : {}),
+          ...(mod.router ? { children: [...(!routesIsArray && mod.routes ? [mod.routes] : []), mod.router] } : {}),
         });
       }
       for (const plugin of mod.plugins ?? []) {

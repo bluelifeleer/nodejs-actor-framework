@@ -37,12 +37,12 @@ test('example app-web: HTTP 端到端（200/201/400/404/405/504/HEAD/OPTIONS）�
   const json = async (response) => ({ status: response.status, body: await response.json() });
 
   // 200：GET 健康检查（函数式控制器）
-  const health = await json(await fetch(`${base}/health`));
+  const health = await json(await fetch(`${base}/api/health`));
   assert.deepStrictEqual(health, { status: 200, body: { ok: true } });
 
   // 201：POST /join（输入来自 body，显式声明）
   const join = await json(
-    await fetch(`${base}/join`, {
+    await fetch(`${base}/api/join`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ playerId: 'alice' }),
@@ -53,30 +53,30 @@ test('example app-web: HTTP 端到端（200/201/400/404/405/504/HEAD/OPTIONS）�
 
   // 400：缺少 body 字段时一次性报出问题
   const invalid = await json(
-    await fetch(`${base}/join`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }),
+    await fetch(`${base}/api/join`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }),
   );
   assert.strictEqual(invalid.status, 400);
   assert.strictEqual(invalid.body.error.details.issues[0].path, 'playerId');
 
   // 200：路径参数 + 查询参数混用（verbose=true 时返回完整状态）
-  const room = await json(await fetch(`${base}/rooms/1?verbose=true`));
+  const room = await json(await fetch(`${base}/api/rooms/1?verbose=true`));
   assert.strictEqual(room.status, 200);
   assert.deepStrictEqual(room.body.players, ['alice']);
 
   // 404 / 405（带 Allow）
-  assert.strictEqual((await fetch(`${base}/nope`)).status, 404);
-  const wrongMethod = await fetch(`${base}/health`, { method: 'DELETE' });
+  assert.strictEqual((await fetch(`${base}/api/nope`)).status, 404);
+  const wrongMethod = await fetch(`${base}/api/health`, { method: 'DELETE' });
   assert.strictEqual(wrongMethod.status, 405);
   assert.strictEqual(wrongMethod.headers.get('allow'), 'GET');
 
   // 504：每请求超时（控制器把 ask 超时设为 200ms，而 Actor 睡 1000ms）
-  assert.strictEqual((await fetch(`${base}/slow`)).status, 504);
+  assert.strictEqual((await fetch(`${base}/api/slow`)).status, 504);
 
   // HEAD 回退到 GET（无 body）；OPTIONS 返回 204 + Allow
-  const head = await fetch(`${base}/rooms/1`, { method: 'HEAD' });
+  const head = await fetch(`${base}/api/rooms/1`, { method: 'HEAD' });
   assert.strictEqual(head.status, 200);
   assert.strictEqual(await head.text(), '');
-  const preflight = await fetch(`${base}/rooms/1`, { method: 'OPTIONS' });
+  const preflight = await fetch(`${base}/api/rooms/1`, { method: 'OPTIONS' });
   assert.strictEqual(preflight.status, 204);
   assert.match(String(preflight.headers.get('allow')), /GET/);
 
@@ -86,6 +86,6 @@ test('example app-web: HTTP 端到端（200/201/400/404/405/504/HEAD/OPTIONS）�
   assert.strictEqual(code, 0, `应正常退出，输出:\n${out}`);
   assert.match(out, /\[main\] stopped gracefully/);
   // 访问日志：方法/路径/状态码/耗时/追踪 id
-  assert.match(out, /\[http\] POST \/join 201 \d+ms rid=r-/, '应有访问日志并带 requestId');
-  assert.match(out, /\[http\] GET \/slow 504 /, '访问日志应记录状态码');
+  assert.match(out, /\[http\] POST \/api\/join 201 \d+ms rid=r-/, '应有访问日志并带 requestId');
+  assert.match(out, /\[http\] GET \/api\/slow 504 /, '访问日志应记录状态码');
 });
