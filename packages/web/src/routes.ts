@@ -124,7 +124,7 @@ export function parsePattern(
 
 /** 构建路由表；返回路由与启动期问题（重复、非法模式）。 */
 export function buildRouteTable(
-  entries: readonly (readonly [HttpMethod, string, Route['controller']])[],
+  entries: readonly (readonly [RouteMethod, string, Route['controller']])[],
 ): { routes: Route[]; issues: RouteIssue[] } {
   const routes: Route[] = [];
   const issues: RouteIssue[] = [];

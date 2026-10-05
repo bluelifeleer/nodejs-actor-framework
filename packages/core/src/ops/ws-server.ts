@@ -354,7 +354,8 @@ class WebSocketServer extends EventEmitter {
     if (upgrade !== 'websocket' || !key || version !== '13') {
       return fail(400, 'Bad Request');
     }
-    if (req.url.split('?')[0] !== this.path) {
+    // path === '*' 表示不在此层限定路径（例如应用层自带路由表，按 URL 分发到不同控制器）
+    if (this.path !== '*' && req.url.split('?')[0] !== this.path) {
       return fail(404, 'Not Found');
     }
 

@@ -5,6 +5,7 @@
  * 本包不得 re-export 内核内部类型。
  */
 export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
+export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
 
 export {
   defineController,
