@@ -246,6 +246,7 @@ async function walk(dir, filter) {
 function groupOf(relative) {
   if (relative === 'README.md') return '首页';
   if (relative === 'docs/quickstart.md') return '快速开始';
+  if (relative.startsWith('docs/guide/')) return '指南';
   if (relative.startsWith('docs/design/m0/')) return '规格（M0）';
   if (relative.startsWith('docs/design/')) return '设计与决策';
   if (relative.startsWith('docs/')) return '文档';
@@ -253,7 +254,7 @@ function groupOf(relative) {
   return '其它';
 }
 
-const GROUP_ORDER = ['首页', '快速开始', '设计与决策', '规格（M0）', '文档', '示例', '其它'];
+const GROUP_ORDER = ['首页', '快速开始', '指南', '设计与决策', '规格（M0）', '文档', '示例', '参考', '其它'];
 
 /* -------------------------------------------------------------------------- */
 /* API 参考：从源码提取导出与注释（不手抄）                                     */
