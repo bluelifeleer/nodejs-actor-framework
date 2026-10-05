@@ -73,6 +73,25 @@ await system.stop();
 存储后端可注入：`createSystem({ persistenceDir })`（文件）/ `persistence: adapter`（自定义）/ `mailboxStore`（复用 `message-store`）。
 选了需要存储的策略却没提供存储会**直接报错**，不会静默地"不持久化"。
 
+#### 结构演进：`persistence.evolution`（内核只提供接缝，格式由数据层决定）
+
+改数据结构不该是破坏性变更。内核**不认识**任何信封格式，只提供三个可选的同步纯函数：
+
+```js
+const evolution = {
+  upcast: (raw) => currentShapeEvent,   // events：每条事件在 applyEvent 之前调用（写入期与重放期都走）
+  decodeSnapshot: (raw) => state,       // snapshot：读取时校验版本/迁移；**抛错 = 该 Actor 拒绝启动**
+  encodeSnapshot: (state) => stored,    // snapshot：写入时套信封
+};
+await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events',   evolution } });
+await system.spawn(Tank,  { id: 'tank',    persistence: { mode: 'snapshot', evolution } });
+```
+
+三个 hook 都可选、默认恒等（不配置时行为与以前完全一致）；必须是**同步**函数，返回 Promise
+会直接报错而不是被当成事件；**写入期与重放期走同一条 `upcast`**，所以"内存里的状态"与
+"重启后重放出来的状态"不会漂移。`@actor/data`（M3）在此之上提供事件信封、upcast 注册表与
+快照版本策略，见 `docs/design/m3-data-evolution.md`。
+
 ### 隔离：进程内（默认）与 worker（按 Actor 可选）
 
 ```js

@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/core/test/*.test.js' 'packages/app/test/*.test.ts' 'packages/web/test/*.test.ts' 'test/*.test.js'",
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/core/test/*.test.js' 'packages/app/test/*.test.ts' 'packages/web/test/*.test.ts' 'packages/data/test/*.test.ts' 'test/*.test.js'",
     "typecheck": "tsc -p tsconfig.json",
     "start": "node actor-main.js",
     "gen-test-certs": "./scripts/gen-test-certs.sh",

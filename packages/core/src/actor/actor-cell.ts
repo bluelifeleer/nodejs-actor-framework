@@ -9,7 +9,7 @@ const ChildSupervisor = require('./guardian.ts');
 const ActorContext = require('./actor-context.ts');
 const { ActorRef } = require('./actor-ref.ts');
 const { defineActor } = require('./actor.ts');
-const { resolvePersistence } = require('../store/persistence.ts');
+const { resolvePersistence, callEvolution } = require('../store/persistence.ts');
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
@@ -186,7 +186,7 @@ class ActorCell {
     const { WorkerDelegate } = require('../worker/worker-delegate.ts');
     let snapshot;
     if (this.persistence.mode === 'snapshot' && this.persistence.store) {
-      snapshot = await this.persistence.store.loadSnapshot(this.path);
+      snapshot = await this._loadSnapshotForRestore();
       if (snapshot !== undefined) this.context.restored = true;
     }
     const delegate = new WorkerDelegate({
@@ -201,16 +201,20 @@ class ActorCell {
   }
 
   async _restore() {
-    const { mode, store, mailboxStore } = this.persistence;
+    const { mode, store, mailboxStore, evolution } = this.persistence;
     if (mode === 'snapshot' && store) {
-      const snapshot = await store.loadSnapshot(this.path);
-      if (snapshot !== undefined) {
-        const restoredState = typeof snapshot === 'object' && snapshot !== null ? { ...snapshot } : snapshot;
-        this.instance.state = restoredState;
+      const restoredState = await this._loadSnapshotForRestore();
+      if (restoredState !== undefined) {
+        this.instance.state = typeof restoredState === 'object' && restoredState !== null ? { ...restoredState } : restoredState;
         this.context.restored = true;
       }
     } else if (mode === 'events' && store) {
-      const events = await store.loadEvents(this.path);
+      const raw = await store.loadEvents(this.path);
+      // Structure evolution happens **on read**: the stored log is never rewritten,
+      // so an upgrade is rollback-able and replays stay reproducible.
+      const events = evolution && evolution.upcast
+        ? raw.map((item) => callEvolution(evolution.upcast, item, 'upcast'))
+        : raw;
       for (const event of events) this.instance.applyEvent(event);
       this.context.restored = events.length > 0;
       this.counters.recovered += events.length;
@@ -600,7 +604,17 @@ class ActorCell {
     // `instance` is null for worker-isolated actors (the actor lives in the
     // worker), so check for either incarnation owner — otherwise an isolated
     // actor with snapshot persistence would silently lose its state on stop.
-    if (this.persistence.mode === 'snapshot' && this.persistence.onStop && (this.instance || this.delegate)) {
+    //
+    // `started` matters for data safety: an actor whose `_init` threw (e.g. a
+    // snapshot that refuses to migrate) never recovered anything, so persisting
+    // its preStart defaults here would **overwrite the very data the error was
+    // protecting**. Only a successfully started incarnation may write.
+    if (
+      this.persistence.mode === 'snapshot' &&
+      this.persistence.onStop &&
+      this.started &&
+      (this.instance || this.delegate)
+    ) {
       try {
         await this.saveSnapshot();
       } catch (err) {
@@ -685,20 +699,48 @@ class ActorCell {
 
   // --- persistence hooks ---------------------------------------------------
 
+  /**
+   * Load a snapshot and run it through the evolution hook.
+   *
+   * `decodeSnapshot` may:
+   *   - return state     → used as-is;
+   *   - return undefined → "no usable snapshot" (recovery simply continues);
+   *   - throw            → the actor **refuses to start** (a wrong structure is
+   *                        never silently applied).
+   */
+  async _loadSnapshotForRestore() {
+    const { store, evolution } = this.persistence;
+    const raw = await store.loadSnapshot(this.path);
+    if (raw === undefined) return undefined;
+    if (!evolution || !evolution.decodeSnapshot) return raw;
+    return callEvolution(evolution.decodeSnapshot, raw, 'decodeSnapshot');
+  }
+
   async persistEvent(event) {
-    const { mode, store } = this.persistence;
+    const { mode, store, evolution } = this.persistence;
     if (mode === 'events' && store) await store.appendEvent(this.path, event);
     if (mode === 'snapshot') this._snapshotDirty = true;
-    if (this.instance) this.instance.applyEvent(event);
+    // Apply **exactly what a replay would apply**: run the same evolution pipeline
+    // here too. Otherwise a live write of an envelope would hand `applyEvent` the
+    // envelope while the same event, replayed after a restart, arrives as its
+    // payload — two different shapes for one event, i.e. state that drifts
+    // between live and recovered.
+    const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, event, 'upcast') : event;
+    if (this.instance) this.instance.applyEvent(applied);
     return event;
   }
 
   async saveSnapshot() {
-    const { store } = this.persistence;
+    const { store, evolution } = this.persistence;
     if (!store) return undefined;
     const state = await this.fetchState();
     if (state === undefined) return undefined;
-    await store.saveSnapshot(this.path, state);
+    // The caller gets the live state back; only what lands on disk goes through
+    // encodeSnapshot (headers, version markers, …).
+    const stored = evolution && evolution.encodeSnapshot
+      ? callEvolution(evolution.encodeSnapshot, state, 'encodeSnapshot')
+      : state;
+    await store.saveSnapshot(this.path, stored);
     this._snapshotDirty = false;
     return state;
   }

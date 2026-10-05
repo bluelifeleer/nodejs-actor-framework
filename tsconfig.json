@@ -16,6 +16,7 @@
     "packages/core/src/**/*.ts",
     "packages/app/src/**/*.ts",
     "packages/web/src/**/*.ts",
+    "packages/data/src/**/*.ts",
     "packages/core/index.d.ts"
   ]
 }

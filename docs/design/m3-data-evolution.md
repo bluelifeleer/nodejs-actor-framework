@@ -55,6 +55,10 @@ store.loadEvents(path)
     ⑤ 返回**当前形状**的 event → 内核 applyEvent(event)
 ```
 
+**事件体自带判别字段**：信封的 `type` 只用于查表，**不会注入**事件体。所以事件体
+（`payload`）自己应当带判别字段（doc 04 §3 的聚合示例 `{ type: 'ItemAdded', … }` 就是如此）——
+`applyEvent` 收到的永远是"当前形状的事件体"，无论是实时写入还是重放。
+
 **关键取舍**：旧格式**不做物理迁移**。读取期解释的代价是每次重放多跑几个纯函数，
 换来的是"可回滚、可重放、可双读期"——这正是 doc 04 §4.1 要的性质。
 
@@ -125,7 +129,10 @@ system.spawn(Order, {
 - 三个 hook 都是**可选**且默认恒等 ⇒ 现有用户零感知、内核测试零改动；
 - hook 由数据层（`@actor/data`）产出，内核不 import 数据层（依赖方向仍然是 data → app → core，
   而 core 只认结构不认类型）；
-- `decodeSnapshot` 抛错会沿 `_init → spawn` 冒泡 ⇒ `spawn` 失败并报出原因（这就是"拒绝启动"）。
+- `decodeSnapshot` 抛错会沿 `_init → spawn` 冒泡 ⇒ `spawn` 失败并报出原因（这就是"拒绝启动"）；
+- **写入期也走同一条 `upcast` 管线**（`persistEvent` 里调用）：否则实时写入会把**信封**喂给
+  `applyEvent`，而重启重放时同一个事件到达的是**payload**——同一个事件两种形状，内存状态会漂移。
+  这条不变量有测试（写入期与重放期结果必须一致）。
 
 ### 2.6 包结构与边界
 
@@ -152,12 +159,34 @@ packages/data/
    指名 `stateVersion`；
 5. **不回归**：全量 `npm test` 通过、`npm run typecheck` 0 错误。
 
-## 4. 进展
+## 4. 进展（第 1 步已完成）
 
 | 项 | 状态 | 说明 |
 |---|---|---|
 | 设计（本文档） | ✅ | 决策 A/B/C 已确认 |
-| 内核 `evolution` hook | ⏳ | |
-| `@actor/data` 事件信封 + 注册表 | ⏳ | |
-| `@actor/data` 快照策略 | ⏳ | |
-| 集成验证（v1→v3） | ⏳ | |
+| 内核 `evolution` hook | ✅ | `persistence.evolution = {upcast, decodeSnapshot, encodeSnapshot}`；默认恒等 |
+| `@actor/data` 事件信封 + 注册表 | ✅ | 构造期校验链缺口/歧义/未来版本；顶层冻结输入；旧格式与未知类型原样透传 |
+| `@actor/data` 快照策略 | ✅ | 四条读取规则 + `legacyVersion`；无迁移时**拒绝启动** |
+| 集成验证（v1→v3） | ✅ | 真实内核 + 真实文件：旧代码写、新代码读；混合日志重放；拒绝启动不破坏数据 |
+| 测试 | ✅ | `packages/data/test/*` 24 例；全量 383/383 通过；严格 typecheck 0 错误 |
+
+### 4.1 实现中抓出的三个真问题（写在这里，因为它们是"验证反哺设计"的证据）
+
+1. **实时写入与重放不是同一形状**（设计缺陷，本步修掉）：最初 `persistEvent` 直接把传入对象
+   交给 `applyEvent`，于是新代码写信封时内存拿到的是**信封**，而重启重放时拿到的是**payload**。
+   测试里表现为"写入后与重启后数字对不上"。修法：写入期也走同一条 `upcast` 管线。
+2. **启动失败会覆盖数据**（数据安全缺陷，本步修掉）：快照版本不匹配导致 `_init` 抛错后，
+   该 cell 仍在 `system.cells` 里；`system.stop()` 时 `_handleStop` 看到 `mode === 'snapshot'`
+   就把**preStart 默认状态**存回去，覆盖掉那个"拒绝对待"的旧快照。
+   修法：`_handleStop` 增加 `this.started` 守卫——只有成功启动过的 incarnation 才有资格写盘。
+3. **`.gitignore` 把新包整个吃掉了**（工程陷阱）：根因是规则 `data/` 没有锚定，
+   于是 `packages/data/` 被忽略——`git status` 看起来"很干净"，**新包一个文件都提交不进去**。
+   修法：锚定为 `/data/`，并加守卫测试（`git check-ignore`）让这类静默失效当场失败；
+   同一条守卫还顺手修掉了"按字符串扫 import 时把注释当成代码"的假失败。
+
+### 4.2 与设计草案（doc 04）的差异
+
+- 快照信封里**没有** `actorPath`：文件名已经由 actor 路径决定（`store/backends/naming.ts`），
+  再存一遍只是冗余；`{snapshotVersion, stateVersion, takenAt, state}` 足够。
+- doc 04 §4.2 的"无迁移则从事件重建"**仍未实现**（见 §2.4）：它需要"快照 + 事件日志"同时存在，
+  而当前内核持久化模式互斥，放到第 2 步（Aggregate）一起做。

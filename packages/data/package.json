@@ -1,0 +1,19 @@
+{
+  "name": "@actor/data",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Data layer for nodejs-actor-framework: schema evolution (events/snapshots), and later repositories, event-sourced aggregates, outbox and projections. Zero dependencies by design.",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "nodejs-actor-framework": "*"
+  },
+  "files": [
+    "src"
+  ]
+}

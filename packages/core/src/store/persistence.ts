@@ -208,7 +208,48 @@ function resolvePersistence(spec, fallbackStore) {
     store: normalized.store || fallbackStore || null,
     onStop: normalized.onStop !== false,
     mailboxStore: normalized.mailboxStore || null,
+    /** Structure-evolution hooks (see resolveEvolution); null = raw bytes in, raw bytes out. */
+    evolution: resolveEvolution(normalized.evolution),
   };
+}
+
+/**
+ * The kernel stays **format-agnostic**: it never parses an event envelope or a
+ * snapshot header. It only calls these three optional hooks, so a data layer
+ * can own the on-disk format without the kernel importing it.
+ *
+ *   upcast(raw)          events 模式：每条事件在 applyEvent 之前调用
+ *   decodeSnapshot(raw)  snapshot 模式：读取快照时调用（版本校验/迁移在这里；抛错 = 拒绝启动）
+ *   encodeSnapshot(state) snapshot 模式：写入快照时调用
+ *
+ * All three must be **synchronous pure functions**; a Promise would be applied /
+ * stored as an opaque object, which is a silent data corruption, so it is
+ * rejected loudly instead.
+ */
+function resolveEvolution(evolution) {
+  if (evolution === undefined || evolution === null) return null;
+  if (typeof evolution !== 'object') {
+    throw new PersistenceError('persistence.evolution must be an object with optional upcast/decodeSnapshot/encodeSnapshot');
+  }
+  const resolved = {};
+  for (const key of ['upcast', 'decodeSnapshot', 'encodeSnapshot']) {
+    const hook = evolution[key];
+    if (hook === undefined) continue;
+    if (typeof hook !== 'function') {
+      throw new PersistenceError(`persistence.evolution.${key} must be a function`);
+    }
+    resolved[key] = hook;
+  }
+  return Object.keys(resolved).length > 0 ? resolved : null;
+}
+
+/** Call an evolution hook, rejecting an async result (see resolveEvolution). */
+function callEvolution(hook, value, label) {
+  const result = hook(value);
+  if (result && typeof result.then === 'function') {
+    throw new PersistenceError(`persistence.evolution.${label} must be synchronous (returned a Promise)`);
+  }
+  return result;
 }
 
 module.exports = {
@@ -216,4 +257,6 @@ module.exports = {
   MemoryPersistence,
   FilePersistence,
   resolvePersistence,
+  resolveEvolution,
+  callEvolution,
 };

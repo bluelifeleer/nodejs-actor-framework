@@ -1,6 +1,7 @@
 # runtime data (see ACTOR_DATA_DIR / ACTOR_LOG_DIR in config.js)
-data/
-msg_store/
+# 注意：必须锚定到仓库根，否则会连 packages/data 一起忽略（真实事故，现有守卫测试兜底）
+/data/
+/msg_store/
 *.log
 dlq.jsonl
 metrics.log
