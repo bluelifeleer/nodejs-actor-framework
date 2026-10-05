@@ -13,6 +13,8 @@ export default cjs;
 export const {
   // 集群治理（一致性哈希环：所有权 = ownerOfShard(ring, shard)）
   ring,
+  // 集群治理（所有权守卫 + fencing：createOwnershipGuard）
+  ownership,
   // 编程模型
   Actor,
   defineActor,
