@@ -33,7 +33,7 @@ function makeApp(routes: ReturnType<typeof defineRoutes>, extra = {}) {
 // TODO(M2)：这两个用例当前失败，原因未定位（现象：测试失败后进程因服务端句柄未退出而不打印汇总，
 // 失败详情因此被截断）。实现本身已通过类型检查、listen 已确认可达（日志有 listening 输出）。
 // 下一轮第一件事：用 `--test-reporter=tap` 抓到真实断言/异常信息再修，不要凭推测改实现。
-test.skip('http: 真实请求走通（200 JSON / 404 / 405 带 Allow），start() 返回即端口就绪', async () => {
+test('http: 真实请求走通（200 JSON / 404 / 405 带 Allow），start() 返回即端口就绪', async () => {
   const { app, plugin } = makeApp(
     defineRoutes([
       get(
@@ -78,7 +78,7 @@ test.skip('http: 真实请求走通（200 JSON / 404 / 405 带 Allow），start(
   await app.stop();
 });
 
-test.skip('http: 优雅停止——在途请求先完成，之后不再接受新连接', async () => {
+test('http: 优雅停止——在途请求先完成，之后不再接受新连接', async () => {
   let release: (() => void) | null = null;
   const gate = new Promise<void>((resolve) => {
     release = resolve;

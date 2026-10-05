@@ -13,7 +13,7 @@ import type { Application, PluginSpec } from '@actor/app';
 
 import { dispatch } from './controller.ts';
 import type { HeaderValue } from './context.ts';
-import type { Route } from './routes.ts';
+import { buildRouteTable, type ControllerLike, type HttpMethod, type Route } from './routes.ts';
 
 export interface HttpPluginOptions {
   port?: number;
@@ -51,7 +51,16 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       const port = options.port ?? config.get<number>('plugins.http.port');
       const host = options.host ?? config.get<string>('plugins.http.host');
       const maxBodyBytes = options.maxBodyBytes ?? config.get<number>('plugins.http.maxBodyBytes');
-      const routes = app.routes as readonly Route[];
+      // 模块声明的是"路由元组"（defineRoutes/get/post... 的产物），这里解析成路由表：
+      // 非法模式、重复路由、input 键未声明等启动期问题都在此一次性报出。
+      const { routes, issues } = buildRouteTable(
+        app.routes as readonly (readonly [HttpMethod, string, ControllerLike])[],
+      );
+      if (issues.length > 0) {
+        throw new Error(
+          `路由配置有问题（${issues.length} 项）：\n` + issues.map((i) => `  - ${i.message}`).join('\n'),
+        );
+      }
 
       server = http.createServer((req, res) => {
         inFlight += 1;
@@ -106,6 +115,8 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             if (result.response.body === null) res.end();
             else res.end(result.response.body);
           } catch (error) {
+            // 500 必须留痕：响应里不含细节（安全），但服务端日志要能定位
+            console.error('[http] handler error:', error);
             res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ error: { status: 500, message: 'internal error' } }));
             void error;
