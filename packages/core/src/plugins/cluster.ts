@@ -1,3 +1,6 @@
+// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
+// 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
+// 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
 
 const config = require('../config.ts');
@@ -21,7 +24,14 @@ const { ActorStoppedError } = require('../actor/errors.ts');
 
 /** A remote actor found through gossip; connects on first use. */
 class DiscoveredRef {
-  constructor(system, path, meta) {
+  system: any;
+  _path: string;
+  host: any;
+  gatewayPort: any;
+  nodeId: any;
+  _peer: any;
+
+  constructor(system: any, path: any, meta: any) {
     this.system = system;
     this._path = String(path);
     this.host = meta.host;

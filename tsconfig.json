@@ -1,10 +1,9 @@
 {
-  // 严格校验配置，必须始终通过。
-  // 当前只覆盖声明面（.d.ts）：core 的 .ts 实现正处于"已转换、待补类型标注"阶段，
-  // 而类型测试（test/types/**）一旦以显式 .ts 引用实现文件，就会把整个未标注的实现
-  // 拉进严格程序（实测 1200+ 迁移期错误）。等实现补齐标注后，把 test/types/** 与
-  // packages/core/src/**/*.ts 一起恢复到这里；在此之前它们由 tsconfig.migration.json
-  // 以宽松模式把关（信息性，见 docs/design/m0/01 §9.7）。
+  // 严格校验配置：编辑器与 npm run typecheck 共用同一份，避免"CI 绿、编辑器满屏红"。
+  // 尚未补齐类型标注的文件带 `@ts-nocheck` 显式标记（见 docs/design/next-steps.md §3），
+  // 补完一个就删一个标记，该文件随即进入严格检查。
+  // test/types/** 暂未纳入：它测的是 .d.ts 声明面，而源码同名 .ts 实现现在优先被解析到；
+  // 等实现补齐类型后（.d.ts 退役）再收回，见 docs/design/next-steps.md §3。
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
@@ -14,9 +13,7 @@
     "allowImportingTsExtensions": true
   },
   "include": [
-    "packages/core/src/**/*.d.ts",
-    "packages/core/index.d.ts",
-    "packages/core/src/config.ts",
-    "packages/core/src/obs/alerting.ts"
+    "packages/core/src/**/*.ts",
+    "packages/core/index.d.ts"
   ]
 }
