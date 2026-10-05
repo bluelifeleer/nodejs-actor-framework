@@ -107,3 +107,21 @@ test('gossip: silent nodes are pruned after the peer timeout', () => {
   assert.strictEqual(g.localRegistry.has('actor-ghost'), false);
   assert.strictEqual(g.nodeLastSeen.has('ghost'), false);
 });
+
+test('gossip: 剔除过期成员是**每一轮自动做的**，不需要外部调用', async () => {
+  // 这条曾经是坏的：pruneStaleNodes() 存在、也有单测，但**没有任何生产调用点** ——
+  // 于是 nodeLastSeen 只增不减，"成员视图"永远包含早就死掉的节点：
+  // 多数派判据（live）不会降、node_timeout 永不触发、故障接管也就永远不会发生。
+  const g = new Gossip('watcher', 0, nodeOptions({ peerTimeoutMs: 10, intervalMs: 30 }));
+  try {
+    await g.start();
+    g.nodeLastSeen.set('ghost', Date.now() - 1000);
+    assert.strictEqual(g.nodeLastSeen.has('ghost'), true, '先确认它确实在视图里');
+
+    const deadline = Date.now() + 1000;
+    while (g.nodeLastSeen.has('ghost') && Date.now() < deadline) await delay(20);
+    assert.strictEqual(g.nodeLastSeen.has('ghost'), false, '过期的成员应当被自动剔除');
+  } finally {
+    await g.stop();
+  }
+});

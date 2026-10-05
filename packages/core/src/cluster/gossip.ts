@@ -171,7 +171,16 @@ class Gossip extends EventEmitter {
         this.boundPort = server.address().port;
         this.port = this.boundPort;
         this._startTlsReloader();
-        this._timer = setInterval(() => this.gossipRound().catch(() => {}), this.intervalMs);
+        this._timer = setInterval(() => {
+          // 先把过期成员剔出去，再开始这一轮：否则 nodeLastSeen 只增不减，
+          // "成员视图"会永远包含早就死掉的节点（多数派判据、故障接管全都跟着错）。
+          try {
+            this.pruneStaleNodes();
+          } catch (err) {
+            this.emit('protocol_error', err);
+          }
+          this.gossipRound().catch(() => {});
+        }, this.intervalMs);
         if (typeof this._timer.unref === 'function') this._timer.unref();
         this.emit('listening', this.boundPort);
         resolve(this.boundPort);
