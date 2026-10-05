@@ -41,7 +41,8 @@ export interface AppDeps {
 
 /** 应用层可见的 Actor 句柄（结构化类型，避免把内核类型暴露给用户）。 */
 export interface ActorHandle {
-  ask(message: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
+  /** 与内核一致：第二个参数是超时毫秒数（不是 options 对象）。 */
+  ask(message: unknown, timeoutMs?: number): Promise<unknown>;
   tell(message: unknown): void;
 }
 

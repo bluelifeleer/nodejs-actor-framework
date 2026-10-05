@@ -1,0 +1,7 @@
+{
+  "name": "app-web",
+  "private": true,
+  "type": "module",
+  "description": "HTTP 应用示例：@actor/app + @actor/web（配置、控制器、Actor、优雅停止）",
+  "dependencies": { "@actor/app": "*", "@actor/web": "*" }
+}

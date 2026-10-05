@@ -1,3 +1,11 @@
+> **状态（M2 进行中）**：已实现路由表与匹配（路径/查询参数 + 启动期检查、方法归一化、
+> HEAD→GET 回退、OPTIONS→204+Allow）、控制器上下文（请求访问器 + 返回形态 + 错误映射）、
+> `defineController` 与输入校验（复用应用层字段描述符 `validateValues`）、插件生命周期钩子
+> （`onReady`/`onStopping`）、`httpPlugin`（node:http 零依赖 + 在途请求优雅停止）。
+> 端到端示例：`examples/app-web/`（200/201/400/404/405/504/HEAD/OPTIONS + 优雅退出）。
+> **剩余**：WebSocket（`ws('/path', Controller)`）、访问日志插件（`requestId` 回写响应头）、
+> 集群场景下的路由（把控制器与远程 Actor 结合）。
+
 # M2 设计：路由 + 控制器（Web 层）
 
 > 前提（沿用 M1 结论）：用户项目只依赖 `@actor/app` + `@actor/web`，**不接触内核**；
