@@ -134,7 +134,8 @@ test('app: 取不存在的 Actor/provider 会明确报错，而不是返回 unde
   });
   await app.start();
   assert.throws(() => app.actor('Nope'), /不存在名为 'Nope' 的 Actor（本地未 spawn，集群发现也没有找到）/);
-  assert.throws(() => app.get('nope'), /provider 'nope' 尚未解析/);
+  // 文案随 provide 引入而更新：get() 现在同时支持 provider 与插件注册的服务
+  assert.throws(() => app.get('nope'), /provider\/服务 'nope' 尚未解析或注册/);
   await app.stop();
 });
 

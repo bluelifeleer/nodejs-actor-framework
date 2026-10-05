@@ -1,3 +1,14 @@
+> **实施状态（本轮）**：
+> - ✅ **§1 中间件**已完成并验证：Koa 风格 `(ctx,next)`、三级（全局/路由/控制器）、
+>   `ctx.state`、短路、after-logic 逆序、`next()` 一次性；HTTP 与 WS **同一条链**；
+>   校验在中间件之后（鉴权可先拒绝）。
+> - ✅ **§2 HTTP↔WS 跨上下文**已完成并验证：`Application.provide()` + `WsConnections`
+>   注册表（`ctx.get('wsConnections')`），端到端断言"HTTP 请求 → 客户端真的收到推送"。
+> - ⏳ **§3 共享端口**未实施（唯一剩余项）。实现前提见 §3：内核 `options.server`、
+>   `Application.provide`（已完成 ✓）、`ws.port` 去掉默认值以区分"未配置"。注意它会改变
+>   现有默认行为（未配置时从独立 9001 变为与 HTTP 共享），需同步更新示例与文档。
+> - ⏳ 模块级中间件 `defineModule({ middleware })` 未实施（需要"路由属于哪个模块"的来源信息）。
+
 # M2.5 设计：中间件 · HTTP↔WS 跨上下文 · 共享端口
 
 > 由三个实际问题驱动（均已用代码核实现状）：
