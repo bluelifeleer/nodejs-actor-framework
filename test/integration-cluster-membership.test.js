@@ -47,3 +47,31 @@ test('cluster membership: 三个节点种在一起时，成员视图最终收敛
     for (const sys of [c, b, a]) await sys.stop();
   }
 });
+test('cluster membership: 离开的动作会被记成 tombstone 并传播（不会"人走了还在名单里"）', async () => {
+  const gossipPort = await freePort();
+  const a = createSystem({
+    name: 'node-a',
+    logger: false,
+    plugins: [plugins.cluster({ nodeId: 'node-a', port: gossipPort, shardCount: 256, intervalMs: 100 })],
+  });
+  const b = createSystem({
+    name: 'node-b',
+    logger: false,
+    plugins: [plugins.cluster({ nodeId: 'node-b', port: 0, seeds: [`127.0.0.1:${gossipPort}`], shardCount: 256, intervalMs: 100 })],
+  });
+
+  try {
+    await a.listen({ host: '127.0.0.1', port: 0 });
+    await b.listen({ host: '127.0.0.1', port: 0 });
+    await b.spawn({ preStart() {}, receive: () => 'ok' }, { id: 'lifecycle' });
+    await waitFor(() => a.cluster.lookup('lifecycle') !== null, { timeout: 15000, interval: 50 });
+
+    // 主动离场：对端应当把它的 Actor 从索引里删掉（`delLocal` 走 tombstone）
+    await b.cluster.drain({ timeoutMs: 1000, stopActors: true });
+    await waitFor(() => a.cluster.lookup('lifecycle') === null, { timeout: 15000, interval: 50 });
+    assert.strictEqual(a.cluster.lookup('lifecycle'), null, '对端的注册表要清掉离场者的 Actor');
+  } finally {
+    await b.stop();
+    await a.stop();
+  }
+});

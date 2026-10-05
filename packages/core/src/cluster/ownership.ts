@@ -145,49 +145,51 @@ function createOwnershipGuard(options: OwnershipGuardOptions) {
     if (!Number.isInteger(incoming.epoch) || incoming.epoch < 1) {
       return { ok: false, reason: `incoming.epoch 必须是 >= 1 的整数（当前 ${String(incoming.epoch)}）` };
     }
+    if (currentRing === null) {
+      // 没有成员视图 = 谁拥有什么都不知道。**宁可拒绝**，也不要在这种状态下让远端驱动本地 Actor。
+      return { ok: false, reason: `fencing：还没有成员视图，无法确认 shard ${incoming.shard} 的 owner` };
+    }
     const best = bestClaim(incoming.shard);
     const ringOwner = ownerOf(incoming.shard);
 
-    // 规则 1：与已知最佳声明一致
-    if (best !== null && incoming.ownerNodeId === best.ownerNodeId && incoming.epoch === best.epoch) {
-      return { ok: true };
+    // **环与声明都只对本集群成员有权威**：非成员（跨集群转发者、别的 gossip 组里的节点）
+    // 的 epoch 与我们的 epoch 是两套互不相干的计数器，拿它比较只会互相误伤
+    // （真实回归：接入层与游戏层各自从 1 开始，同一个 shard 上"撞号"，跨集群调用全断）。
+    if (!isMember(incoming.ownerNodeId)) return { ok: true };
+
+    // 成员之间：先比声明（epoch 才是真正的 fencing）
+    if (best !== null) {
+      if (incoming.ownerNodeId === best.ownerNodeId && incoming.epoch === best.epoch) return { ok: true };
+      if (incoming.epoch < best.epoch) {
+        return {
+          ok: false,
+          reason:
+            `fencing：shard ${incoming.shard} 的 epoch ${incoming.epoch}（来自 ${incoming.ownerNodeId}）` +
+            `比已知的 ${best.epoch}（来自 ${best.ownerNodeId}）更旧，拒绝`,
+        };
+      }
+      if (incoming.epoch === best.epoch) {
+        return {
+          ok: false,
+          reason: `fencing：shard ${incoming.shard} 的 epoch ${incoming.epoch} 已被 ${best.ownerNodeId} 声明，拒绝 ${incoming.ownerNodeId}`,
+        };
+      }
+      // epoch 更高 = 它宣称自己是新一轮 owner → 继续用环确认（下面）
     }
-    // 与最佳声明冲突：epoch 更旧，或同 epoch 换人
-    if (best !== null && incoming.epoch < best.epoch) {
-      return {
-        ok: false,
-        reason:
-          `fencing：shard ${incoming.shard} 的 epoch ${incoming.epoch}（来自 ${incoming.ownerNodeId}）` +
-          `比已知的 ${best.epoch}（来自 ${best.ownerNodeId}）更旧，拒绝`,
-      };
-    }
-    if (best !== null && incoming.epoch === best.epoch && incoming.ownerNodeId !== best.ownerNodeId) {
-      return {
-        ok: false,
-        reason: `fencing：shard ${incoming.shard} 的 epoch ${incoming.epoch} 已被 ${best.ownerNodeId} 声明，拒绝 ${incoming.ownerNodeId}`,
-      };
-    }
-    // 规则 2：与本地环一致，且不比已知声明旧
-    if (ringOwner !== null && incoming.ownerNodeId === ringOwner) {
-      if (best === null || incoming.epoch >= best.epoch) return { ok: true };
-    }
+
     if (ringOwner === null) {
       return { ok: false, reason: `fencing：还没有成员视图，无法确认 shard ${incoming.shard} 的 owner` };
     }
-    // 规则 3：**本集群成员**却不拥有这个 shard → 环说了算，拒绝
-    //（非成员是跨集群/纯转发者，环对它没有权威：转发者本来就没有所有权信息）
-    if (isMember(incoming.ownerNodeId)) {
-      return {
-        ok: false,
-        reason:
-          `fencing：shard ${incoming.shard} 在本地环上的 owner 是 ${ringOwner}，不是 ${incoming.ownerNodeId}` +
-          (best === null ? '' : `（已知声明：${best.ownerNodeId}@epoch ${best.epoch}）`),
-      };
-    }
-    return { ok: true };
+    if (incoming.ownerNodeId === ringOwner) return { ok: true };
+    return {
+      ok: false,
+      reason:
+        `fencing：shard ${incoming.shard} 在本地环上的 owner 是 ${ringOwner}，不是 ${incoming.ownerNodeId}` +
+        (best === null ? '' : `（已知声明：${best.ownerNodeId}@epoch ${best.epoch}）`),
+    };
   }
 
-  /** 这个 nodeId 是否在本节点的成员视图里（环只对本集群成员有权威）。 */
+  /** 这个 nodeId 是否在本节点的成员视图里（环与声明只对本集群成员有权威）。 */
   function isMember(candidate: string): boolean {
     if (currentRing === null) return false;
     return currentRing.tokens.some((token) => token.nodeId === candidate);

@@ -64,12 +64,12 @@ test('cluster fencing: 旧 owner 的消息在两台真节点之间被拒（且�
     );
 
     // a 通过 gossip 发现它
-    await waitFor(() => a.cluster.lookup(victimId) !== null, { timeoutMs: 15000, intervalMs: 50 });
+    await waitFor(() => a.cluster.lookup(victimId) !== null, { timeout: 15000, interval: 50 });
     // 等**双方成员视图收敛**：这正是 doc 05 §1.5 说的窗口——收敛之前两边的 owner 可能不同，
     // 而"本地确定性算"的前提就是同一份成员视图（D1）。
     await waitFor(() => b.cluster.nodes().includes('node-a') && a.cluster.nodes().includes('node-b'), {
-      timeoutMs: 15000,
-      intervalMs: 50,
+      timeout: 15000,
+      interval: 50,
     });
     assert.strictEqual(a.cluster.ownerOfActor(victimId), 'node-a', 'a 认为自己是这个 shard 的 owner');
     assert.strictEqual(b.cluster.ownerOfActor(victimId), 'node-a', 'b 也这么认为（同一成员视图）');
@@ -92,7 +92,7 @@ test('cluster fencing: 旧 owner 的消息在两台真节点之间被拒（且�
         const claim = b.cluster.ownership.bestClaim(shard);
         return claim !== null && claim.ownerNodeId === 'node-a' && claim.epoch >= 1;
       },
-      { timeoutMs: 15000, intervalMs: 50 },
+      { timeout: 15000, interval: 50 },
     );
     assert.strictEqual(b.cluster.ownership.bestClaim(shard).ownerNodeId, 'node-a', 'b 学到了 a 的声明');
 
@@ -183,8 +183,8 @@ test('cluster fencing: 双主声明经 gossip 传播 → 被拒并报出来（�
       ts: Date.now(),
     });
     await waitFor(() => b.cluster.ownership.bestClaim(7)?.ownerNodeId === 'node-a', {
-      timeoutMs: 15000,
-      intervalMs: 50,
+      timeout: 15000,
+      interval: 50,
     });
 
     // a 又发布"同 epoch，但 owner 换成 node-b"——这正是双主的形状（且 ts 更新，LWW 会覆盖）
@@ -194,7 +194,7 @@ test('cluster fencing: 双主声明经 gossip 传播 → 被拒并报出来（�
       claims: { 7: 3 },
       ts: Date.now() + 1,
     });
-    await waitFor(() => b.cluster.fencing().conflicts === 1, { timeoutMs: 15000, intervalMs: 50 });
+    await waitFor(() => b.cluster.fencing().conflicts === 1, { timeout: 15000, interval: 50 });
 
     assert.strictEqual(
       b.cluster.ownership.bestClaim(7).ownerNodeId,
@@ -204,5 +204,103 @@ test('cluster fencing: 双主声明经 gossip 传播 → 被拒并报出来（�
   } finally {
     await b.stop();
     await a.stop();
+  }
+});
+
+/** 找一个"按环归指定节点"的 actor id。 */
+function actorOwnedBy(nodeId, memberIds) {
+  const r = ring.createRing(memberIds);
+  for (let i = 0; i < 4000; i += 1) {
+    const id = `mover-${i}`;
+    if (ring.ownerOfShard(r, ring.shardOf(id, SHARDS)) === nodeId) return id;
+  }
+  throw new Error(`没找到归 ${nodeId} 的 shard`);
+}
+
+test('cluster handover: 节点优雅离场——冻结/重定向、新 owner 自动加代、状态落盘后释放', async () => {
+  const { MemoryPersistence } = await import('nodejs-actor-framework');
+  const sharedStore = new MemoryPersistence(); // 共享存储：交接靠它转移状态（D3）
+  const gossipPort = await freePort();
+  const mkSystem = (id, extra = {}) =>
+    createSystem({
+      name: id,
+      logger: false,
+      plugins: [plugins.cluster({ nodeId: id, port: 0, shardCount: SHARDS, intervalMs: 100, ...extra })],
+    });
+
+  const a = mkSystem('node-a', { port: gossipPort });
+  const b = mkSystem('node-b', { seeds: [`127.0.0.1:${gossipPort}`] });
+  const c = mkSystem('node-c', { seeds: [`127.0.0.1:${gossipPort}`] });
+
+  try {
+    for (const sys of [a, b, c]) await sys.listen({ host: '127.0.0.1', port: 0 });
+    const members = ['node-a', 'node-b', 'node-c'];
+    await waitFor(() => [a, b, c].every((s) => s.cluster.nodes().length === 3), { timeout: 20000, interval: 50 });
+
+    const actorId = actorOwnedBy('node-a', members);
+    const shard = ring.shardOf(actorId, SHARDS);
+    await a.spawn(
+      {
+        preStart() {
+          this.state = { hits: 0 };
+        },
+        receive() {
+          this.state.hits += 1;
+          return this.state.hits;
+        },
+      },
+      { id: actorId, persistence: { mode: 'snapshot', store: sharedStore } },
+    );
+
+    // 先正常服务一次（会发布 a 的声明并让状态变脏）
+    await waitFor(() => c.resolve(actorId) !== null, { timeout: 15000, interval: 50 });
+    const remote = c.resolve(actorId);
+    assert.ok(remote, 'c 应当能解析到 a 上的 Actor');
+    assert.strictEqual(await remote.ask({ type: 'hit' }), 1);
+    await waitFor(() => c.cluster.ownership.bestClaim(shard)?.ownerNodeId === 'node-a', {
+      timeout: 15000,
+      interval: 50,
+    });
+    const epochBefore = c.cluster.ownership.bestClaim(shard).epoch;
+
+    // ---- 优雅离场 ----
+    const summary = await a.cluster.drain({ timeoutMs: 2000 });
+    assert.strictEqual(summary.nodeId, 'node-a');
+    assert.ok(summary.shards.length > 0, '应当交出它拥有的 shard');
+    const moved = summary.shards.find((entry) => entry.shard === shard);
+    assert.ok(moved, `shard ${shard} 应当在交接清单里`);
+    assert.ok(['node-b', 'node-c'].includes(moved.to), `应当交给 b 或 c，实际 ${moved.to}`);
+    assert.strictEqual(summary.timedOut, false, '没有超时的排空');
+    assert.deepStrictEqual(summary.actors, [actorId], '离场前给这个 Actor 存了快照');
+    assert.strictEqual(a.cluster.fencing().handedOver, true);
+
+    // 状态确实落盘了（新 owner 靠它恢复）
+    const snapshot = await sharedStore.loadSnapshot(actorId);
+    assert.ok(snapshot !== undefined && snapshot !== null, '快照必须落盘（否则"状态转移"就是空话）');
+
+    // 本节点已经释放：本地不再有它
+    assert.strictEqual(a.resolve(actorId), null, '离场后本地 Actor 已释放');
+
+    // 新 owner 自动加代：epoch 变大，且它自己成为声明者
+    const heir = moved.to === 'node-b' ? b : c;
+    await waitFor(() => heir.cluster.ownership.bestClaim(shard)?.epoch >= epochBefore + 1, {
+      timeout: 20000,
+      interval: 50,
+    });
+    assert.strictEqual(heir.cluster.ownership.bestClaim(shard).ownerNodeId, moved.to, '新 owner 自己声明');
+    assert.ok(heir.cluster.fencing().promoted > 0, '接管计数可见');
+
+    // 冻结：离场节点不再服务这些 shard，但给出的是**重定向**而不是静默丢弃
+    const toA = await c.connect({ host: '127.0.0.1', port: a.server.boundPort });
+    await assert.rejects(
+      () => toA.ref(actorId).ask({ type: 'hit' }),
+      (err) => {
+        assert.match(String(err.message), /正在离场/, `要给出去哪儿的提示：${err.message}`);
+        assert.match(String(err.message), new RegExp(moved.to));
+        return true;
+      },
+    );
+  } finally {
+    for (const sys of [c, b, a]) await sys.stop();
   }
 });

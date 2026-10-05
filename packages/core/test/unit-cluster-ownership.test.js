@@ -142,11 +142,17 @@ test('ownership: 环只对**本集群成员**有权威——非成员（跨集�
   const foreign = guard.verify({ shard, ownerNodeId: 'access-1', epoch: 1 });
   assert.strictEqual(foreign.ok, true, '跨集群转发者不该被本地环拒掉');
 
-  // 但一旦学到更新的声明，非成员照样被拦住（epoch 比较是真正的 fencing）
+  // 非成员**永远只被当作转发者**：即使我们已知 (a, epoch 5)，也不拿它的 epoch 去比 ——
+  // 两套计数器互不相干，比较只会互相误伤。真正的写权限由"本集群成员之间的 epoch 比较"保证，
+  // 而非成员只是在转发请求（服务它的是本节点的 Actor，不是它）。
   guard.observe({ shard, ownerNodeId: 'a', epoch: 5, at: 1 });
-  const fenced = guard.verify({ shard, ownerNodeId: 'access-1', epoch: 1 });
-  assert.strictEqual(fenced.ok, false);
-  assert.match(fenced.reason, /更旧/);
+  const forwarder = guard.verify({ shard, ownerNodeId: 'access-1', epoch: 1 });
+  assert.strictEqual(forwarder.ok, true, '非成员不参与 epoch 比较');
+
+  // 成员仍然被严格比较：同一个 shard 上 (a, epoch 5) 已知，成员 b 拿 epoch 1 来 → 拒
+  const memberStale = guard.verify({ shard, ownerNodeId: 'b', epoch: 1 });
+  assert.strictEqual(memberStale.ok, false);
+  assert.match(memberStale.reason, /更旧/);
 
   assert.strictEqual(guard.isMember('a'), true);
   assert.strictEqual(guard.isMember('access-1'), false);

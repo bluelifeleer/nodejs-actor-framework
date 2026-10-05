@@ -93,6 +93,8 @@ class Gateway extends EventEmitter {
     this.verifyOwnership = options.verifyOwnership || null;
     /** 出站时"本节点认为目标 shard 是第几代"（没装守卫时返回 null，即不带字段）。 */
     this.epochFor = options.epochFor || null;
+    /** 正在处理的入站请求数（离场排空时要用；不做按 shard 细分——那是保守但诚实的简化）。 */
+    this._inflight = 0;
 
     this.server = null;
     this.boundPort = null;
@@ -160,6 +162,11 @@ class Gateway extends EventEmitter {
       }
       for (const frame of frames) this._handleFrame(frame, socket);
     });
+  }
+
+  /** 在途入站请求数（drain 用它判断"排空了没有"）。 */
+  inflight() {
+    return this._inflight;
   }
 
   /** 出站帧上的 fencing 字段：拿不到 epoch 就**不写这个字段**（老节点会忽略它）。 */
@@ -300,6 +307,7 @@ class Gateway extends EventEmitter {
         this.emit('protocol_error', new Error('peer sent a tell but no handler is registered'));
         return;
       }
+      this._inflight += 1;
       try {
         await this.onTell(frame.targetActorId, frame.payload, {
           senderPath: frame.senderPath || null,
@@ -310,11 +318,14 @@ class Gateway extends EventEmitter {
       } catch (err) {
         // There is no reply channel: surface it locally instead of silently.
         this.emit('tell_error', err, frame.targetActorId);
+      } finally {
+        this._inflight -= 1;
       }
       return;
     }
 
     if (frame.kind === 'stop') {
+      this._inflight += 1;
       try {
         if (!this.onStop) throw new Error('remote stop is not supported by this node');
         await this.onStop(frame.targetActorId);
@@ -326,11 +337,14 @@ class Gateway extends EventEmitter {
           ok: false,
           error: err && err.message ? err.message : String(err),
         });
+      } finally {
+        this._inflight -= 1;
       }
       return;
     }
 
     if (frame.kind === 'deliver') {
+      this._inflight += 1;
       try {
         const data = await this.onDeliver(frame.targetActorId, frame.payload, frame.timeoutMs, {
           senderPath: frame.senderPath || null,
@@ -346,6 +360,8 @@ class Gateway extends EventEmitter {
           ok: false,
           error: err && err.message ? err.message : String(err),
         });
+      } finally {
+        this._inflight -= 1;
       }
       return;
     }

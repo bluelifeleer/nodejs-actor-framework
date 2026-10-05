@@ -160,13 +160,50 @@ function cluster(options = {}) {
        * 用成员集合的签名避免无谓重建。
        */
       let membersKey = null;
+      let previousRing = null;
+      /** 已宣布离场的节点（含本节点在 drain() 时宣布的）：环要立刻排除它们。 */
+      const leaving = new Set();
+      const leavingKey = 'leaving:';
+      const takeover = { promoted: 0, shards: [] };
+      /** 一旦开始离场就永久冻结：这是"不再双主"的关键——旧 owner 主动停止服务。 */
+      let handingOver = false;
+
+      /**
+       * 环 = 成员视图（**排除离场者**）的纯函数。离场用一条注册表标记表达，
+       * 于是"节点要走了"这件事在**所有节点上确定性可见**，不必等心跳超时。
+       */
       const refreshRing = (force = false) => {
-        const members = gossip.info().nodes;
-        if (members.length === 0) return;
+        // 离场者（**包括本节点自己在 drain 时**）一律排除：否则离场节点算出的新 owner 还是它自己。
+        // 成员可能变成空集（单节点集群离场）——那也是有效状态：此时 owner 为 null（没人接管）。
+        const members = gossip.info().nodes.filter((node) => !leaving.has(node));
         const key = [...members].sort().join(',');
         if (!force && key === membersKey) return;
         membersKey = key;
-        guard.updateRing(members);
+        const next = guard.updateRing(members);
+        // 环变了 → 落到我们头上的 shard 要**自动加代**（epoch = 已知最大 + 1）并发布。
+        // 这就是"故障/离场接管"的 epoch 归属：新 owner 自己加代，旧 owner 的消息随即失效。
+        if (previousRing !== null) {
+          for (const shard of ringUtil.changedShards(previousRing, next, shardCount)) {
+            if (guard.ownerOf(shard) !== gossip.nodeId) continue;
+            const known = guard.bestClaim(shard);
+            const epoch = (known === null ? 0 : known.epoch) + 1;
+            guard.observe({ shard, ownerNodeId: gossip.nodeId, epoch, at: Date.now() });
+            rememberClaim(shard, epoch);
+            takeover.promoted += 1;
+            takeover.shards.push(shard);
+            // 通知上层（应用层在这里把 Actor 在新的 owner 上重建）
+            if (typeof options.onShardsPromoted === 'function') {
+              try {
+                options.onShardsPromoted(shard, previousRing ? ringUtil.ownerOfShard(previousRing, shard) : null);
+              } catch (err) {
+                system._log('cluster_on_shards_promoted_failed', { shard, err: err && err.message });
+              }
+            }
+          }
+          if (claimsDirty) publishClaims();
+        }
+        previousRing = next;
+        return next;
       };
 
       system.ownership = {
@@ -175,6 +212,7 @@ function cluster(options = {}) {
         guard,
         /** 出站：只有本节点**确实是**这个 shard 的 owner 时才给出 epoch（否则不带字段）。 */
         epochFor(path) {
+          if (handingOver) return null; // 离场中：不再为任何 shard 背书
           refreshRing();
           const shard = ringUtil.shardOf(String(path), shardCount);
           const claim = guard.claimFor(shard);
@@ -188,6 +226,24 @@ function cluster(options = {}) {
           if (!targetActorId) return { ok: true };
           refreshRing();
           const shard = ringUtil.shardOf(String(targetActorId), shardCount);
+          // 服务时也把"我是这个 shard 的第几代"公之于众：否则一个只被调用、从不主动发送的节点
+          // 永远不发布声明，接管方就不知道旧 epoch（那时它只能从 1 开始）。
+          if (guard.ownerOf(shard) === gossip.nodeId && !handingOver) {
+            const own = guard.claimFor(shard);
+            if (own !== null) {
+              rememberClaim(shard, own.epoch);
+              if (claimsDirty) publishClaims();
+            }
+          }
+          if (handingOver) {
+            // 冻结：本节点已经在离场，属于这些 shard 的请求一律拒绝，并告诉对端该找谁
+            return {
+              ok: false,
+              reason:
+                `fencing：${gossip.nodeId} 正在离场，shard ${shard} 现在归 ${guard.ownerOf(shard) ?? '(未知)'}` +
+                '——请刷新成员视图后重试（这不是丢消息，是重定向）',
+            };
+          }
           if (shardEpoch === null) {
             // 没有 token：转发者本来就没有 token 可带（合法）；但**本节点认为它是 owner**
             // 却不带 token 就说明它拿的是旧视图 —— 拒绝，让它去重新同步。
@@ -237,6 +293,14 @@ function cluster(options = {}) {
       const onUpdate = (key, value) => {
         if (key.startsWith('subs:')) return;
         refreshRing(); // 成员视图可能变了（谁在环上决定所有权）
+        if (key.startsWith(leavingKey)) {
+          // 有人宣布离场：立刻把它从环里去掉（确定性），并重算（会触发新 owner 加代）
+          if (value === true || (value && value.type === 'leaving')) {
+            leaving.add(key.slice(leavingKey.length));
+            if (key !== `${leavingKey}${gossip.nodeId}`) refreshRing();
+          }
+          return;
+        }
         if (key.startsWith(CLAIM_PREFIX)) {
           // 对端的声明：epoch 更高 = 所有权换代；同 epoch 换人 = **双主声明**，必须报出来
           if (value && value.type === 'shard-claims' && value.claims) {
@@ -299,7 +363,75 @@ function cluster(options = {}) {
           skipped: fencingStats.skipped,
           rejected: fencingStats.rejected,
           conflicts: fencingStats.conflicts,
+          handedOver: handingOver,
+          promoted: takeover.promoted,
         }),
+        /**
+         * **优雅离场**（M4 第 3 步）：
+         *   1. 发布 `leaving:<self>`，所有节点（含自己）立刻把本节点从环里去掉；
+         *   2. **冻结**：本节点不再服务这些 shard（入站帧被拒并给出"该找谁"的提示）；
+         *   3. **排空**：等在途请求结束（有上限，超时就如实报告，不假装干净）；
+         *   4. **落盘**：给这些 shard 上的本地 Actor 存快照（状态转移走持久化，D3）；
+         *   5. **释放**：停掉这些 Actor（新 owner 会用同一份存储恢复）。
+         * 返回摘要：交出了哪些 shard、各自归谁、排空了几个、有没有超时。
+         */
+        async drain(drainOptions = {}) {
+          const timeoutMs = Number.isFinite(drainOptions.timeoutMs) ? drainOptions.timeoutMs : 5000;
+          const stopActors = drainOptions.stopActors !== false;
+          const ownedBefore = [];
+          for (let shard = 0; shard < shardCount; shard += 1) if (guard.ownsShard(shard)) ownedBefore.push(shard);
+
+          // 1) 宣布离场（自己也算离场者，环里不再有自己）
+          leaving.add(gossip.nodeId);
+          gossip.setLocal(`${leavingKey}${gossip.nodeId}`, true);
+          refreshRing(true);
+
+          const moved = new Map();
+          for (const shard of ownedBefore) moved.set(shard, { from: gossip.nodeId, to: guard.ownerOf(shard) });
+
+          // 2) 冻结由 verifyIncoming 里的 handingOver 判定负责（见下）
+          handingOver = true;
+
+          // 3) 排空在途请求
+          const pending = () => (system.server && typeof system.server.inflight === 'function' ? system.server.inflight() : 0);
+          const deadline = Date.now() + timeoutMs;
+          while (pending() > 0 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          const remaining = pending();
+
+          // 4/5) 落盘 + 释放：只动"这些 shard 上"的本地 Actor
+          const localActors = [];
+          for (const cell of system.cells.values()) {
+            if (cell.stopped) continue;
+            const path = cell.ref && cell.ref.path ? cell.ref.path : cell.id;
+            if (!path) continue;
+            if (moved.has(ringUtil.shardOf(String(path), shardCount))) localActors.push(cell);
+          }
+          const persisted = [];
+          for (const cell of localActors) {
+            try {
+              await cell.saveSnapshot();
+              persisted.push(cell.ref.path);
+            } catch (err) {
+              system._log('cluster_drain_snapshot_failed', { path: cell.ref.path, err: err && err.message });
+            }
+          }
+          if (stopActors) {
+            // 注意：是 `ref.stop()`（停这一个 Actor）。`system.stop()` **不接受参数**、会停掉整个系统
+            // （连插件一起 teardown）——这个 API 误用曾经把 drain 变成"把自己也关了"。
+            for (const cell of localActors) await cell.ref.stop().catch(() => undefined);
+          }
+          return {
+            nodeId: gossip.nodeId,
+            shards: [...moved.entries()].map(([shard, info]) => ({ shard, ...info })),
+            promoted: takeover.promoted,
+            actors: persisted,
+            drainedMs: timeoutMs - Math.max(0, deadline - Date.now()),
+            inflight: remaining,
+            timedOut: remaining > 0,
+          };
+        },
         /** 某个 actor 在本地环上归谁（诊断用）。 */
         ownerOfActor: (path) => {
           refreshRing();
