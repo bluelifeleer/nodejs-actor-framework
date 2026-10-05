@@ -138,12 +138,23 @@ ring owner，且没有更新的声明被观察到），本地**无法**识别它
 与 `proto.ts` 同步更新（含把 10–14 补上）；JSON 与 proto 两条编码路径都要写/读新字段；
 每次加字段都要有一条"**旧节点 ↔ 新节点**"的兼容测试（旧帧可被新节点接受、新帧被旧解码器忽略）。
 
-### 3.4.4 待确认
+### 3.4.4 决策（已确认）
 
-| # | 决策 | 选项 | 我的建议 |
-|---|---|---|---|
-| **D5** | 默认用哪种策略 | A 软升级 / B 硬门 / **A 默认 + B 作为可选开关** | **A 默认 + B 开关**：默认不中断滚动升级，需要严格性的部署可以打开硬门 |
-| **D6** | `shardCount` 不一致怎么办（两边算出的 shard 会不同 → fencing 判断直接错） | (a) `hello` 交换 `shardCount`，**不一致拒绝连接**并给出明确错误；(b) 只记警告并用本地的；(c) 不管 | **(a)**：算错 shard 比拒绝连接危险得多（会静默放行/拒绝错误的帧）；而且 `shardCount` 本来就是运维常量，不一致属于配置事故，早报早好 |
+> **决策记录（已确认）**：
+> - **D5**：**A 软升级为默认 + B 硬门作为可选开关**（`cluster.requireFencing: true`）。
+>   默认不中断滚动升级；对端不支持 fencing 时的放行**必须可见**（`fencing_skipped` 日志 + 指标）；
+> - **D6**：`hello` 交换 `shardCount`，**不一致就拒绝连接**并给出明确错误——算错 shard 比拒绝连接
+>   危险得多（会静默放行/拒绝错误的帧），而 `shardCount` 本就是运维常量，不一致属于配置事故。
+
+### 3.4.5 2b 实施清单（照着做即可）
+
+| # | 改动 | 验收 |
+|---|---|---|
+| 1 | `proto.ts`：`GATEWAY_FRAME_SCHEMA` 追加 `shardEpoch`（**no. 15**），encode/decode 两处都接；**同步修 `.proto` 参考文档**（补 10–15，删掉"与 proto.js 完全一致"的过期声明） | 单测：新字段往返；**旧帧（无 15）解码不报错** |
+| 2 | `gateway.ts`：deliver / stop 帧带上 `shardEpoch`（有则带）；`hello` 带 `caps` 与 `shardCount`；`shardCount` 不一致 → 明确拒绝连接；注入 `verifyOwnership(frame, peerNodeId)` 钩子（网关不认识守卫，只调钩子） | 单测：缺 epoch 的帧按"对端能力"分流；`shardCount` 不一致拒绝并给出原因 |
+| 3 | `plugins/cluster.ts`：建守卫、把成员视图喂给 `updateRing`、把 `shard:<id>` 声明发到 gossip 注册表、观察对端声明；把 `verifyOwnership` 接到网关上；`system.cluster.ownership` 暴露出来 | 集成：**两台真节点**——旧 epoch 的消息被拒；新声明经 gossip 传播后旧 owner 立刻失效 |
+| 4 | 能力可见性：`system.cluster.fencing()` 给出 `{ supported, peers: { nodeId: boolean } }`；降级时计数并暴露 | 单测 + 文档：**"以为有保护、其实没有"不可能发生** |
+| 5 | 跨版本兼容测试（**必须有**）：旧节点发的不带 epoch 的帧、新节点发的带 epoch 的帧被旧解码器忽略 | 真实双节点下互发 |
 
 ## 4. 决策（已确认）
 
