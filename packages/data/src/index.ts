@@ -9,8 +9,8 @@
  * 已实现（第 1 步）：事件信封 + upcast 注册表、快照信封 + 版本策略、
  * `defineEvolution()`（编译成内核 hook）。
  * 已实现（第 2 步）：事件溯源聚合 `defineAggregate()`（命令 → 事件、纯 applyEvent、信封接入）。
- * 后续步骤：Repository（第 3 步）、迁移框架（第 4 步）、
- * Outbox（第 5 步）、投影（第 6 步）。
+ * 已实现（第 3 步，进行中）：仓储契约 + 内存适配器（游标分页 / 等值过滤 / version 乐观锁）。
+ * 后续：file 与 SQL 适配器、迁移框架（第 4 步）、Outbox（第 5 步）、投影（第 6 步）。
  */
 export {
   createEventEnvelope,
@@ -44,6 +44,26 @@ export {
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
+
+export {
+  compareRows,
+  compareValues,
+  createMemoryRepository,
+  decodeCursor,
+  encodeCursor,
+  normalizeQuery,
+  RepositoryConflictError,
+  RepositoryDuplicateError,
+  RepositoryNotFoundError,
+  RepositoryQueryError,
+  resolveRepositoryOptions,
+  type MemoryRepositoryOptions,
+  type Repository,
+  type RepositoryCapabilities,
+  type RepositoryOptions,
+  type RepositoryPage,
+  type RepositoryQuery,
+} from './repository/index.ts';
 
 export {
   AggregateDefinitionError,

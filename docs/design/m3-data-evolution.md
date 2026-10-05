@@ -409,3 +409,30 @@ interface Repository<T, Id> {
 定下来之后的实施顺序：① memory 适配器 + 游标分页语义（并发写入下不漏不重的测试）→
 ② `file` 适配器（索引 + tombstone + 重建索引）→ ③ SQL 薄适配器（用户提供 `query`）+ ORM 示例 →
 ④ 接入文档与示例（`examples/` 里给一个 CRUD + Actor 的组合）。
+
+### 7.4 实施进展
+
+| 步 | 内容 | 状态 |
+|---|---|---|
+| ① | **memory 适配器 + 游标分页语义**（它同时是**语义基准**：file / SQL 必须逐条对齐） | ✅ |
+| ② | `file` 适配器（一实体一文件 + 按排序键的追加式索引 + tombstone） | ⏳ |
+| ③ | SQL 薄适配器（用户提供 `query`）+ 外部 ORM（Prisma/Drizzle/Kysely）示例 | ⏳ |
+| ④ | 示例应用（CRUD + Actor 组合） | ⏳ |
+
+**① 定下的语义（后面两个适配器必须对齐这 7 条）**：
+
+1. `insert`：没有 id 就生成；`version` 由适配器设为 1；重复 id 抛 `RepositoryDuplicateError`（不覆盖）；
+2. `findById` / `findMany` 返回**副本**——调用方怎么改都影响不到仓储；
+3. `update`：局部 patch；**id 不可改**（否则游标与索引都会失效）；`version` 自增；
+   `expectedVersion` 不匹配抛 `RepositoryConflictError`（带 `expectedVersion`/`actualVersion`）且**不写入**；
+   实体不存在抛 `RepositoryNotFoundError`；
+4. `findMany`：`where` 等值过滤（只接受原始值，`undefined` 明确报错而不是"匹配所有/什么都不匹配"）、
+   单键 `orderBy`（默认 id）、`direction`、`limit` 1..1000（默认 50）；
+5. 游标 = 不透明 base64(`{排序键值, id}`)，**带 tie-breaker**；翻页判据是"严格排在游标之后"，
+   而不是数组下标（下标在并发写入下会漂移）；
+6. **多取一条**判断有没有下一页；没有下一页时**不给 `cursor`**（调用方不需要猜）；
+7. `transaction`：内存里串行化（并发"读—改—写"不丢更新）；file 是"进程内串行 + 后端各自保证"，
+   SQL 交给 `BEGIN/COMMIT`——能力沿用第 2c 步的规矩**如实上报**（`capabilities().conditionalUpdate`）。
+
+**这一条的对照证据**（测试里两条断言并列）：在"边翻页边写入"的模式下，游标分页让原有 100 条
+**恰好各出现一次**，而同一模式下的 offset 分页**确实重复了**——这就是仓储只用游标的原因。
