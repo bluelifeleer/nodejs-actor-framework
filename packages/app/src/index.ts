@@ -24,6 +24,7 @@ export {
 
 export {
   defineModule,
+  definePlugin,
   defineApp,
   createApp,
   Application,
@@ -39,6 +40,7 @@ export {
   type ModuleSpec,
   type ProviderFactory,
   type ProviderSpec,
+  type PluginSpec,
 } from './assembly.ts';
 
 /** 应用层版本，便于启动日志与诊断。 */

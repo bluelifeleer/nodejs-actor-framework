@@ -66,6 +66,16 @@ export interface ActorSpec {
   options?: Record<string, unknown>;
 }
 
+export interface PluginSpec {
+  name: string;
+  /** 插件自己的配置 schema：会被合并进应用配置的 `plugins.<name>.*` 下（一套配置体系）。 */
+  config?: ConfigSchema;
+  /** 在 provider 解析与 Actor spawn 之前执行。 */
+  setup?: (app: Application, config: Record<string, unknown>) => void | Promise<void>;
+  /** 在模块 onStop 与内核停止之后执行（逆序）。 */
+  teardown?: (app: Application) => void | Promise<void>;
+}
+
 export interface ModuleSpec {
   name: string;
   imports?: readonly ModuleSpec[];
@@ -73,11 +83,13 @@ export interface ModuleSpec {
   actors?: Record<string, ActorSpec | unknown>;
   onStart?: (app: Application) => void | Promise<void>;
   onStop?: (app: Application) => void | Promise<void>;
+  plugins?: readonly PluginSpec[];
 }
 
 export interface AppSpec<S extends ConfigSchema = ConfigSchema> {
   config?: ConfigDefinition<S>;
   modules: readonly ModuleSpec[];
+  plugins?: readonly PluginSpec[];
 }
 
 export interface CreateAppOptions {
@@ -126,6 +138,20 @@ export function defineModule(spec: ModuleSpec): ModuleSpec {
   return spec;
 }
 
+/** 声明一个插件（用户自定义扩展点）。 */
+export function definePlugin(spec: PluginSpec): PluginSpec {
+  return spec;
+}
+
+/** 把插件 schema 合并进应用 schema，使插件配置与应用配置走同一套加载/校验/环境变量机制。 */
+function mergePluginSchemas(base: ConfigSchema | undefined, plugins: readonly PluginSpec[]): ConfigSchema {
+  const withConfig = plugins.filter((p) => p.config);
+  if (withConfig.length === 0) return base ?? {};
+  const section: ConfigSchema = {};
+  for (const plugin of withConfig) section[plugin.name] = plugin.config as ConfigSchema;
+  return { ...(base ?? {}), plugins: { ...(base?.plugins as ConfigSchema | undefined), ...section } };
+}
+
 /** 声明一个应用。 */
 export function defineApp<S extends ConfigSchema>(spec: AppSpec<S>): AppSpec<S> {
   return spec;
@@ -137,6 +163,7 @@ export class Application {
   private readonly providerValues = new Map<string, unknown>();
   private readonly handles = new Map<string, ActorHandle>();
   private readonly modules: ModuleSpec[] = [];
+  private readonly pluginSpecs: PluginSpec[] = [];
   private readonly disposedProviders: string[] = [];
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
@@ -183,8 +210,21 @@ export class Application {
     if (this.started) return this;
     this.started = true;
 
-    // 1) 配置：最先执行，失败即启动失败（一次性报出全部问题）
-    const definition = (this.spec.config ?? defineConfig({})) as ConfigDefinition<ConfigSchema>;
+    // 1) 收集模块与插件 —— 必须先做：插件的配置 schema 要参与第 2 步的配置合并
+    const issues: AssemblyIssue[] = [];
+    this.collect(this.spec.modules, issues);
+    for (const plugin of this.spec.plugins ?? []) {
+      if (this.pluginSpecs.some((p) => p.name === plugin.name)) {
+        issues.push({ message: `插件 '${plugin.name}' 被重复声明`, requester: '(app.plugins)' });
+        continue;
+      }
+      this.pluginSpecs.push(plugin);
+    }
+    if (issues.length > 0) throw new AssemblyError(issues);
+
+    // 2) 配置：插件 schema 合并进应用 schema，走同一套加载/校验/环境变量机制
+    const baseSchema = (this.spec.config?.schema ?? {}) as ConfigSchema;
+    const definition = defineConfig(mergePluginSchemas(baseSchema, this.pluginSpecs));
     this.loadedConfig = await loadConfig(definition, {
       ...(this.options.configDir === undefined ? {} : { configDir: this.options.configDir }),
       ...(this.options.env === undefined ? {} : { env: this.options.env }),
@@ -192,29 +232,31 @@ export class Application {
       ...(this.options.overrides === undefined ? {} : { overrides: this.options.overrides }),
     });
 
-    // 2) 收集模块图（含 imports 递归）并检测重名
-    const issues: AssemblyIssue[] = [];
-    this.collect(this.spec.modules, issues);
-    if (issues.length > 0) throw new AssemblyError(issues);
+    // 3) 插件 setup（在 provider 解析与 Actor spawn 之前）
+    for (const plugin of this.pluginSpecs) {
+      const pluginConfig: Record<string, unknown> = {};
+      for (const key of Object.keys(plugin.config ?? {})) {
+        pluginConfig[key] = this.config.get(`plugins.${plugin.name}.${key}`);
+      }
+      await plugin.setup?.(this, pluginConfig);
+    }
 
-    // 3) 解析全部 provider：未知依赖与循环依赖在此暴露
+    // 4) 解析全部 provider：未知依赖与循环依赖在此暴露
     const resolveIssues: AssemblyIssue[] = [];
     for (const name of this.providerSpecs.keys()) this.resolveProvider(name, [], resolveIssues);
     if (resolveIssues.length > 0) throw new AssemblyError(resolveIssues);
 
-    // 4) 启动内核并 spawn Actor
+    // 5) 启动内核并 spawn Actor
     this.system = createSystem(this.options.kernel ?? { logger: false });
     const system = this.system as { spawn: (d: unknown, o: unknown) => Promise<ActorHandle> };
     for (const [name, actorSpec] of this.actorSpecs) {
-      const handle = await this.spawnActor(system, name, actorSpec);
-      this.handles.set(name, handle);
+      this.handles.set(name, await this.spawnActor(system, name, actorSpec));
     }
 
-    // 5) 模块 onStart（按声明顺序）
+    // 6) 模块 onStart（按声明顺序）
     for (const mod of this.modules) await mod.onStart?.(this);
 
-    // 6) 保持进程存活：应用 start() 之后应当一直运行，直到 stop()。
-    // 否则一个"没有端口/定时器"的应用会在事件循环排空后自己退出（实测就是如此）。
+    // 7) 保持进程存活：start() 之后应用一直运行，直到 stop()
     this.keepAlive = setInterval(() => {}, 2 ** 31 - 1);
     return this;
   }
@@ -237,7 +279,14 @@ export class Application {
     }
     if (this.system) {
       const system = this.system as { stop: (o?: unknown) => Promise<void> };
-      await system.stop({ timeoutMs: options.timeoutMs ?? 10_000 });
+      await system.stop(options.timeoutMs ?? 10_000);
+    }
+    for (const plugin of [...this.pluginSpecs].reverse()) {
+      try {
+        await plugin.teardown?.(this);
+      } catch {
+        /* 插件释放失败不阻断停止流程 */
+      }
     }
     for (const name of [...this.disposedProviders].reverse()) {
       const spec = this.providerSpecs.get(name);
@@ -270,6 +319,13 @@ export class Application {
           continue;
         }
         this.actorSpecs.set(name, isActorSpec(value) ? value : { definition: value });
+      }
+      for (const plugin of mod.plugins ?? []) {
+        if (this.pluginSpecs.some((p) => p.name === plugin.name)) {
+          issues.push({ message: `插件 '${plugin.name}' 被重复声明`, requester: mod.name });
+          continue;
+        }
+        this.pluginSpecs.push(plugin);
       }
       if (mod.imports) this.collect(mod.imports, issues);
     }
