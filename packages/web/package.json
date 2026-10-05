@@ -1,0 +1,13 @@
+{
+  "name": "@actor/web",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Web layer for nodejs-actor-framework: routing and stateless controllers. User projects depend on @actor/app and @actor/web, never on the kernel directly.",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "engines": { "node": ">=20" },
+  "dependencies": { "@actor/app": "*" },
+  "files": ["src"]
+}

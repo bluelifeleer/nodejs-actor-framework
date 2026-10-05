@@ -1,0 +1,23 @@
+/**
+ * `@actor/web` —— Web 层（M2：路由 + 无状态控制器）。
+ *
+ * 边界规则与 `@actor/app` 相同：用户项目只依赖应用层包，不接触内核；
+ * 本包不得 re-export 内核内部类型。
+ */
+export {
+  buildRouteTable,
+  defineRoutes,
+  del,
+  get,
+  matchRoute,
+  parsePattern,
+  patch,
+  post,
+  put,
+  type ControllerLike,
+  type HttpMethod,
+  type MatchInput,
+  type MatchResult,
+  type Route,
+  type RouteIssue,
+} from './routes.ts';

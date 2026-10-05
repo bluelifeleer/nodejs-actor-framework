@@ -57,6 +57,33 @@ export default defineRoutes([ get('/health', () => ({ ok: true })) ]);
 | 服务器 | `node:http`（零依赖）；`httpPlugin({ port, host })` 作为应用层插件显式启用 |
 | WebSocket | 紧随 HTTP 之后（内核已有零依赖 ws-server + 接入层示例），`ws('/path', Controller)`，语义与 HTTP 控制器一致（`ctx.actor` 桥梁不变） |
 
+## 2.1 路由模式语法（路径参数 + 查询参数都支持）
+
+```
+pattern := path [ '?' query_decl ]
+path    := ( '/' segment )*          segment := literal | ':' name
+query_decl := name [ '=' ] { '&' name [ '=' ] }
+```
+
+| 写法 | 含义 | 取值来源 |
+|---|---|---|
+| `get('/rooms/:id', C)` | 路径参数 `id` | URL 路径（`/rooms/42` → `id='42'`，自动 URL 解码） |
+| `get('/rooms?id=', C)` | **查询参数** `id` | 查询串（`/rooms?id=42` → `id='42'`） |
+| `get('/rooms?limit=&cursor=', C)` | 多个查询参数 | 查询串 |
+| `get('/rooms/:id/players?limit=', C)` | 两者混用 | 路径给 `id`，查询给 `limit` |
+
+**三条规则**（都会在 `start()` 时检查，不是运行时才发现）：
+
+1. `?` 后面的声明**只表示"这个路由会读取这些查询参数"**，不参与路径匹配——
+   `/rooms?id=` 也能匹配 `/rooms?other=1`（未声明的查询参数仍可在 `ctx.req.query` 里读到）；
+2. **重复路由**按"method + 路径模式"判定：`get('/rooms?id=')` 与 `get('/rooms?room=')`
+   视为冲突（路径相同、匹配无法区分），启动报错并提示"若要区分请求，请把参数放进路径"；
+3. **`input` schema 的键必须来自路径参数或已声明的查询参数**，否则启动报错
+   （与配置系统的"未知配置项"同一思路：拼写错误在启动时暴露，而不是在线上静默变成 undefined）。
+
+`input` schema 复用 M1 的字段描述符与校验规则；是否必填由 schema 决定
+（有 `default` 即可选，没有则必填）——与配置系统语义一致。
+
 ## 3. 与装配的衔接（生命周期）
 
 ```

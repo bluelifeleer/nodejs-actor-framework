@@ -36,9 +36,10 @@ test('app boundary: @actor/app 存在、依赖内核，并由工作区链接解�
   );
 });
 
-test('app boundary: 应用层不 re-export 内核内部类型', () => {
+test('app boundary: 应用层与 Web 层都不 re-export 内核内部类型', () => {
   const internals = ['ActorSystem', 'Mailbox', 'ActorCell', 'ChildSupervisor', 'RemoteRef', 'Actor', 'Peer'];
-  for (const file of walk(path.join(APP_DIR, 'src'))) {
+  const roots = [path.join(APP_DIR, 'src'), path.join(ROOT, 'packages', 'web', 'src')];
+  for (const file of roots.flatMap((dir) => walk(dir))) {
     const text = fs.readFileSync(file, 'utf8');
     for (const name of internals) {
       const reexport = new RegExp(`export\\s+(?:type\\s+)?\\{[^}]*\\b${name}\\b[^}]*\\}`);
