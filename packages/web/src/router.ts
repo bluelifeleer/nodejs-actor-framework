@@ -11,7 +11,7 @@
  */
 
 import type { Middleware } from './middleware.ts';
-import type { RouteMethod } from './routes.ts';
+import { ROUTE_METHODS, type RouteMethod } from './routes.ts';
 
 /** 叶子路由声明：[方法, 模式, 控制器, 路由级中间件?]。 */
 export type RouteEntry = readonly [RouteMethod, string, unknown, (readonly unknown[] | undefined)?];
@@ -128,4 +128,74 @@ export function flattenRoutes(input: readonly unknown[]): { entries: FlatRouteEn
     issues.push({ message: `无法识别的路由声明：${String(item)}` });
   }
   return { entries, issues };
+}
+
+// --- 语法糖：按方法分组的对象字面量表 -------------------------------------
+
+const WRAPPED = Symbol.for('actor.web.withMiddleware');
+
+export interface WithMiddleware {
+  [WRAPPED]: true;
+  controller: unknown;
+  middleware: readonly Middleware[];
+}
+
+/**
+ * 给单条路由挂中间件（对象表里没有别的地方能表达"这一条的中间件"）。
+ * 用 Symbol 作为标记，避免与"控制器本身是对象"产生歧义。
+ */
+export function withMiddleware(controller: unknown, middleware: readonly Middleware[]): WithMiddleware {
+  return { [WRAPPED]: true, controller, middleware };
+}
+
+function unwrapMiddleware(value: unknown): { controller: unknown; middleware?: readonly Middleware[] } {
+  if (typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[WRAPPED] === true) {
+    const wrapped = value as unknown as WithMiddleware;
+    return { controller: wrapped.controller, middleware: wrapped.middleware };
+  }
+  return { controller: value };
+}
+
+type MethodTable = Record<string, unknown>;
+
+export interface RoutesTableSpec {
+  prefix?: string;
+  middleware?: readonly Middleware[];
+  name?: string;
+  children?: readonly RouterSpec[];
+  GET?: MethodTable;
+  HEAD?: MethodTable;
+  POST?: MethodTable;
+  PUT?: MethodTable;
+  PATCH?: MethodTable;
+  DELETE?: MethodTable;
+  OPTIONS?: MethodTable;
+  WS?: MethodTable;
+}
+
+/**
+ * 语法糖：`routes({ prefix, middleware, GET: { '/x': controller }, children: [...] })`。
+ *
+ * 它只是 `RouterSpec` 的另一种写法（纯函数、零新概念）——输出的仍是同一份数据，
+ * 因此前缀规则、规则 3、重复路由归属报错、WS 嵌套等启动期检查全部照旧。
+ * 顺序：按方法枚举顺序（GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS/WS），同方法内按书写顺序。
+ */
+export function routes(spec: RoutesTableSpec): RouterSpec {
+  const entries: RouteEntry[] = [];
+  const table = spec as unknown as Record<string, MethodTable | undefined>;
+  for (const method of ROUTE_METHODS) {
+    const methodTable = table[method];
+    if (!methodTable) continue;
+    for (const [pattern, value] of Object.entries(methodTable)) {
+      const unwrapped = unwrapMiddleware(value);
+      entries.push([method, pattern, unwrapped.controller, unwrapped.middleware]);
+    }
+  }
+  return {
+    ...(spec.name === undefined ? {} : { name: spec.name }),
+    ...(spec.prefix === undefined ? {} : { prefix: spec.prefix }),
+    ...(spec.middleware === undefined ? {} : { middleware: spec.middleware }),
+    ...(spec.children === undefined ? {} : { children: spec.children }),
+    routes: entries,
+  };
 }

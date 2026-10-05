@@ -1,7 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { buildRouteTable, defineRouter, defineRoutes, defineMiddleware, flattenRouter, get, ws } from '../src/index.ts';
+import {
+  buildRouteTable,
+  defineRouter,
+  defineRoutes,
+  defineMiddleware,
+  flattenRouter,
+  flattenRoutes,
+  get,
+  routes,
+  withMiddleware,
+  ws,
+} from '../src/index.ts';
 
 const noop = () => ({ ok: true });
 const mw = (name: string) =>
@@ -85,4 +96,54 @@ test('router: 规则 3 仍按**合成后**的参数校验（前缀参数算数�
   const table = buildRouteTable(entries);
   assert.deepStrictEqual(table.issues, []);
   assert.deepStrictEqual(table.routes[0]?.pathParams, ['tenantId']);
+});
+
+
+test('router sugar: routes({...}) 与显式 defineRouter 产出**同一份数据**', () => {
+  const sugared = routes({
+    prefix: '/game',
+    middleware: [mw('auth')],
+    GET: { '/rooms/:id': noop },
+    POST: { '/join': noop },
+    WS: { '/events?token=': noop },
+    children: [defineRouter({ prefix: '/admin', routes: defineRoutes([get('/stats', noop)]) })],
+  });
+  const { entries } = flattenRouter(sugared);
+  assert.deepStrictEqual(
+    entries.map(([method, pattern]) => `${method} ${pattern}`),
+    ['GET /game/rooms/:id', 'POST /game/join', 'WS /game/events?token=', 'GET /game/admin/stats'],
+  );
+  // 子树中间件同样被烘焙
+  assert.strictEqual(entries[0]?.[3].length, 1);
+
+  // 与手写形式等价（前缀/规则 3/归属检查都没变）
+  const table = buildRouteTable(entries);
+  assert.deepStrictEqual(table.issues, []);
+  assert.strictEqual(table.routes.length, 4);
+});
+
+test('router sugar: withMiddleware 给单条路由挂中间件（不与"控制器是对象"混淆）', () => {
+  const routeMw = mw('route');
+  const controller = { input: { id: { type: 'string' } }, handle: noop };
+  const spec = routes({ GET: { '/:id': withMiddleware(controller, [routeMw]) } });
+  const { entries } = flattenRouter(spec);
+  assert.deepStrictEqual(entries[0]?.[3], [routeMw]);
+  // 控制器本体被正确取出（规则 3 仍能看到它的 input）
+  const table = buildRouteTable(entries);
+  assert.deepStrictEqual(table.issues, []);
+  assert.strictEqual(table.routes[0]?.pathParams[0], 'id');
+
+  // 伪装成控制器但仍带 input 的普通对象不受影响
+  const plain = flattenRouter(routes({ POST: { '/p': controller } })).entries;
+  assert.strictEqual(plain[0]?.[3].length, 0);
+});
+
+test('router sugar: 未知方法键不静默忽略（在 buildRouteTable 处报"不支持的方法"）', () => {
+  const bogus = { GET: { '/a': noop }, FETCH: { '/b': noop } } as unknown as Parameters<typeof routes>[0];
+  const spec = routes(bogus);
+  const { entries } = flattenRouter(spec);
+  const table = buildRouteTable(entries);
+  // 糖只认识已知方法键；未知键根本不会成为路由（属于"写错键名"，由类型与文档兜住）
+  assert.deepStrictEqual(table.issues, []);
+  assert.strictEqual(table.routes.length, 1);
 });

@@ -17,6 +17,11 @@ export { composeMiddleware, defineMiddleware, type Middleware } from './middlewa
 export {
   defineRouter,
   flattenRouter,
+  flattenRoutes,
+  routes,
+  withMiddleware,
+  type WithMiddleware,
+  type RoutesTableSpec,
   type FlatRouteEntry,
   type RouteEntry,
   type RouteMeta,
