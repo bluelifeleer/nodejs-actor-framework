@@ -91,6 +91,14 @@ test('errors: HttpError 精确控制状态码，未捕获异常不泄露内部�
   assert.strictEqual(asTimeout.status, 504);
   assert.match(String(asTimeout.body), /did not answer in time/);
 
+  // 应用层的寻址失败（本地没 spawn、集群发现也没有）→ 404 且**带上 Actor 名字**，
+  // 而不是被降级成不透明的 500
+  const unresolvable = new Error("不存在名为 'Room_A' 的 Actor（本地未 spawn，集群发现也没有找到）");
+  unresolvable.name = 'ActorNotResolvableError';
+  const as404 = toErrorResponse(unresolvable);
+  assert.strictEqual(as404.status, 404);
+  assert.match(String(as404.body), /Room_A/);
+
   const boom = new Error('database password is hunter2');
   const as500 = toErrorResponse(boom);
   assert.strictEqual(as500.status, 500);

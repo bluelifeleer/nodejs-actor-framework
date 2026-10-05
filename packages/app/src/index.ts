@@ -31,6 +31,7 @@ export {
   createApp,
   Application,
   AssemblyError,
+  ActorNotResolvableError,
   type ActorHandle,
   type AppDeps,
   type ConfigReader,

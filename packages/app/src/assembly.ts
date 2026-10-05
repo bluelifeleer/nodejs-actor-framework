@@ -137,6 +137,22 @@ export class AssemblyError extends Error {
   }
 }
 
+/**
+ * 取不到 Actor 时抛出：本地没有 spawn，集群发现里也没有。
+ *
+ * 刻意**不继承 AssemblyError**：装配错误是启动期问题（配置/依赖写错，应让 start() 失败），
+ * 而这是运行期的**寻址失败**——一次请求找不到目标应当映射成 404，而不是 500
+ * （Web 层按 `name` 判定，见 packages/web/src/context.ts 的 toErrorResponse）。
+ */
+export class ActorNotResolvableError extends Error {
+  readonly actorName: string;
+  constructor(actorName: string) {
+    super(`不存在名为 '${actorName}' 的 Actor（本地未 spawn，集群发现也没有找到）`);
+    this.name = 'ActorNotResolvableError';
+    this.actorName = actorName;
+  }
+}
+
 function isProviderSpec(value: ProviderSpec | ProviderFactory): value is ProviderSpec {
   return typeof value === 'object' && value !== null && 'factory' in value;
 }
@@ -227,7 +243,8 @@ export class Application {
    *
    * 顺序：**本地已 spawn 的 Actor** → **内核按名字解析**（装了 cluster 插件时，这会让
    * `ctx.actor('player_001')` 触达其它节点上的 Actor，且调用方无需知道它在哪台机器上）。
-   * 都找不到时抛出明确错误，而不是静默返回 undefined。
+   * 都找不到时抛出 `ActorNotResolvableError`（带 Actor 名字，而不是静默返回 undefined）。
+   * 注意它是**运行期寻址失败**：调用方（如 Web 层）应把它当成 404，而不是 500。
    */
   actor(name: string): ActorHandle {
     const handle = this.handles.get(name);
@@ -246,12 +263,7 @@ export class Application {
         }
       }
     }
-    throw new AssemblyError([
-      {
-        message: `不存在名为 '${name}' 的 Actor（本地未 spawn，集群发现也没有找到）`,
-        requester: '(app.actor)',
-      },
-    ]);
+    throw new ActorNotResolvableError(name);
   }
 
   /** 取一个已解析的 provider 或插件注册的服务（供控制器、测试与插件使用）。 */

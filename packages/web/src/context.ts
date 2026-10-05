@@ -187,7 +187,9 @@ export function toErrorResponse(error: unknown): HttpResponse {
   if (name === 'AskTimeoutError') {
     return reply.json({ error: { status: 504, message: 'actor did not answer in time' } }, { status: 504 });
   }
-  if (name === 'ActorNotFoundError') {
+  // ActorNotFoundError 来自内核（本地查不到），ActorNotResolvableError 来自应用层
+  // （本地没 spawn、集群发现也没有）——两者都是"这个 Actor 不存在"，统一 404 并带上名字。
+  if (name === 'ActorNotFoundError' || name === 'ActorNotResolvableError') {
     return reply.json({ error: { status: 404, message } }, { status: 404 });
   }
   return reply.json({ error: { status: 500, message: 'internal error' } }, { status: 500 });

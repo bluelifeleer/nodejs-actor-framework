@@ -4,10 +4,12 @@
 >   校验在中间件之后（鉴权可先拒绝）。
 > - ✅ **§2 HTTP↔WS 跨上下文**已完成并验证：`Application.provide()` + `WsConnections`
 >   注册表（`ctx.get('wsConnections')`），端到端断言"HTTP 请求 → 客户端真的收到推送"。
-> - ⏳ **§3 共享端口**未实施（唯一剩余项）。实现前提见 §3：内核 `options.server`、
->   `Application.provide`（已完成 ✓）、`ws.port` 去掉默认值以区分"未配置"。注意它会改变
->   现有默认行为（未配置时从独立 9001 变为与 HTTP 共享），需同步更新示例与文档。
-> - ⏳ 模块级中间件 `defineModule({ middleware })` 未实施（需要"路由属于哪个模块"的来源信息）。
+> - ✅ **§3 共享端口**已完成并验证：内核 `WebSocketServer` 新增 `options.server`（纯增量），
+>   `ws.port` 改为 nullable 以区分"未配置"——未配置即与 HTTP 共享同一 server，配置不同才各监听各的。
+> - ✅ 模块级中间件 `defineModule({ middleware })` 已完成并验证：应用层把它编译成"该模块根路由器
+>   带中间件"（子树语义 R1），端到端顺序（全局 → 模块 → 路由 → 控制器）有真实 HTTP 测试
+>   （`packages/web/test/middleware.test.ts`）。
+> - 后续增量（路由嵌套/前缀、`routes({...})` 语法糖、示例迁移）与迁移抓出的 3 个问题见 §6。
 
 # M2.5 设计：中间件 · HTTP↔WS 跨上下文 · 共享端口
 
@@ -148,6 +150,7 @@ HTTP 直连"别的节点上的 socket"不是设计目标。
 | 模块级中间件便捷写法 | ✅ 完成 | `defineModule({ middleware, routes })` 等价于"该模块根路由器带中间件"（子树语义 R1） |
 | **路由语法糖** `routes({...})` + `withMiddleware` | ✅ 完成并验证 | 对象字面量表，编译成同一份 `RouterSpec` 数据（零新概念）；按方法分组；单条路由中间件用 Symbol 标记 |
 | 示例迁移（前缀分组 + 嵌套） | ✅ 完成并验证 | `examples/app-web` → `/api/*`；迁移过程抓出 3 个真问题（见下） |
+| **应用层两节点端到端**（M2 剩余项 1） | ✅ 完成并验证 | B 节点控制器 `ctx.actor('Room_A')` → gossip 发现 → 真实网关 → A 节点 Actor 执行；未发现时 404 + Actor 名字。见 `packages/web/test/cluster-location-transparency.test.ts` |
 
 **示例迁移抓出的 3 个问题**（记录在案，因为它们是"真实使用反哺框架"的证据）：
 1. 框架 bug：`routes({...})` 产物是 `RouterSpec` 对象，而应用层 collect 假设 `mod.routes` 是数组

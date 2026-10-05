@@ -251,6 +251,11 @@ class ActorSystem extends EventEmitter {
    */
   async listen(options = {}) {
     if (this.stopped) throw new ActorStoppedError('actor system is stopped');
+    // Match the documented contract above: listen() bootstraps plugins too, not
+    // just spawn(). A pure gateway node has no actors, yet the cluster plugin
+    // must be installed *before* the 'listening' event so it can advertise the
+    // gateway port it just bound.
+    await this.init();
     if (this.server) return this.server.boundPort;
     const server = createServerGateway(this, options);
     server.on('tell_error', (err, target) => this._log('remote_tell_failed', { target, err: err.message }));

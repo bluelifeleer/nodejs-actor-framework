@@ -1,13 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { createApp, defineApp, defineModule } from '@actor/app';
 
 import {
   HttpError,
   buildRouteTable,
   defineController,
   defineMiddleware,
+  defineRoutes,
   dispatch,
   get,
+  httpPlugin,
   reply,
 } from '../src/index.ts';
 
@@ -117,4 +124,61 @@ test('middleware: next() 只能调用一次（重复调用报错，避免难以�
   const result = await dispatch({ routes, request: { method: 'GET', url: '/x' } });
   assert.strictEqual(result.status, 500);
   assert.match(String(result.response.body), /internal error/);
+});
+
+test('middleware: 模块级 defineModule({ middleware }) 真的生效（全局 → 模块 → 路由 → 控制器）', async () => {
+  const order: string[] = [];
+  const tag = (name: string) =>
+    defineMiddleware(async (_ctx, next) => {
+      order.push(`${name}:before`);
+      const result = await next();
+      order.push(`${name}:after`);
+      return result;
+    });
+
+  // 应用层把 `defineModule({ middleware })` 编译成"该模块根路由器带中间件"（子树语义），
+  // 再与全局/路由/控制器三级合并 —— 这里走**完整链路**（装配 → 路由表 → 真实 HTTP 请求）。
+  const http = httpPlugin({ port: 0, accessLog: false });
+  const app = createApp(
+    defineApp({
+      middleware: [tag('global')],
+      modules: [
+        defineModule({
+          name: 'game',
+          middleware: [tag('module')],
+          routes: defineRoutes([
+            get(
+              '/x',
+              defineController({ middleware: [tag('controller')], handle: () => ({ ok: true }) }),
+              [tag('route')],
+            ),
+          ]),
+        }),
+      ],
+      plugins: [http],
+    }),
+    { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-module-mw-')), env: {} },
+  );
+
+  await app.start();
+  try {
+    const port = http.address()?.port;
+    assert.ok(port, 'HTTP 入口应已就绪');
+    const response = await fetch(`http://127.0.0.1:${String(port)}/x`);
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(await response.json(), { ok: true });
+  } finally {
+    await app.stop();
+  }
+
+  assert.deepStrictEqual(order, [
+    'global:before',
+    'module:before',
+    'route:before',
+    'controller:before',
+    'controller:after',
+    'route:after',
+    'module:after',
+    'global:after',
+  ]);
 });

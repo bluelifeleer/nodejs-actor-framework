@@ -8,14 +8,17 @@
 >
 > **已验证范围（如实）**：HTTP 200/201/400/404/405/504/HEAD/OPTIONS + 优雅停止；
 > WS 连接/消息/校验/404/优雅停止；位置透明的回退路径用**真实内核**验证（内核直接 spawn 的
-> Actor 不在应用层句柄表里，仍能被解析）。
+> Actor 不在应用层句柄表里，仍能被解析）；**两节点集群端到端**：B 节点控制器
+> `ctx.actor('Room_A')` → gossip 发现 → 真实网关 → A 节点 Actor 执行并返回
+> （`packages/web/test/cluster-location-transparency.test.ts`，断言消息在 A 上真的执行过）；
+> 访问日志（`httpPlugin` 内置 + 事件总线的 `requestLogPlugin` 两条路径）；HTTP 与 WS 共享端口。
 >
 > **未验证/未完成（不要当成已完成）**：
-> 1. **两节点集群端到端**（控制器在 B 节点、Actor 在 A 节点、经 gossip 发现后触达）——
->    属 M4 集群里程碑的验收项；本层只保证"回退到内核解析"这条链路接通并有单测；
-> 2. **app 级事件总线 + 真正的 `requestLogPlugin`**——当前访问日志由 `httpPlugin` 自己记录
->    （插件生命周期没有"每请求"事件）；总线属 M4 运维范畴；
-> 3. HTTP 与 WS 共享同一端口（可选优化，当前各监听自己的端口，均可配置）。
+> 1. **应用层集群的"入口自理"**：`clusterPlugin` 只贡献内核能力，**不会自己启动网关**
+>    （应用层签名不暴露内核 `listen`）——当前用法是逃生通道 `app.kernel.listen({ host, port })`。
+>    要做到"零逃生通道"，需要一个网关配置项（host/port）与自动 listen 的决策；
+> 2. **分片治理（M4）**：节点超时/再平衡/一致性哈希治理不在本层范围内，
+>    本层只验证"发现即可达"这一条链路。
 
 # M2 设计：路由 + 控制器（Web 层）
 
@@ -158,7 +161,7 @@ stop : 停止接收新请求 → 等在途请求（有界 timeoutMs）→ 模块
 |---|---|
 | `HttpError(status, ...)` | 该 status |
 | 输入校验失败 | **400** + 全部问题（与配置校验同一格式：`{ issues: [{ path, message }] }`） |
-| Actor 不存在 | **404** |
+| Actor 不存在（内核 `ActorNotFoundError` / 应用层 `ActorNotResolvableError`，按 `name` 判定，不暴露内核类型） | **404** + Actor 名字（不是不透明的 500） |
 | ask 超时（内核 `AskTimeoutError`，按 `name` 判定，不暴露内核类型） | **504** |
 | 其它未捕获异常 | **500**（响应通用信息 + `requestId`，堆栈只进日志） |
 | 路由不存在 | **404**；方法不匹配 **405**（带 `Allow` 头） |
@@ -169,13 +172,45 @@ stop : 停止接收新请求 → 等在途请求（有界 timeoutMs）→ 模块
 - 访问日志（method/path/status/耗时）由 `requestLogPlugin()` 提供（应用层插件，可换实现）；
 - 指标（QPS、延迟、状态码分布）复用内置 `metricsPlugin()`——两者都是应用层插件，可独立启用。
 
+## 5.1 集群下的位置透明（两节点实测）
+
+控制器**不需要知道 Actor 在哪台机器上**——`ctx.actor(name)` 本地优先，本地没有就交给内核查
+gossip 索引，于是下面这个控制器在单机与集群下是同一份代码：
+
+```ts
+// B 节点（接入/边缘）：本地没有 Room_A
+get('/rooms/:id', defineController({
+  input: { id: { type: 'string' } },
+  handle: async (input, ctx) => {
+    const room = ctx.actor(input.id) as { ask(m: unknown, t?: number): Promise<unknown> };
+    return room.ask({ type: 'ping' }, 3000);      // 经 gossip 发现 → 跨节点
+  },
+}));
+```
+
+实测拓扑（`packages/web/test/cluster-location-transparency.test.ts`）：
+
+```
+A 节点  spawn Room_A（无 HTTP 入口）      B 节点  控制器 + httpPlugin
+        clusterPlugin({ nodeId:'node-a' })       clusterPlugin({ nodeId:'node-b', seeds:[A 的 gossip] })
+        app.kernel.listen({ port: 0 })           app.kernel.listen({ port: 0 })
+```
+
+三条硬证据：① B 的索引里出现远端 `Room_A` 且 peer `lastSeen > 0`（活着，不只是听说过）；
+② A 节点 Actor 内部记录到**恰好一次**调用（消息真的跑在 A 上）；③ 未发现的名字返回
+**404 + Actor 名字**，而不是不透明的 500。
+
+**逃生通道（当前必须）**：应用层签名不暴露内核概念，`clusterPlugin` 也不会自己开网关，
+所以启动网关要写 `app.kernel.listen({ host, port })`（与 `examples/game-cluster.js` 同一做法）。
+把这一步收进配置是**待决策项**，见文首"未验证/未完成"第 1 条。
+
 ## 6. 验收标准（M2 出口）
 
 1. `examples/app-web/`：用 `@actor/app` + `@actor/web` 起 HTTP 服务，含 `config/`、`src/controllers/`、`routes.ts`、`main.ts`；
 2. 端到端测试（真实子进程）：正常请求 200、校验失败 400（含全部 issues）、未知 Actor 404、ask 超时 504、方法不匹配 405、优雅停止（在途请求完成后才退出）；
 3. 守卫测试扩展：`examples/app-*` 一律不得直接依赖内核；
 4. 路由重复注册、控制器未知依赖 → `start()` 报错（有测试）；
-5. 不回归：现有 305 用例保持全绿；`npm run typecheck` 0 错误。
+5. 不回归：现有 353 用例保持全绿；`npm run typecheck` 0 错误。
 
 ## 7. 待你确认
 
