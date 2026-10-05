@@ -151,6 +151,9 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       });
 
       await new Promise<void>((resolve) => server?.listen(port, host, () => resolve()));
+      // 注册 server 服务：wsPlugin 在“共享端口”模式下用它附加 upgrade（必须在 listen 之后，
+      // 否则 provide 出去的是尚未创建的 null）
+      app.provide('httpServer', server);
       const addr = server.address();
       bound = typeof addr === 'object' && addr !== null ? { host, port: addr.port } : null;
       console.log(`[@actor/web] http listening on ${host}:${String(bound?.port)}`);

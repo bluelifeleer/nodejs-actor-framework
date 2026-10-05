@@ -153,14 +153,31 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
   const plugin = {
     name: 'ws',
     config: {
-      port: { type: 'number' as const, default: 9001, min: 0 },
+      // 刻意**不给默认值**（改成可空）：未配置才能与'显式配置'区分，从而决定是否与 HTTP 共享端口；
+      // 若既不共享也未配置，运行期回落到 9001。
+      port: { type: 'number' as const, min: 0, nullable: true },
       host: { type: 'string' as const, default: '127.0.0.1' },
       maxPayloadBytes: { type: 'number' as const, default: 4 * 1024 * 1024, min: 1 },
       shutdownTimeoutMs: { type: 'number' as const, default: 5000, min: 1 },
     },
     async onReady(app: Application) {
-      const port = options.port ?? app.config.get<number>('plugins.ws.port');
+      const configuredPort = options.port ?? app.config.get<number | undefined>('plugins.ws.port');
       const host = options.host ?? app.config.get<string>('plugins.ws.host');
+
+      // 共享端口判定：HTTP 已启用且（ws 端口未配置 或 与 HTTP 端口相同）→ 附加到 HTTP server
+      let sharedServer: { address(): unknown } | null = null;
+      try {
+        sharedServer = app.get<{ address(): unknown }>('httpServer');
+      } catch {
+        sharedServer = null; // 未启用 HTTP 入口
+      }
+      const httpPort = (() => {
+        const address = sharedServer?.address();
+        return typeof address === 'object' && address !== null ? (address as { port: number }).port : null;
+      })();
+      const share =
+        sharedServer !== null && (configuredPort == null || configuredPort === httpPort);
+      const port = share ? 0 : (configuredPort ?? 9001);
       const maxPayloadBytes = options.maxPayloadBytes ?? app.config.get<number>('plugins.ws.maxPayloadBytes');
 
       const { routes, issues } = buildRouteTable(
@@ -177,7 +194,13 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
       // 注册为应用层服务：同一服务内的 HTTP 控制器可用 ctx.get('wsConnections') 推送
       app.provide('wsConnections', registry);
 
-      const wsServer = new WebSocketServer({ port, host, maxPayloadBytes, path: '*' });
+      const wsServer = new WebSocketServer({
+        port,
+        host,
+        maxPayloadBytes,
+        path: '*',
+        ...(share && sharedServer ? { server: sharedServer } : {}),
+      });
       server = wsServer;
       wsServer.on('connection', ((socket: WsSocket, request: { url?: string }) => {
         sockets.add(socket);
@@ -207,7 +230,9 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
 
       await wsServer.listen();
       bound = { host, port: wsServer.port };
-      console.log(`[@actor/web] ws listening on ${host}:${String(wsServer.port)}`);
+      console.log(
+        `[@actor/web] ws listening on ${host}:${String(wsServer.port)}${share ? '（与 HTTP 共享端口）' : ''}`,
+      );
     },
     async onStopping(app: Application) {
       const timeoutMs = options.shutdownTimeoutMs ?? app.config.get<number>('plugins.ws.shutdownTimeoutMs');

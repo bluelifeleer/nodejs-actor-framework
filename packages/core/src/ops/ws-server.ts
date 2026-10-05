@@ -36,6 +36,8 @@ export interface ConnectionOptions {
 }
 
 export interface WebSocketServerOptions {
+  /** 附加到既有的 http/https server（共享端口场景）；不传则自建 server。 */
+  server?: unknown;
   host?: string;
   port?: number;
   path?: string;
@@ -302,6 +304,8 @@ class WebSocketServer extends EventEmitter {
     this.host = options.host || '127.0.0.1';
     this.port = options.port === undefined ? 0 : options.port;
     this.path = options.path || '/';
+    /** 附加到既有 http/https server（例如与 HTTP 入口共享端口）；不传则自建。 */
+    this._externalServer = options.server || null;
     this.maxPayloadBytes = options.maxPayloadBytes === undefined ? 4 * 1024 * 1024 : options.maxPayloadBytes;
     this.subprotocol = options.subprotocol || null;
     /** Optional hook: return false/throw to reject the upgrade (auth, origin check). */
@@ -324,7 +328,11 @@ class WebSocketServer extends EventEmitter {
         res.writeHead(426, { 'content-type': 'text/plain' });
         return res.end('Upgrade Required: this endpoint speaks WebSocket\n');
       };
-      this.server = this.secure ? https.createServer(this._tls, handler) : http.createServer(handler);
+      this.server = this._externalServer
+        ? this._externalServer
+        : this.secure
+          ? https.createServer(this._tls, handler)
+          : http.createServer(handler);
       this.server.on('error', reject);
       // A TLS server emits tlsClientError for handshake failures; surface it
       // instead of dying with an unhandled 'error'.
@@ -333,12 +341,18 @@ class WebSocketServer extends EventEmitter {
         socket.destroy();
       });
       this.server.on('upgrade', (req: any, socket: any, head: Buffer) => this._onUpgrade(req, socket, head));
-      this.server.listen(this.port, this.host, () => {
+      const onListening = () => {
         this.boundPort = this.server.address().port;
         this.port = this.boundPort;
         this.emit('listening', this.boundPort);
         resolve(this.boundPort);
-      });
+      };
+      if (this._externalServer) {
+        // 外部 server 已在监听：只需回读端口并走同一段就绪逻辑
+        onListening();
+      } else {
+        this.server.listen(this.port, this.host, onListening);
+      }
     });
   }
 

@@ -10,6 +10,7 @@ import { createApp, defineApp, defineModule } from '@actor/app';
 import {
   defineController,
   defineRoutes,
+  get,
   httpPlugin,
   post,
   ws,
@@ -86,5 +87,44 @@ test('cross-context: 同一服务内 HTTP 请求经注册表推送给已连接�
   assert.deepStrictEqual(pushed, { type: 'score', value: 42 });
 
   client.close();
+  await app.stop();
+});
+
+test('shared port: 未配置 ws.port 时 HTTP 与 WS 在**同一端口**同时可用', async () => {
+  const http = httpPlugin({ port: 0 });
+  const wsShared = wsPlugin(); // 未配置端口 → 与 HTTP 共享
+
+  const app = createApp(
+    defineApp({
+      modules: [
+        defineModule({
+          name: 'shared',
+          routes: defineRoutes([
+            get('/health', () => ({ ok: true })),
+            ws('/events', () => ({ ok: true })),
+          ]),
+        }),
+      ],
+      plugins: [http, wsShared],
+    }),
+    { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-share-')), env: {} },
+  );
+
+  await app.start();
+  const httpPort = http.address()?.port;
+  assert.ok(httpPort, 'HTTP 应已就绪');
+  assert.strictEqual(wsShared.address()?.port, httpPort, 'WS 应与 HTTP 共享同一端口');
+
+  // 同一端口：HTTP 正常
+  const health = await fetch(`http://127.0.0.1:${String(httpPort)}/health`);
+  assert.strictEqual(health.status, 200);
+  assert.deepStrictEqual(await health.json(), { ok: true });
+
+  // 同一端口：WS 连接、收发正常
+  const client = await connect(`ws://127.0.0.1:${String(httpPort)}/events`);
+  client.sendJson({ type: 'hi' });
+  assert.deepStrictEqual(JSON.parse(String((await client.nextMessage(3000)).data)), { ok: true });
+  client.close();
+
   await app.stop();
 });
