@@ -1,3 +1,14 @@
+> **状态：M1 已实现**（2026）。
+>
+> 已落地代码：`packages/app/src/config.ts`（配置系统）、`packages/app/src/assembly.ts`
+> （装配/DI/模块/生命周期/插件 SDK）、`packages/app/src/plugins.ts`（内置能力包装）。
+> 端到端示例：`examples/app-minimal/`；上手文档：`docs/quickstart.md`。
+> 验收测试：`packages/app/test/{config,app,plugin,builtin-plugins}.test.ts` + 根侧
+> `test/unit-app-boundary.test.js`（导入面守卫）与 `test/integration-example-app-minimal.test.js`。
+>
+> 尚未实现（属后续里程碑）：插件间依赖排序（当前仅按声明顺序 setup、逆序 teardown）、
+> provider 的 transient scope、热重载、插件市场/marketplace 概念。
+
 # 配置、依赖注入与插件 SDK（设计草案）
 
 > 对应开放问题 Q6；回答"用户配置 / 用户扩展 / 自定义插件"这三项到底该长什么样。

@@ -10,7 +10,7 @@ const EXAMPLE = path.join(ROOT, 'examples', 'app-minimal');
 test('example app-minimal: 启动、ask、SIGTERM 优雅退出', async () => {
   const child = spawn(process.execPath, ['main.ts'], {
     cwd: EXAMPLE,
-    env: { ...process.env, APP_STEP: '4' },
+    env: { ...process.env, APP_STEP: '4', APP_PLUGINS__AUDIT__LEVEL: 'warn' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -41,4 +41,6 @@ test('example app-minimal: 启动、ask、SIGTERM 优雅退出', async () => {
   // 第一次显式 by=3，第二次不给 by → 走配置 step（APP_STEP=4）→ 3 + 4 = 7
   assert.match(out, /\[main\] counter=3 then 7/, 'APP_STEP=4 应作为默认步长生效');
   assert.match(out, /\[main\] stopped gracefully/, 'SIGTERM 应触发优雅退出');
+  assert.match(out, /\[plugin:audit\] level=warn/, '插件配置应能由环境变量覆盖（APP_PLUGINS__AUDIT__LEVEL）');
+  assert.match(out, /\[plugin:audit\] teardown/, '插件 teardown 应在停止流程中执行');
 });
