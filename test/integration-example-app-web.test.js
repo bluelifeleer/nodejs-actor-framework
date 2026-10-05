@@ -85,4 +85,7 @@ test('example app-web: HTTP 端到端（200/201/400/404/405/504/HEAD/OPTIONS）�
   const code = await new Promise((resolve) => child.on('close', resolve));
   assert.strictEqual(code, 0, `应正常退出，输出:\n${out}`);
   assert.match(out, /\[main\] stopped gracefully/);
+  // 访问日志：方法/路径/状态码/耗时/追踪 id
+  assert.match(out, /\[http\] POST \/join 201 \d+ms rid=r-/, '应有访问日志并带 requestId');
+  assert.match(out, /\[http\] GET \/slow 504 /, '访问日志应记录状态码');
 });

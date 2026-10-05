@@ -58,6 +58,7 @@ test('http: 真实请求走通（200 JSON / 404 / 405 带 Allow），start() 返
 
   const ok = await fetch(`${base}/rooms/42`, { headers: { 'user-agent': 'actor-test' } });
   assert.strictEqual(ok.status, 200);
+  assert.match(String(ok.headers.get('x-request-id')), /^r-/, '响应头应回写 requestId（便于跨日志追踪）');
   assert.match(String(ok.headers.get('content-type')), /application\/json/);
   const payload = (await ok.json()) as { joined: number; requestId: string; ua: string };
   assert.strictEqual(payload.joined, 42, '路径参数应被转成 number 并交给 Actor');

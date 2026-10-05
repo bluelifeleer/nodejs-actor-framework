@@ -21,6 +21,10 @@ export interface HttpPluginOptions {
   maxBodyBytes?: number;
   /** 停止时等待在途请求的上限（毫秒）。 */
   shutdownTimeoutMs?: number;
+  /** 是否记录访问日志（默认 true，也可由 plugins.http.accessLog 配置）。 */
+  accessLog?: boolean;
+  /** 超过该耗时（毫秒）的请求在访问日志里标记 SLOW（默认 500）。 */
+  slowMs?: number;
 }
 
 export interface HttpPlugin extends PluginSpec {
@@ -34,6 +38,8 @@ function readSchema() {
     host: { type: 'string' as const, default: '127.0.0.1' },
     maxBodyBytes: { type: 'number' as const, default: 1024 * 1024, min: 1 },
     shutdownTimeoutMs: { type: 'number' as const, default: 5000, min: 1 },
+    accessLog: { type: 'boolean' as const, default: true },
+    slowMs: { type: 'number' as const, default: 500, min: 0 },
   };
 }
 
@@ -62,8 +68,12 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
         );
       }
 
+      const accessLog = options.accessLog ?? config.get<boolean>('plugins.http.accessLog');
+      const slowMs = options.slowMs ?? config.get<number>('plugins.http.slowMs');
+
       server = http.createServer((req, res) => {
         inFlight += 1;
+        const startedAt = Date.now();
         const finish = (): void => {
           inFlight -= 1;
           if (inFlight === 0) draining?.();
@@ -111,10 +121,21 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
 
             const headers: Record<string, string> = { ...result.response.headers };
             headers['content-type'] = result.response.contentType;
+            // 追踪 id 回写：客户端/网关可用它把一次请求与日志串起来
+            headers['x-request-id'] = result.requestId;
             res.writeHead(result.response.status, headers);
             // HEAD：响应头照常，但不发送 body（标准行为）
             if (result.response.body === null || result.headOnly) res.end();
             else res.end(result.response.body);
+
+            if (accessLog) {
+              const elapsed = Date.now() - startedAt;
+              const slow = elapsed >= slowMs ? ' SLOW' : '';
+              console.log(
+                `[http] ${req.method ?? 'GET'} ${req.url ?? '/'} ${String(result.response.status)} ` +
+                  `${String(elapsed)}ms rid=${result.requestId}${slow}`,
+              );
+            }
           } catch (error) {
             // 500 必须留痕：响应里不含细节（安全），但服务端日志要能定位
             console.error('[http] handler error:', error);

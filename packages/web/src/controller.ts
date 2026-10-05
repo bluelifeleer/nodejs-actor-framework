@@ -61,6 +61,8 @@ export interface DispatchResult {
   matched: boolean;
   route?: Route;
   status: number;
+  /** 每个请求的追踪 id（由服务器回写到响应头，便于跨日志排查）。 */
+  requestId: string;
   /** HEAD 命中 GET 路由：响应头照常，body 必须丢弃（由服务器实现处理）。 */
   headOnly?: true;
 }
@@ -84,6 +86,7 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     return {
       matched: false,
       status: 404,
+      requestId,
       response: toErrorResponse(new HttpError(404, `no route for ${request.method.toUpperCase()} ${rawPath}`)),
     };
   }
@@ -91,12 +94,12 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     // 标准行为：预检返回 204 + Allow，而不是 405
     const response = toResponse(undefined);
     response.headers.Allow = match.allow.join(', ');
-    return { matched: false, status: 204, response };
+    return { matched: false, status: 204, requestId, response };
   }
   if (match.kind === 'method_not_allowed') {
     const response = toErrorResponse(new HttpError(405, `method not allowed for ${rawPath}`));
     response.headers.Allow = match.allow.join(', ');
-    return { matched: false, status: 405, response };
+    return { matched: false, status: 405, requestId, response };
   }
 
   const { route, params, query } = match;
@@ -142,6 +145,7 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
           matched: true,
           route,
           status: 400,
+          requestId,
           response: toErrorResponse(
             new HttpError(400, 'input validation failed', { issues: issues satisfies ConfigIssue[] }),
           ),
@@ -155,12 +159,13 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
       matched: true,
       route,
       status: response.status,
+      requestId,
       response,
       ...(match.headOnly ? { headOnly: true as const } : {}),
     };
   } catch (error) {
     const response = toErrorResponse(error);
-    return { matched: true, route, status: response.status, response };
+    return { matched: true, route, status: response.status, requestId, response };
   }
 }
 
