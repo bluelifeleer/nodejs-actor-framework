@@ -6,6 +6,12 @@
  */
 export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
 export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
+export {
+  createConnectionRegistry,
+  type MutableConnectionRegistry,
+  type WsConnection,
+  type WsConnections,
+} from './connections.ts';
 
 export { composeMiddleware, defineMiddleware, type Middleware } from './middleware.ts';
 

@@ -180,6 +180,8 @@ export class Application {
   private readonly pluginSpecs: PluginSpec[] = [];
   private readonly routeSpecs: unknown[] = [];
   private readonly disposedProviders: string[] = [];
+  /** 插件注册的服务（控制器用 ctx.get(name) 取用）。 */
+  private readonly services = new Map<string, unknown>();
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
   private keepAlive: ReturnType<typeof setInterval> | null = null;
@@ -246,12 +248,21 @@ export class Application {
     ]);
   }
 
-  /** 取一个已解析的 provider（供测试与插件使用）。 */
+  /** 取一个已解析的 provider 或插件注册的服务（供控制器、测试与插件使用）。 */
   get<T = unknown>(name: string): T {
-    if (!this.providerValues.has(name)) {
-      throw new AssemblyError([{ message: `provider '${name}' 尚未解析`, requester: '(app.get)' }]);
+    if (this.providerValues.has(name)) return this.providerValues.get(name) as T;
+    if (this.services.has(name)) return this.services.get(name) as T;
+    throw new AssemblyError([
+      { message: `provider/服务 '${name}' 尚未解析或注册`, requester: '(app.get)' },
+    ]);
+  }
+
+  /** 插件注册服务（例如 wsPlugin 注册连接注册表）；重复注册报错，避免静默覆盖。 */
+  provide(name: string, value: unknown): void {
+    if (this.services.has(name)) {
+      throw new AssemblyError([{ message: `服务 '${name}' 被重复注册`, requester: '(app.provide)' }]);
     }
-    return this.providerValues.get(name) as T;
+    this.services.set(name, value);
   }
 
   async start(): Promise<this> {

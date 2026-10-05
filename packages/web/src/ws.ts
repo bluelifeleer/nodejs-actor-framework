@@ -25,6 +25,7 @@ const { WebSocketServer } = require('nodejs-actor-framework/src/ops/index.ts') a
 };
 
 import { toErrorResponse, toResponse, createRequestContext, type HeaderValue } from './context.ts';
+import { createConnectionRegistry, type MutableConnectionRegistry, type WsConnection } from './connections.ts';
 import { composeMiddleware, type Middleware } from './middleware.ts';
 import { buildRouteTable, matchRoute, type ControllerLike, type Route, type RouteMethod } from './routes.ts';
 
@@ -142,6 +143,8 @@ async function handleMessage(
 }
 
 export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
+  const registry: MutableConnectionRegistry = createConnectionRegistry();
+  let sequence = 0;
   let server: KernelWebSocketServer | null = null;
   let bound: { host: string; port: number } | null = null;
   const sockets = new Set<WsSocket>();
@@ -171,11 +174,29 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
       const wsRoutes = routes.filter((route) => route.method === 'WS');
 
       // path: '*' —— 服务端不限定路径，由本插件的路由表按 URL 分发（每条 ws 路由一个模式）
+      // 注册为应用层服务：同一服务内的 HTTP 控制器可用 ctx.get('wsConnections') 推送
+      app.provide('wsConnections', registry);
+
       const wsServer = new WebSocketServer({ port, host, maxPayloadBytes, path: '*' });
       server = wsServer;
       wsServer.on('connection', ((socket: WsSocket, request: { url?: string }) => {
         sockets.add(socket);
+        sequence += 1;
+        const playerId = (socket as { playerId?: unknown }).playerId;
+        const connection: WsConnection = {
+          id: typeof playerId === 'string' && playerId.length > 0 ? playerId : `ws-${String(sequence)}`,
+          ...(typeof playerId === 'string' && playerId.length > 0 ? { playerId } : {}),
+          path: request?.url ?? '/',
+          get readyState(): string {
+            return String((socket as { readyState?: unknown }).readyState ?? 'open');
+          },
+          send: (payload: unknown) =>
+            socket.send(typeof payload === 'string' ? payload : JSON.stringify(payload)),
+          close: (code?: number, reason?: string) => socket.close(code, reason),
+        };
+        registry.register(connection);
         socket.on('close', (() => {
+          registry.unregister(connection.id);
           sockets.delete(socket);
           if (sockets.size === 0) drained?.();
         }) as never);
