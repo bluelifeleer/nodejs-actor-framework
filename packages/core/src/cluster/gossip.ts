@@ -5,6 +5,9 @@
 
 const EventEmitter = require('events');
 const config = require('../config.ts');
+
+/** 一轮 gossip 里最多携带多少个 peer 地址（避免大集群把单条消息撑爆）。 */
+const MAX_PROPAGATED_PEERS = 64;
 const tlsUtil = require('./tls-util.ts');
 const proto = require('./proto.ts');
 const { CODEC, codecFromName, createFraming } = require('./framing.ts');
@@ -238,12 +241,26 @@ class Gossip extends EventEmitter {
       // Learn the sender as a dialable peer.
       this.addSeed({ host: payload.advertiseHost || socket.remoteAddress.replace(/^::ffff:/, ''), port: payload.port });
     }
+    // 以及"发送方认识的其它节点"：没有这一步，N>=3 时成员视图永远不收敛
+    if (Array.isArray(payload.peers)) {
+      for (const peer of payload.peers.slice(0, MAX_PROPAGATED_PEERS)) {
+        if (!peer || typeof peer.host !== 'string') continue;
+        this.addSeed({ host: peer.host, port: Number(peer.port) });
+      }
+    }
     this.mergeState(payload.data, payload.sender);
     this.emit('round', payload.sender);
     // Answer with our own state so the dialer converges too.
     this._write(socket, this._payload());
   }
 
+  /**
+   * 一轮 gossip 的内容：注册表 + **已知的其它节点地址**。
+   *
+   * 带上 peer 列表是"发现"的关键：只学"发给我的人"，那么种在同一个节点上的 N 个节点
+   * 会永远只认识种子（各自看到不同的成员集合）——一致性哈希算出的 owner 就各不相同。
+   * 列表有上限，避免集群很大时把消息撑爆（gossip 是 O(N) 消息量的小集群方案）。
+   */
   _payload() {
     return {
       type: 'gossip',
@@ -251,6 +268,10 @@ class Gossip extends EventEmitter {
       advertiseHost: this.advertiseHost,
       port: this.boundPort || this.port,
       data: this.exportState(),
+      peers: [...this.peers.values()].slice(0, MAX_PROPAGATED_PEERS).map((peer) => ({
+        host: peer.host,
+        port: peer.port,
+      })),
     };
   }
 

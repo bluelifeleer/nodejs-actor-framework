@@ -273,6 +273,9 @@ const GOSSIP_ENVELOPE_SCHEMA = [
   { name: 'advertiseHost', no: 3, type: 'string' },
   { name: 'port', no: 4, type: 'uint64' },
   { name: 'dataJson', no: 5, type: 'bytes' },
+  // 6: 发送方已知的**其它节点地址**（JSON）。没有它，种在同一个节点上的多个节点永远
+  // 互相不认识：成员视图不收敛 → 一致性哈希算出的 owner 不一致 → 所有权判定互相打架。
+  { name: 'peersJson', no: 6, type: 'bytes' },
 ];
 
 function encodeGossipEnvelope(envelope) {
@@ -282,6 +285,7 @@ function encodeGossipEnvelope(envelope) {
     advertiseHost: envelope.advertiseHost,
     port: envelope.port,
     dataJson: toJsonBytes(envelope.data),
+    peersJson: toJsonBytes(envelope.peers),
   });
 }
 
@@ -295,6 +299,8 @@ function decodeGossipEnvelope(buf) {
   try {
     const data = fromJsonBytes(wire.dataJson);
     if (data !== undefined) envelope.data = data;
+    const peers = fromJsonBytes(wire.peersJson);
+    if (peers !== undefined) envelope.peers = peers;
   } catch (err) {
     throw new Error(`gossip envelope carries invalid JSON: ${err.message}`);
   }
