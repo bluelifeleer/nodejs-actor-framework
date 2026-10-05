@@ -391,13 +391,20 @@ interface Repository<T, Id> {
 会被漏掉或重复——而这正是 doc 04 §2 用游标替代 offset 要解决的那类问题。cursor 只由适配器解释，
 用户不得依赖其内部结构（换适配器即失效）。
 
-### 7.3 待确认的三个决策
+### 7.3 三个决策（已确认）
+
+> **决策记录（已确认，不再改动）**：
+> - **D-repo-1**：`where` **等值过滤** + **单键 `orderBy`** + 游标分页（不做表达式树、不做查询构建器）；
+> - **D-repo-3**：`file` 适配器 = **一实体一文件 + 按排序键的追加式索引（含 tombstone）**，
+>   索引是缓存、不自洽时以实体文件为准；
+> - **D-repo-4**：`version` 由**适配器维护**（`insert`=1、`update` 自增；`expectedVersion` 不匹配抛冲突），
+>   并用 `repository.capabilities()` 如实标注 `'atomic'` / `'in-process'`。
 
 | # | 决策 | 选项 | 我的建议 |
 |---|---|---|---|
-| D-repo-1 | 查询表达力 | (a) `where` 等值过滤 + 单键 `orderBy` + 游标；(b) 支持 `gt/lt/in/prefix` 的小表达式树；(c) 完全不给 `findMany` | **(a)**：DTO 级够用，且**不滑向查询构建器**（非目标）。复杂查询交给 SQL/ORM 适配器 |
-| D-repo-3 | `file` 适配器形态 | (a) 一实体一文件 + **按排序键的追加式索引**（含 tombstone）；(b) 一实体一文件，`findMany` 扫目录；(c) 不提供 file 适配器 | **(a)**：`findMany` 不必 O(n)；并写清"索引是缓存，不自洽时以实体文件为准" |
-| D-repo-4 | `version`（乐观锁）谁维护 | (a) 适配器维护实体上的 `version`（insert=1、update 自增，`expectedVersion` 不匹配抛冲突）；(b) 用 `updatedAt` 时间戳；(c) 完全交给后端 | **(a)**，并沿用第 2c 步的思路：`repository.capabilities()` 如实说明本适配器的 `expectedVersion` 是 `'atomic'` 还是 `'in-process'`（SQL 可走真 CAS，file 只能同进程） |
+| ~~D-repo-1~~ | 查询表达力（**已确认 (a)**） | (a) `where` 等值过滤 + 单键 `orderBy` + 游标；(b) 支持 `gt/lt/in/prefix` 的小表达式树；(c) 完全不给 `findMany` | **(a)**：DTO 级够用，且**不滑向查询构建器**（非目标）。复杂查询交给 SQL/ORM 适配器 |
+| ~~D-repo-3~~ | `file` 适配器形态（**已确认 (a)**） | (a) 一实体一文件 + **按排序键的追加式索引**（含 tombstone）；(b) 一实体一文件，`findMany` 扫目录；(c) 不提供 file 适配器 | **(a)**：`findMany` 不必 O(n)；并写清"索引是缓存，不自洽时以实体文件为准" |
+| ~~D-repo-4~~ | `version`（乐观锁）谁维护（**已确认 (a)**） | (a) 适配器维护实体上的 `version`（insert=1、update 自增，`expectedVersion` 不匹配抛冲突）；(b) 用 `updatedAt` 时间戳；(c) 完全交给后端 | **(a)**，并沿用第 2c 步的思路：`repository.capabilities()` 如实说明本适配器的 `expectedVersion` 是 `'atomic'` 还是 `'in-process'`（SQL 可走真 CAS，file 只能同进程） |
 
 定下来之后的实施顺序：① memory 适配器 + 游标分页语义（并发写入下不漏不重的测试）→
 ② `file` 适配器（索引 + tombstone + 重建索引）→ ③ SQL 薄适配器（用户提供 `query`）+ ORM 示例 →
