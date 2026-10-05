@@ -94,8 +94,12 @@ export interface ModuleSpec {
   onStart?: (app: Application) => void | Promise<void>;
   onStop?: (app: Application) => void | Promise<void>;
   plugins?: readonly PluginSpec[];
-  /** 路由声明（不透明类型：应用层不依赖 Web 层，由 httpPlugin 解释）。 */
+  /** 扁平路由声明（不透明类型：应用层不依赖 Web 层，由 httpPlugin 解释）。 */
   routes?: readonly unknown[];
+  /** 嵌套路由器（不透明类型，与 routes 互斥——R3：显式优于隐式）。 */
+  router?: unknown;
+  /** 模块级中间件：作用于本模块声明的所有路由（子树语义，R1）。 */
+  middleware?: readonly unknown[];
 }
 
 export interface AppSpec<S extends ConfigSchema = ConfigSchema> {
@@ -397,7 +401,21 @@ export class Application {
         }
         this.actorSpecs.set(name, isActorSpec(value) ? value : { definition: value });
       }
-      for (const route of mod.routes ?? []) this.routeSpecs.push(route);
+      if (mod.routes && mod.router) {
+        issues.push({
+          message: `模块 '${mod.name}' 同时声明了 routes 与 router —— 请只用其中一种（R3：显式优于隐式）`,
+          requester: mod.name,
+        });
+      } else if (mod.routes || mod.router || mod.middleware) {
+        // 组装成"路由器形状的普通对象"：应用层不认识路由器类型，Web 层按结构识别。
+        // 于是模块中间件 = 该模块根路由器的中间件（子树语义），模块名进入归属信息（诊断用）。
+        this.routeSpecs.push({
+          name: mod.name,
+          ...(mod.middleware ? { middleware: mod.middleware } : {}),
+          ...(mod.routes ? { routes: mod.routes } : {}),
+          ...(mod.router ? { children: [mod.router] } : {}),
+        });
+      }
       for (const plugin of mod.plugins ?? []) {
         if (this.pluginSpecs.some((p) => p.name === plugin.name)) {
           issues.push({ message: `插件 '${plugin.name}' 被重复声明`, requester: mod.name });

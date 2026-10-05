@@ -50,6 +50,8 @@ export interface Route {
   readonly controller: ControllerLike | ((input: unknown, ctx: unknown) => unknown);
   /** 路由级中间件（在全局中间件之后、控制器之前的链上）。 */
   readonly middleware?: readonly unknown[];
+  /** 归属信息（路由器/模块），用于诊断报错。 */
+  readonly meta?: { module?: string; router?: string };
 }
 
 function isControllerObject(value: unknown): value is ControllerLike {
@@ -62,6 +64,7 @@ export function parsePattern(
   pattern: string,
   controller: Route['controller'],
   middleware?: readonly unknown[],
+  meta?: { module?: string; router?: string },
 ): { route?: Route; issue?: RouteIssue } {
   const normalized = normalizeMethod(method);
   if (!normalized) {
@@ -124,19 +127,26 @@ export function parsePattern(
     route: {
       method: methodValue, pattern, path, segments, pathParams, queryParams, controller,
       ...(middleware ? { middleware } : {}),
+      ...(meta ? { meta } : {}),
     },
   };
 }
 
 /** 构建路由表；返回路由与启动期问题（重复、非法模式）。 */
 export function buildRouteTable(
-  entries: readonly (readonly [RouteMethod, string, Route['controller'], (readonly unknown[] | undefined)?])[],
+  entries: readonly (readonly [
+    RouteMethod,
+    string,
+    Route['controller'],
+    (readonly unknown[] | undefined)?,
+    ({ module?: string; router?: string } | undefined)?,
+  ])[],
 ): { routes: Route[]; issues: RouteIssue[] } {
   const routes: Route[] = [];
   const issues: RouteIssue[] = [];
   const seen = new Map<string, Route>();
-  for (const [method, pattern, controller, middleware] of entries) {
-    const { route, issue } = parsePattern(method, pattern, controller, middleware);
+  for (const [method, pattern, controller, middleware, meta] of entries) {
+    const { route, issue } = parsePattern(method, pattern, controller, middleware, meta);
     if (issue || !route) {
       if (issue) issues.push(issue);
       continue;
@@ -145,10 +155,14 @@ export function buildRouteTable(
     const key = `${method} ${route.path}`;
     const existing = seen.get(key);
     if (existing) {
+      const owner = existing.meta?.module ?? existing.meta?.router;
+      const newcomer = meta?.module ?? meta?.router;
       issues.push({
         message:
-          `路由重复：${String(method)} ${route.path}（已由 ${existing.pattern} 注册；` +
-          `查询声明不参与匹配，若要区分请求请把参数放进路径）`,
+          `路由重复：${String(method)} ${route.path}` +
+          (owner ? `（已由 ${owner} 注册` : '（已注册') +
+          (newcomer ? `，${newcomer} 想再注册一次` : '') +
+          `；查询声明不参与匹配，若要区分请求请把参数放进路径）`,
         route: pattern,
       });
       continue;

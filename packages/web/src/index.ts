@@ -14,6 +14,15 @@ export {
 } from './connections.ts';
 
 export { composeMiddleware, defineMiddleware, type Middleware } from './middleware.ts';
+export {
+  defineRouter,
+  flattenRouter,
+  type FlatRouteEntry,
+  type RouteEntry,
+  type RouteMeta,
+  type RouterIssue,
+  type RouterSpec,
+} from './router.ts';
 
 export {
   defineController,

@@ -136,3 +136,14 @@ HTTP 直连"别的节点上的 socket"不是设计目标。
 | M3 | 插件注册服务的入口 | 新增 `Application.provide(name, value)`，重复注册报错 |
 | M4 | 未配置 `ws.port` 的默认行为 | **与 HTTP 共享**（按你的要求），并同步更新示例/文档（会改变现有默认） |
 | M5 | 注册表命名 | `wsConnections`（`ctx.get('wsConnections')`） |
+
+## 6. 实施进展（后续两轮）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 中间件（全局/路由/控制器，HTTP 与 WS 同一条链） | ✅ 完成并验证 | Koa 风格 `(ctx,next)`；校验在中间件之后 |
+| HTTP↔WS 跨上下文（`ctx.get('wsConnections')`） | ✅ 完成并验证 | 端到端断言"HTTP 触发 → 客户端真的收到推送" |
+| **共享端口** | ✅ 完成并验证 | 未配置 `ws.port` 或与 HTTP 相同 → 附加同一 server；内核新增 `options.server`（纯增量）；`ws.port` 改为 **nullable**（去默认值会让它变必填） |
+| **路由嵌套 + 前缀** | ✅ 完成并验证 | `defineRouter({ prefix, middleware, routes, children, name })` + 纯函数 `flattenRouter`/`flattenRoutes`；子树中间件**构建期烘焙**；归属信息进 meta（重复路由报错指名模块）；模块侧 `defineModule({ router, middleware })`，`routes`+`router` 互斥（R3） |
+| 模块级中间件便捷写法 | ✅ 完成 | `defineModule({ middleware, routes })` 等价于"该模块根路由器带中间件"（子树语义 R1） |
+| 示例迁移（用前缀分组演示嵌套） | ⏳ 未做 | 属可选展示项；现有示例保持扁平写法 |

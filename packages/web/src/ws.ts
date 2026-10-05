@@ -27,7 +27,8 @@ const { WebSocketServer } = require('nodejs-actor-framework/src/ops/index.ts') a
 import { toErrorResponse, toResponse, createRequestContext, type HeaderValue } from './context.ts';
 import { createConnectionRegistry, type MutableConnectionRegistry, type WsConnection } from './connections.ts';
 import { composeMiddleware, type Middleware } from './middleware.ts';
-import { buildRouteTable, matchRoute, type ControllerLike, type Route, type RouteMethod } from './routes.ts';
+import { buildRouteTable, matchRoute, type Route, type RouteMethod } from './routes.ts';
+import { flattenRoutes } from './router.ts';
 
 export interface WsPluginOptions {
   port?: number;
@@ -180,9 +181,9 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
       const port = share ? 0 : (configuredPort ?? 9001);
       const maxPayloadBytes = options.maxPayloadBytes ?? app.config.get<number>('plugins.ws.maxPayloadBytes');
 
-      const { routes, issues } = buildRouteTable(
-        app.routes as readonly (readonly [RouteMethod, string, ControllerLike])[],
-      );
+      const flattened = flattenRoutes(app.routes);
+      const { routes, issues } = buildRouteTable(flattened.entries as never);
+      issues.unshift(...flattened.issues);
       if (issues.length > 0) {
         throw new Error(
           `路由配置有问题（${issues.length} 项）：\n` + issues.map((i) => `  - ${i.message}`).join('\n'),

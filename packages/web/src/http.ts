@@ -14,7 +14,8 @@ import type { Application, PluginSpec } from '@actor/app';
 import { dispatch } from './controller.ts';
 import type { Middleware } from './middleware.ts';
 import type { HeaderValue } from './context.ts';
-import { buildRouteTable, type ControllerLike, type HttpMethod, type Route } from './routes.ts';
+import { buildRouteTable, type HttpMethod, type Route } from './routes.ts';
+import { flattenRoutes } from './router.ts';
 
 export interface HttpPluginOptions {
   port?: number;
@@ -60,9 +61,9 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       const maxBodyBytes = options.maxBodyBytes ?? config.get<number>('plugins.http.maxBodyBytes');
       // 模块声明的是"路由元组"（defineRoutes/get/post... 的产物），这里解析成路由表：
       // 非法模式、重复路由、input 键未声明等启动期问题都在此一次性报出。
-      const { routes, issues } = buildRouteTable(
-        app.routes as readonly (readonly [HttpMethod, string, ControllerLike])[],
-      );
+      const flattened = flattenRoutes(app.routes);
+      const { routes, issues } = buildRouteTable(flattened.entries as never);
+      issues.unshift(...flattened.issues);
       if (issues.length > 0) {
         throw new Error(
           `路由配置有问题（${issues.length} 项）：\n` + issues.map((i) => `  - ${i.message}`).join('\n'),
