@@ -570,6 +570,7 @@ actor-framework/                     # monorepo（根为私有工作区根，不
 ├── actor-main.js                    # 演示/运维节点（应用层，不属于 core）
 ├── test/                            # 仓库级测试：app 与跨包集成（会启动 examples）
 ├── docs/design/                     # 设计文档（含 M0 施工设计）
+├── tools/docs-site.mjs              # 文档站生成器（零依赖：md → 静态站点 + API 参考）
 ├── tools/  scripts/                 # 迁移工具、测试证书生成
 ├── tsconfig.base.json  tsconfig.json
 └── package.json                     # private workspace root
@@ -907,3 +908,18 @@ MIT，见 [LICENSE](LICENSE)。
 │
 【逻辑服集群 - 机器B】（同机器A结构，独立分片）
 ```
+
+## 文档站（零依赖本地构建）
+
+```bash
+npm run docs:build     # 读 README/docs/examples 的 md → 写 site/
+npm run docs:serve     # 构建 + 起本地预览（默认 4321，可用 DOCS_PORT 覆盖）
+```
+
+产物是纯静态文件（`site/`，已 gitignore），**不引入任何依赖**：`tools/docs-site.mjs` 自己渲染仓库里真实
+用到的 markdown 子集，并从各包入口**自动生成 API 参考**（内核多数文件是 `@ts-nocheck`，页面上如实标注
+类型信息缺失）。构建时会检查文档里的**相对链接**：断链直接失败并列出"文件 → 目标"，而不是产出一个
+点进去 404 的站点。
+
+> 注意：它渲染的是仓库现有的**工程文档**（设计/决策/实现日志）与 API 参考，不是一份面向使用者的官网
+> 叙事——"快速开始/概念/指南"那类内容仍需要写（见 `docs/design/06-roadmap-and-nongoals.md` 的 M5）。

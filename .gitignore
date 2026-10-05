@@ -21,3 +21,6 @@ node_modules/
 
 # regenerable openssl CA state (see scripts/gen-test-certs.sh)
 packages/core/test/fixtures/tls/*-db/
+
+# 文档站产物（tools/docs-site.mjs 生成，不入库）
+/site/

@@ -15,7 +15,9 @@
     "start": "node actor-main.js",
     "gen-test-certs": "./scripts/gen-test-certs.sh",
     "typecheck:strict": "tsc -p tsconfig.json",
-    "typecheck:migration": "tsc -p tsconfig.migration.json || true"
+    "typecheck:migration": "tsc -p tsconfig.migration.json || true",
+    "docs:build": "node tools/docs-site.mjs build",
+    "docs:serve": "node tools/docs-site.mjs serve"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
