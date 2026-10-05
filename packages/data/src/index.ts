@@ -48,6 +48,7 @@ export {
 export {
   compareRows,
   compareValues,
+  createFileRepository,
   createMemoryRepository,
   decodeCursor,
   encodeCursor,
@@ -57,6 +58,8 @@ export {
   RepositoryNotFoundError,
   RepositoryQueryError,
   resolveRepositoryOptions,
+  type FileRepository,
+  type FileRepositoryOptions,
   type MemoryRepositoryOptions,
   type Repository,
   type RepositoryCapabilities,

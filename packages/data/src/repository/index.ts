@@ -21,3 +21,5 @@ export {
 export { compareRows, compareValues, decodeCursor, encodeCursor, normalizeQuery } from './cursor.ts';
 
 export { createMemoryRepository, type MemoryRepositoryOptions } from './memory.ts';
+
+export { createFileRepository, type FileRepository, type FileRepositoryOptions } from './file.ts';
