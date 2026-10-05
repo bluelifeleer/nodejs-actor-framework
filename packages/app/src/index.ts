@@ -12,6 +12,7 @@
 export {
   defineConfig,
   loadConfig,
+  validateValues,
   ConfigValidationError,
   type ConfigSchema,
   type ConfigDefinition,
@@ -20,6 +21,7 @@ export {
   type FieldType,
   type LoadConfigOptions,
   type LoadedConfig,
+  type ValidateValuesResult,
 } from './config.ts';
 
 export {

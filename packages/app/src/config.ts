@@ -269,6 +269,47 @@ function validate(dotted: string, value: unknown, spec: FieldSpec, issues: Confi
   }
 }
 
+export interface ValidateValuesResult {
+  values: Record<string, unknown>;
+  issues: ConfigIssue[];
+}
+
+/**
+ * 按 schema 校验一份**值**（不读文件/环境变量）。
+ *
+ * 存在的意义：让路由输入校验、插件参数校验等复用**同一套**字段描述符与规则——
+ * 于是一套校验、一种错误格式、一次性报出全部问题（与配置系统完全一致）。
+ */
+export function validateValues(
+  schema: ConfigSchema,
+  source: Record<string, unknown>,
+  sourceLabel = 'input',
+): ValidateValuesResult {
+  const fields = flattenSchema(schema);
+  const issues: ConfigIssue[] = [];
+  const values = new Map<string, unknown>();
+
+  for (const [dotted, spec] of fields) {
+    let raw = getDeep(source, dotted);
+    if (raw === undefined) {
+      if (spec.default !== undefined) raw = spec.default;
+      else if (spec.nullable) { values.set(dotted, null); continue; }
+      else { issues.push({ path: dotted, message: '缺少必填项（无默认值，且未提供）' }); continue; }
+    }
+    if (raw === null && spec.nullable) { values.set(dotted, null); continue; }
+    const coerced = coerce(dotted, raw, spec, issues);
+    if (coerced === undefined) continue;
+    validate(dotted, coerced, spec, issues);
+    values.set(dotted, coerced);
+  }
+  for (const [dotted] of Object.entries(source)) {
+    if (!fields.has(dotted) && typeof (source[dotted] as unknown) !== 'object') {
+      issues.push({ path: dotted, message: `未声明的输入项（来自 ${sourceLabel}，拼写错误？）` });
+    }
+  }
+  return { values: unflatten(values), issues };
+}
+
 export async function loadConfig<S extends ConfigSchema>(
   definition: ConfigDefinition<S>,
   options: LoadConfigOptions = {},

@@ -5,6 +5,16 @@
  * 本包不得 re-export 内核内部类型。
  */
 export {
+  defineController,
+  dispatch,
+  type Controller,
+  type ControllerSpec,
+  type DispatchOptions,
+  type DispatchRequest,
+  type DispatchResult,
+} from './controller.ts';
+
+export {
   createRequestContext,
   HttpError,
   reply,
