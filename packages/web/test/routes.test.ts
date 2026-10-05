@@ -65,7 +65,8 @@ test('routes: 规则 2 —— 同 method 同路径的重复注册（查询声明
 test('routes: 规则 3 —— input 的键必须来自路径参数或已声明的查询参数', () => {
   const { issue } = parsePattern('GET', '/rooms', { input: { roomId: { type: 'string' } }, handle: handler });
   assert.match(issue?.message ?? '', /input 声明了 'roomId'/);
-  assert.match(issue?.message ?? '', /请写成 \/:roomId 或 \?roomId=/);
+  // 规则 3 现在也接受"显式声明来自请求体"的字段，提示文案随之更新
+  assert.match(issue?.message ?? '', /请写成 \/:roomId、\?roomId= 或 body: \['roomId'\]/);
 
   const ok = parsePattern('GET', '/rooms?roomId=', { input: { roomId: { type: 'string' } }, handle: handler });
   assert.strictEqual(ok.issue, undefined);

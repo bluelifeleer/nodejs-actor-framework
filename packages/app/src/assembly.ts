@@ -77,6 +77,10 @@ export interface PluginSpec {
   kernelPlugins?: readonly unknown[];
   /** 在 provider 解析与 Actor spawn 之前执行。 */
   setup?: (app: Application, config: Record<string, unknown>) => void | Promise<void>;
+  /** 全部 Actor 已 spawn、模块 onStart 已完成之后执行（此时端口监听等"就绪"动作才安全）。 */
+  onReady?: (app: Application) => void | Promise<void>;
+  /** 停止流程的**第一步**：先停收新请求 / 释放入口，再等内核收尾。 */
+  onStopping?: (app: Application) => void | Promise<void>;
   /** 在模块 onStop 与内核停止之后执行（逆序）。 */
   teardown?: (app: Application) => void | Promise<void>;
 }
@@ -89,6 +93,8 @@ export interface ModuleSpec {
   onStart?: (app: Application) => void | Promise<void>;
   onStop?: (app: Application) => void | Promise<void>;
   plugins?: readonly PluginSpec[];
+  /** 路由声明（不透明类型：应用层不依赖 Web 层，由 httpPlugin 解释）。 */
+  routes?: readonly unknown[];
 }
 
 export interface AppSpec<S extends ConfigSchema = ConfigSchema> {
@@ -169,6 +175,7 @@ export class Application {
   private readonly handles = new Map<string, ActorHandle>();
   private readonly modules: ModuleSpec[] = [];
   private readonly pluginSpecs: PluginSpec[] = [];
+  private readonly routeSpecs: unknown[] = [];
   private readonly disposedProviders: string[] = [];
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
@@ -187,6 +194,11 @@ export class Application {
   get config(): LoadedConfig {
     if (!this.loadedConfig) throw new Error('配置尚未加载：请先 start()');
     return this.loadedConfig;
+  }
+
+  /** 模块声明的路由（由 Web 层插件解释；应用层不做解释，保持依赖方向）。 */
+  get routes(): readonly unknown[] {
+    return this.routeSpecs;
   }
 
   /** 逃生通道：高级用法可直接访问内核 system（应用层签名不依赖它）。 */
@@ -268,7 +280,10 @@ export class Application {
     // 6) 模块 onStart（按声明顺序）
     for (const mod of this.modules) await mod.onStart?.(this);
 
-    // 7) 保持进程存活：start() 之后应用一直运行，直到 stop()
+    // 7) 插件的"就绪"动作（此时 Actor 已 spawn、模块 onStart 已完成）：端口监听等放这里
+    for (const plugin of this.pluginSpecs) await plugin.onReady?.(this);
+
+    // 8) 保持进程存活：start() 之后应用一直运行，直到 stop()
     this.keepAlive = setInterval(() => {}, 2 ** 31 - 1);
     return this;
   }
@@ -277,7 +292,15 @@ export class Application {
     if (this.stopped) return; // 幂等
     this.stopped = true;
 
-    // 逆序：模块 onStop → 内核停止（有界）→ provider dispose
+    // 第一步：插件先停收新请求（逆序），再让内核收尾
+    for (const plugin of [...this.pluginSpecs].reverse()) {
+      try {
+        await plugin.onStopping?.(this);
+      } catch {
+        /* 停收失败不阻断整体停止流程 */
+      }
+    }
+    // 随后：模块 onStop（逆序）→ 内核停止（有界）→ 插件 teardown → provider dispose
     for (const mod of [...this.modules].reverse()) {
       try {
         await mod.onStop?.(this);
@@ -332,6 +355,7 @@ export class Application {
         }
         this.actorSpecs.set(name, isActorSpec(value) ? value : { definition: value });
       }
+      for (const route of mod.routes ?? []) this.routeSpecs.push(route);
       for (const plugin of mod.plugins ?? []) {
         if (this.pluginSpecs.some((p) => p.name === plugin.name)) {
           issues.push({ message: `插件 '${plugin.name}' 被重复声明`, requester: mod.name });

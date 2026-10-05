@@ -18,6 +18,8 @@ export interface RouteIssue {
 export interface ControllerLike {
   readonly deps?: readonly string[];
   readonly input?: Record<string, unknown>;
+  /** 显式声明"这些输入来自请求体"（模式里无法声明 body 字段）。 */
+  readonly body?: readonly string[];
   readonly handle?: unknown;
 }
 
@@ -76,14 +78,14 @@ export function parsePattern(
   }
   // 规则 3：input schema 的键必须来自路径参数或已声明的查询参数
   if (isControllerObject(controller) && controller.input) {
-    const declared = new Set([...pathParams, ...queryParams]);
+    const declared = new Set([...pathParams, ...queryParams, ...(controller.body ?? [])]);
     for (const key of Object.keys(controller.input)) {
       if (!declared.has(key)) {
         return {
           issue: {
             message:
-              `input 声明了 '${key}'，但它既不是路径参数也不是查询参数（${pattern}）——` +
-              `请写成 /:${key} 或 ?${key}=`,
+              `input 声明了 '${key}'，但它既不是路径参数、也不是查询参数、也不在 body 声明里（${pattern}）——` +
+              `请写成 /:${key}、?${key}= 或 body: ['${key}']`,
             route: pattern,
           },
         };

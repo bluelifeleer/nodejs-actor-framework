@@ -4,6 +4,8 @@
  * 边界规则与 `@actor/app` 相同：用户项目只依赖应用层包，不接触内核；
  * 本包不得 re-export 内核内部类型。
  */
+export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
+
 export {
   defineController,
   dispatch,
