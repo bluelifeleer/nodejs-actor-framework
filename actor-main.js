@@ -21,13 +21,6 @@ const { validateStoreConfig } = _message_store;
  *   ACTOR_TLS_*, ACTOR_STORE_*, ACTOR_BOOT_ACTORS, ACTOR_PERSISTENCE_MODE
  */
 
-
-
-
-
-
-
-
 /**
  * Built-in demo actor, so the documented console commands work out of the box.
  * Real deployments pass a module path instead (see `ACTOR_BOOT_MODULES`).
