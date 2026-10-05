@@ -830,27 +830,72 @@ class ActorCell {
     return capability === 'atomic' || capability === 'in-process';
   }
 
-  async persistEvent(event) {
+  /**
+   * 一次写入**一批**事件（一条命令产出的多个事件）。
+   *
+   * 与 `persistEvent` 的区别只有一处，但很关键：**版本检查覆盖整批**。逐条写的坏处是
+   * "第二条撞车时第一条已经落盘"——日志自洽，但一条命令只写了一半。后端不支持批量时
+   * 退回逐条（并记一条日志，不假装原子）。
+   */
+  async persistEvents(events) {
+    const list = [...events];
+    if (list.length === 0) return [];
     const { mode, store, evolution } = this.persistence;
+
     if (mode === 'events' && store) {
-      // 乐观并发：把"我以为日志到哪了"带上；后端版本对不上就抛 PersistenceConflictError 且不写入
       const version = this._eventVersion;
-      const options =
-        this._conditionalAppend() && version !== null ? { expectedVersion: version } : {};
-      await store.appendEvent(this.path, event, options);
-      this._eventVersion = (version ?? 0) + 1;
+      const canBatch = this._conditionalAppend() && this._batchAppend();
+      if (list.length > 1 && !canBatch) {
+        this._warnOnce('batch', 'persistence_batch_unsupported', {
+          path: this.path,
+          events: list.length,
+          hint: '该后端没有批量条件写：一条命令的多条事件会逐条写入（可能只写进去一半）',
+        });
+      }
+      if (canBatch && version !== null) {
+        await store.appendEvents(this.path, list, { expectedVersion: version });
+        this._eventVersion = version + list.length;
+      } else {
+        for (const event of list) {
+          const current = this._eventVersion;
+          const options =
+            this._conditionalAppend() && current !== null ? { expectedVersion: current } : {};
+          await store.appendEvent(this.path, event, options);
+          this._eventVersion = (current ?? 0) + 1;
+        }
+      }
     }
     if (mode === 'snapshot') this._snapshotDirty = true;
-    // Apply **exactly what a replay would apply**: run the same evolution pipeline
-    // here too. Otherwise a live write of an envelope would hand `applyEvent` the
-    // envelope while the same event, replayed after a restart, arrives as its
-    // payload — two different shapes for one event, i.e. state that drifts
-    // between live and recovered.
-    const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, 'upcast', event) : event;
-    if (this.instance) this.instance.applyEvent(applied);
+
+    // Apply **exactly what a replay would apply**（与 persistEvent 同一条管线）
+    for (const event of list) {
+      const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, 'upcast', event) : event;
+      if (this.instance) this.instance.applyEvent(applied);
+    }
     // 状态已更新，这时存缓存才是安全的（见 _autoSnapshotIfDue）
     if (mode === 'events') await this._autoSnapshotIfDue();
+    return list;
+  }
+
+  async persistEvent(event) {
+    await this.persistEvents([event]);
     return event;
+  }
+
+  /** 后端是否支持**批量**条件写（能力默认 false）。 */
+  _batchAppend() {
+    const store = this.persistence.store;
+    if (!store || typeof store.capabilities !== 'function') return false;
+    const capability = (store.capabilities() || {}).batchAppend;
+    return capability === 'atomic' || capability === 'in-process';
+  }
+
+  /** 同一类日志只记一次（避免刷屏）。 */
+  _warnOnce(kind, event, meta) {
+    this._warned ??= new Set();
+    if (this._warned.has(kind)) return;
+    this._warned.add(kind);
+    this.system._log(event, meta);
   }
 
   async saveSnapshot() {

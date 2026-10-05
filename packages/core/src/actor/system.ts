@@ -283,7 +283,8 @@ class ActorSystem extends EventEmitter {
   persistenceCapabilities() {
     const store = this.persistenceStore;
     const reported = store && typeof store.capabilities === 'function' ? store.capabilities() : null;
-    return { conditionalAppend: false, ...(reported || {}) };
+    // 默认值就是"什么都不保证"：自定义适配器不实现 capabilities() 时不会让人误以为有保护
+    return { conditionalAppend: false, batchAppend: false, ...(reported || {}) };
   }
 
   /** Connect to a peer node and get a handle that hands out remote ActorRefs. */

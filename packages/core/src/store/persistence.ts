@@ -28,7 +28,7 @@ const { PersistenceError, PersistenceConflictError } = require('../actor/errors.
  * 之所以要把它查得出来：没有这个信息时，"以为有乐观并发保护、其实没有"是最危险的状态
  * （见 docs/design/m3-data-evolution.md §6.4）。
  */
-const DEFAULT_CAPABILITIES = Object.freeze({ conditionalAppend: false });
+const DEFAULT_CAPABILITIES = Object.freeze({ conditionalAppend: false, batchAppend: false });
 
 /** Interface documentation; both adapters below implement it. */
 class PersistenceAdapter {
@@ -55,6 +55,22 @@ class PersistenceAdapter {
    */
   async appendEvent(id, event, options = {}) {
     void options;
+  }
+
+  /**
+   * 一次写入多条事件（一条命令产出多个事件时用）。
+   *
+   * 基类的默认实现**只是逐个 appendEvent**——版本检查因此只覆盖第一条，谈不上原子。
+   * 想要"整批要么都在、要么都不在"，适配器要实现它并把 `capabilities().batchAppend` 报上来；
+   * 内核只在能力非 false 时才走批量路径（否则退回逐条并记一条日志）。
+   */
+  async appendEvents(id, events, options = {}) {
+    const written = [];
+    for (const event of events) {
+      await this.appendEvent(id, event, written.length === 0 ? options : {});
+      written.push(event);
+    }
+    return written.length;
   }
 
   async loadEvents(id) {
@@ -91,9 +107,9 @@ class MemoryPersistence extends PersistenceAdapter {
     this.events = new Map();
   }
 
-  /** 进程内的日志就是全部真相，所以条件写是原子的（本来也没有别的进程）。 */
+  /** 进程内的日志就是全部真相，所以条件写与批量写都是原子的（本来也没有别的进程）。 */
   capabilities() {
-    return { conditionalAppend: 'in-process' };
+    return { conditionalAppend: 'in-process', batchAppend: 'in-process' };
   }
 
   async loadSnapshot(id) {
@@ -115,6 +131,16 @@ class MemoryPersistence extends PersistenceAdapter {
     const log = this.events.get(key);
     if (expected !== null && log.length !== expected) throw appendConflict(key, expected, log.length);
     log.push(event);
+  }
+
+  async appendEvents(id, events, options = {}) {
+    const key = String(id);
+    const expected = readExpectedVersion(options);
+    if (!this.events.has(key)) this.events.set(key, []);
+    const log = this.events.get(key);
+    if (expected !== null && log.length !== expected) throw appendConflict(key, expected, log.length);
+    log.push(...events); // 检查通过之后一次性推入：不会被看到"写了一半"
+    return events.length;
   }
 
   async loadEvents(id) {
@@ -149,7 +175,10 @@ class FilePersistence extends PersistenceAdapter {
   }
 
   capabilities() {
-    return { conditionalAppend: 'in-process' };
+    // 批量写：版本检查之后**一次** appendFile ⇒ 对检查而言是原子的；
+    // 但文件没有事务，崩溃仍可能只落下一部分（读取端的撕裂尾巴规则会把不完整的行截断，
+    // 于是最坏情况是"看到批次的前缀"——真要严格原子请用支持事务的后端）
+    return { conditionalAppend: 'in-process', batchAppend: 'in-process' };
   }
 
   _ensureDirs() {
@@ -274,6 +303,22 @@ class FilePersistence extends PersistenceAdapter {
       this._counts.set(key, { size: size + Buffer.byteLength(line), count: actual + 1 });
     } catch (err) {
       throw new PersistenceError(`cannot append event for ${key}: ${err.message}`, { actorId: key });
+    }
+  }
+
+  async appendEvents(id, events, options = {}) {
+    const key = String(id);
+    const expected = readExpectedVersion(options);
+    const { count: actual, size } = await this._countFor(key);
+    if (expected !== null && actual !== expected) throw appendConflict(key, expected, actual);
+    const lines = events.map((event) => `${JSON.stringify(event)}\n`).join('');
+    try {
+      this._ensureDirs();
+      await fsp.appendFile(this._eventPath(key), lines); // 一次写完整批
+      this._counts.set(key, { size: size + Buffer.byteLength(lines), count: actual + events.length });
+      return events.length;
+    } catch (err) {
+      throw new PersistenceError(`cannot append events for ${key}: ${err.message}`, { actorId: key });
     }
   }
 

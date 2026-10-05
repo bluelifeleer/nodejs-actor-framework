@@ -354,7 +354,25 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | 兼容性 | 没配置 `snapshot` 时行为与 M3 之前**逐字节一致**（手工 `ctx.saveSnapshot()` 仍写裸状态，也不会被当成缓存读）——"可选"是真的可选 |
 | 聚合侧 | `defineAggregate({ snapshot: { version, migrate } })` 让聚合自己声明状态结构版本；配合快照缓存即可获得"迁移 / 重建 / 拒绝启动"三条策略 |
 
-### 6.6 条件写的实现说明（第 2c-① 步）
+### 6.6 条件写的实现说明（第 2c-① 步 + 后续的批量写）
+
+**批量写（`appendEvents` / `ctx.persistAll`）**：一条命令常常产出多个事件，逐条写的问题是
+"第二条撞车时第一条已经落盘"——日志自洽，但**一条命令只写了一半**。所以：
+
+| 点 | 做法 |
+|---|---|
+| 接口 | `appendEvents(id, events, { expectedVersion })`：**一次版本检查覆盖整批** |
+| 能力 | `capabilities().batchAppend` = `'atomic' \| 'in-process' \| false`（memory/file 报 `'in-process'`；自定义适配器不实现就是 `false`） |
+| 内核 | `ActorCell.persistEvents()`；`ctx.persistAll([...])`；聚合在命令产出多条事件时自动走它 |
+| 回退 | 后端不支持批量 → 退回逐条写，并**记一条 `persistence_batch_unsupported` 日志**（不假装原子） |
+| 崩溃可见性（如实说） | `memory`：检查通过后一次性推入，真正原子；`file`：检查之后**一次** `appendFile` ⇒ 对检查而言原子，但文件没有事务，崩溃可能留下批次的**前缀**（读取端的撕裂尾巴规则只截断"读不通的行"）；要严格原子请用支持事务的后端 |
+
+**证据**（两条并列的测试）：
+- 支持批量时：整批**只调用一次** `appendEvents`，两条事件拿到连续 `seq`，冲突时**一条都不写**；
+- 只用 `appendEvent` 的后端（对照）：注入"第二条必失败" → **第一条已经落盘**（命令写了一半）——
+  这正是要批量写的原因。
+
+
 
 | 点 | 做法与理由 |
 |---|---|

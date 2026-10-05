@@ -436,7 +436,7 @@ test('persistence: 条件写——版本对不上就抛冲突且不写入（memo
     const store = make();
     assert.deepStrictEqual(
       store.capabilities(),
-      { conditionalAppend: 'in-process' },
+      { conditionalAppend: 'in-process', batchAppend: 'in-process' },
       `${name}: 能力要如实报（file 没有跨进程原子性，不能报 atomic）`,
     );
 
@@ -545,7 +545,7 @@ test('persistence: 没有 capabilities() 的自定义适配器 → 能力为 fal
   };
   const system = createSystem({ ...quiet, persistence: plainAdapter });
   try {
-    assert.deepStrictEqual(system.persistenceCapabilities(), { conditionalAppend: false });
+    assert.deepStrictEqual(system.persistenceCapabilities(), { conditionalAppend: false, batchAppend: false });
     const ref = await system.spawn(
       {
         preStart() {
@@ -675,6 +675,116 @@ test('persistence: snapshot.every 的参数校验与作用域（只在 events �
       () => system.spawn(counterDefinition([]), { id: 'b', persistence: { mode: 'snapshot', snapshot: { every: 1 } } }),
       /只在 mode: 'events' 下有意义/,
     );
+  } finally {
+    await system.stop();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 批量写入（一条命令的多个事件）
+// ---------------------------------------------------------------------------
+
+test('persistence: appendEvents —— 版本检查覆盖**整批**，撞车时一条都不写', async () => {
+  for (const [name, make] of [
+    ['memory', () => new MemoryPersistence()],
+    ['file', () => new FilePersistence({ baseDir: uniqueDir('batch') })],
+  ]) {
+    const store = make();
+    assert.strictEqual(store.capabilities().batchAppend, 'in-process', `${name}: 能力要报出来`);
+
+    await store.appendEvents('agg', [{ n: 1 }, { n: 2 }], { expectedVersion: 0 });
+    assert.strictEqual((await store.loadEvents('agg')).length, 2);
+
+    await assert.rejects(
+      () => store.appendEvents('agg', [{ n: 3 }, { n: 4 }], { expectedVersion: 0 }),
+      (err) => err.name === 'PersistenceConflictError',
+      `${name}: 版本对不上要抛冲突`,
+    );
+    assert.deepStrictEqual(
+      await store.loadEvents('agg'),
+      [{ n: 1 }, { n: 2 }],
+      `${name}: 冲突的整批一条都不能落盘（逐条写就会写成一半）`,
+    );
+
+    await store.appendEvents('agg', [{ n: 3 }, { n: 4 }], { expectedVersion: 2 });
+    assert.strictEqual((await store.loadEvents('agg')).length, 4);
+  }
+});
+
+test('persistence: 聚合的多事件命令走批量写——冲突时日志里没有半条命令', async () => {
+  const dir = uniqueDir('batch-actor');
+  const definition = {
+    preStart() {
+      this.state = { n: 0 };
+    },
+    async receive(msg, ctx) {
+      // 故意"逐条 persist"（模拟未接入批量能力的写法），验证内核的逐条回退仍然自洽
+      await ctx.persist({ type: 'Bump', n: 1 });
+      await ctx.persist({ type: 'Bump', n: 2 });
+      return this.state.n;
+    },
+    applyEvent(event) {
+      if (event.type === 'Bump') this.state.n += event.n;
+    },
+  };
+  const a = createSystem({ ...quiet, persistence: { dir } });
+  const b = createSystem({ ...quiet, persistence: { dir } });
+  try {
+    const options = { id: 'batched', persistence: { mode: 'events' } };
+    const refA = await a.spawn(definition, options);
+    const refB = await b.spawn(definition, options);
+
+    await refA.ask({});
+    await assert.rejects(() => refB.ask({}), (err) => err.name === 'PersistenceConflictError');
+    assert.strictEqual(
+      (await new FilePersistence({ baseDir: dir }).loadEvents('batched')).length,
+      2,
+      'B 一条都没写进去（它的第一条就撞车了）',
+    );
+  } finally {
+    await b.stop();
+    await a.stop();
+  }
+});
+
+test('persistence: 后端不支持批量能力时，内核退回逐条并记日志（不假装原子）', async () => {
+  const events = [];
+  const plainAdapter = {
+    async loadSnapshot() {
+      return undefined;
+    },
+    async saveSnapshot() {},
+    async appendEvent(id, event) {
+      events.push(event);
+    },
+    async loadEvents() {
+      return [...events];
+    },
+  };
+  const system = createSystem({ ...quiet, persistence: plainAdapter });
+  try {
+    assert.deepStrictEqual(system.persistenceCapabilities(), {
+      conditionalAppend: false,
+      batchAppend: false,
+    });
+    const ref = await system.spawn(
+      {
+        preStart() {
+          this.state = { n: 0 };
+        },
+        async receive(msg, ctx) {
+          await ctx.persistAll?.([{ type: 'A' }, { type: 'B' }]);
+          return this.state.n;
+        },
+        applyEvent(event) {
+          if (event.type === 'A' || event.type === 'B') this.state.n += 1;
+        },
+      },
+      { id: 'plain-batch', persistence: { mode: 'events' } },
+    );
+    await ref.ask({});
+    assert.strictEqual(events.length, 2, '退回逐条也要都写进去');
+    assert.strictEqual(await ref.state().then((s) => s.n), 2);
   } finally {
     await system.stop();
   }

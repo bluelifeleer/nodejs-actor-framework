@@ -361,3 +361,113 @@ test('aggregate: 快照结构对不上且**没有日志可重建** → 拒绝启
   );
   await system.stop();
 });
+
+test('aggregate: 批量写——一条命令的多条事件**一次调用**写入（成功全写、失败一条不写）', async () => {
+  const calls: unknown[][] = [];
+  const written: unknown[] = [];
+  const batchStore = {
+    capabilities: () => ({ conditionalAppend: 'in-process', batchAppend: 'in-process' }),
+    async loadSnapshot() {
+      return undefined;
+    },
+    async saveSnapshot() {},
+    async appendEvent(id: string, event: unknown) {
+      written.push(event);
+    },
+    async appendEvents(id: string, list: unknown[], options?: { expectedVersion?: number }) {
+      calls.push([...list]);
+      if (options?.expectedVersion !== undefined && options.expectedVersion !== written.length) {
+        const err = new Error(`期望日志版本 ${options.expectedVersion}，实际 ${written.length}`);
+        err.name = 'PersistenceConflictError';
+        throw err;
+      }
+      written.push(...list);
+      return list.length;
+    },
+    async loadEvents() {
+      return [...written];
+    },
+  };
+
+  const Order = defineAggregate<{ totalCents: number; items: number }>({
+    name: 'Order',
+    initialState: () => ({ totalCents: 0, items: 0 }),
+    events: [defineEventSchema({ type: 'ItemAdded', version: 1 })],
+    applyEvent: (state, event) =>
+      event.type === 'ItemAdded'
+        ? { ...state, totalCents: state.totalCents + (event.price as number), items: state.items + 1 }
+        : state,
+    commands: {
+      addTwo: () => [
+        { type: 'ItemAdded', price: 100 },
+        { type: 'ItemAdded', price: 200 },
+      ],
+    },
+  });
+
+  const persistence = { mode: 'events' as const, store: batchStore, evolution: Order.evolution ?? undefined };
+  const a = createSystem({ logger: false });
+  const b = createSystem({ logger: false });
+  try {
+    const refA = await a.spawn(Order, { id: 'order-batch', persistence });
+    const refB = await b.spawn(Order, { id: 'order-batch', persistence });
+
+    assert.deepStrictEqual(await refA.ask({ type: 'addTwo' }), { totalCents: 300, items: 2 });
+    assert.strictEqual(calls.length, 1, '整批只调用一次 appendEvents（不是两次 appendEvent）');
+    assert.strictEqual((calls[0] as unknown[]).length, 2);
+    assert.deepStrictEqual(
+      (written as { seq: number }[]).map((e) => e.seq),
+      [1, 2],
+      '两条事件拿到连续的 seq',
+    );
+
+    // 第二个拥有者：整批撞车 → 一条都不写
+    await assert.rejects(
+      () => refB.ask({ type: 'addTwo' }),
+      (err: unknown) => (err as Error).name === 'PersistenceConflictError',
+    );
+    assert.strictEqual(written.length, 2, '冲突的整批没有落盘（不是"写进去一半"）');
+  } finally {
+    await b.stop();
+    await a.stop();
+  }
+});
+
+test('aggregate: 对照——只实现 appendEvent 的后端上，一条命令可能只写进去一半', async () => {
+  let calls = 0;
+  const written: unknown[] = [];
+  const partialStore = {
+    async loadSnapshot() {
+      return undefined;
+    },
+    async saveSnapshot() {},
+    async appendEvent(id: string, event: unknown) {
+      calls += 1;
+      if (calls === 2) throw new Error('模拟：第二条写入时后端出问题');
+      written.push(event);
+    },
+    async loadEvents() {
+      return [...written];
+    },
+  };
+
+  const Order = defineAggregate<{ items: number }>({
+    name: 'Order',
+    initialState: () => ({ items: 0 }),
+    events: [defineEventSchema({ type: 'ItemAdded', version: 1 })],
+    applyEvent: (state, event) => (event.type === 'ItemAdded' ? { ...state, items: state.items + 1 } : state),
+    commands: { addTwo: () => [{ type: 'ItemAdded' }, { type: 'ItemAdded' }] },
+  });
+
+  const system = createSystem({ logger: false });
+  try {
+    const ref = await system.spawn(Order, {
+      id: 'order-partial',
+      persistence: { mode: 'events', store: partialStore, evolution: Order.evolution ?? undefined },
+    });
+    await assert.rejects(() => ref.ask({ type: 'addTwo' }), /模拟：第二条写入时后端出问题/);
+    assert.strictEqual(written.length, 1, '第一条已经落盘了——逐条写的代价就是"命令只写了一半"');
+  } finally {
+    await system.stop();
+  }
+});

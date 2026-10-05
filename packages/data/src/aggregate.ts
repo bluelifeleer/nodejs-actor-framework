@@ -43,6 +43,11 @@ export type AggregateCommand<S> = (command: unknown, state: S) => AggregateComma
 /** 内核交给 Actor 的最小上下文（结构类型，不 import 内核）。 */
 export interface AggregateContext {
   persist(event: unknown): Promise<unknown>;
+  /**
+   * 一次写入多条事件（内核支持）：**版本检查覆盖整批**，于是"一条命令产出的多个事件"不会被
+   * 写成一半。内核没提供时聚合会退回逐个 `persist`（日志自洽，但不是命令级原子）。
+   */
+  persistAll?(events: unknown[]): Promise<unknown>;
   log?(message: string, meta?: unknown): void;
 }
 
@@ -288,11 +293,19 @@ export function defineAggregate<S>(spec: AggregateSpec<S>): AggregateDefinition<
       // 命令只能"读状态 + 产出事件"：给一份顶层冻结的副本
       const produced = handler(msg, freezeTop(this.state) as S);
       let seq = this[SEQ_KEY] ?? 0;
-      for (const event of toEventList(produced, name, command as string)) {
+      const envelopes = toEventList(produced, name, command as string).map((event) => {
         const version = registry.currentVersion(event.type) ?? 1;
         seq += 1;
         // seq 在这里（写入方）确定，并在 persist → applyEvent 的回程里被计数器确认
-        await ctx.persist(createEventEnvelope({ type: event.type, version, seq, payload: event }));
+        return createEventEnvelope({ type: event.type, version, seq, payload: event });
+      });
+
+      if (envelopes.length > 0) {
+        // 优先整批写：一条命令就是一个事务边界（doc 04 §3）。逐条写的话，
+        // 第二条撞车时第一条已经落盘——日志自洽，但命令只写了一半。
+        const persistAll = ctx.persistAll?.bind(ctx);
+        if (persistAll !== undefined) await persistAll(envelopes);
+        else for (const envelope of envelopes) await ctx.persist(envelope);
       }
       return shallowCopy(this.state);
     },

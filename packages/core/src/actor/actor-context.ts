@@ -94,6 +94,13 @@ class ActorContext {
     return this.cell.persistEvent(event);
   }
 
+  /**
+   * 一次写入多条事件：**版本检查覆盖整批**（一条命令产出多个事件时用它，别循环 `persist`）。
+   */
+  persistAll(events) {
+    return this.cell.persistEvents(events);
+  }
+
   /** Store the current state (persistence: 'snapshot'). */
   saveSnapshot() {
     return this.cell.saveSnapshot();
