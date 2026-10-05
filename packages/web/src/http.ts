@@ -131,6 +131,15 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             if (result.response.body === null || result.headOnly) res.end();
             else res.end(result.response.body);
 
+            // 事件总线：订阅者（如 requestLogPlugin）据此记录/转发，订阅者抛错不影响请求
+            app.emit('http:request', {
+              method: req.method ?? 'GET',
+              path: req.url ?? '/',
+              status: result.response.status,
+              ms: Date.now() - startedAt,
+              requestId: result.requestId,
+            });
+
             if (accessLog) {
               const elapsed = Date.now() - startedAt;
               const slow = elapsed >= slowMs ? ' SLOW' : '';

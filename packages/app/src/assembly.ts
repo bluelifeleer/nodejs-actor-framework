@@ -186,6 +186,8 @@ export class Application {
   private readonly disposedProviders: string[] = [];
   /** 插件注册的服务（控制器用 ctx.get(name) 取用）。 */
   private readonly services = new Map<string, unknown>();
+  /** 极简事件总线：订阅者抛错不影响请求主流程。 */
+  private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
   private keepAlive: ReturnType<typeof setInterval> | null = null;
@@ -259,6 +261,25 @@ export class Application {
     throw new AssemblyError([
       { message: `provider/服务 '${name}' 尚未解析或注册`, requester: '(app.get)' },
     ]);
+  }
+
+  /** 订阅事件（返回取消订阅函数）。 */
+  on(event: string, listener: (payload: never) => void): () => void {
+    const set = this.listeners.get(event) ?? new Set();
+    set.add(listener as (payload: unknown) => void);
+    this.listeners.set(event, set);
+    return () => set.delete(listener as (payload: unknown) => void);
+  }
+
+  /** 发布事件：订阅者抛错只记录，绝不影响请求主流程。 */
+  emit(event: string, payload: unknown): void {
+    for (const listener of this.listeners.get(event) ?? []) {
+      try {
+        listener(payload);
+      } catch (error) {
+        console.error(`[events] '${event}' 的订阅者抛错：`, error);
+      }
+    }
   }
 
   /** 插件注册服务（例如 wsPlugin 注册连接注册表）；重复注册报错，避免静默覆盖。 */

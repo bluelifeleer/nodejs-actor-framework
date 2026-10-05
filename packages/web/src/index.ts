@@ -7,6 +7,11 @@
 export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
 export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
 export {
+  requestLogPlugin,
+  type RequestLogEntry,
+  type RequestLogPluginOptions,
+} from './request-log.ts';
+export {
   createConnectionRegistry,
   type MutableConnectionRegistry,
   type WsConnection,
