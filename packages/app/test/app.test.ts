@@ -171,3 +171,57 @@ test('app: 内核直接 spawn 的 Actor 也能被 actor() 解析（真实走内�
   assert.strictEqual(await app.actor('ViaKernel').ask('hi'), 'kernel:hi');
   await app.stop();
 });
+
+
+test('app: class 形态 + events/snapshot 持久化 → 启动期拒绝（不静默写盘但恢复不出状态）', async () => {
+  // 已知缺陷：class 被拆成 handler bag 时方法绑在探测实例上，cell 的状态是另一份拷贝，
+  // 于是持久化会"写盘成功、状态恢复不出来"。宁可拒绝启动并给出出口。
+  class Stateful {
+    state = { n: 0 };
+    async receive(this: { state: { n: number } }, msg: { n: number }, ctx: { persist(e: unknown): Promise<unknown> }) {
+      this.state.n += msg.n;
+      await ctx.persist({ type: 'Bump', n: msg.n });
+      return this.state;
+    }
+  }
+
+  for (const mode of ['events', 'snapshot'] as const) {
+    const app = createApp(
+      defineApp({
+        modules: [
+          defineModule({
+            name: 'm',
+            actors: { Stateful: { definition: Stateful, options: { persistence: { mode } } } },
+          }),
+        ],
+      }),
+      { configDir: tempConfigDir(), env: {} },
+    );
+    await assert.rejects(
+      () => app.start(),
+      (err: unknown) => {
+        assert.ok(err instanceof AssemblyError);
+        assert.match(err.message, new RegExp(`class 形态且启用了 '${mode}' 持久化`));
+        assert.match(err.message, /defineAggregate/);
+        return true;
+      },
+      `mode=${mode} 时应在启动期失败`,
+    );
+  }
+
+  // 内核级默认持久化同样被拦住（不能从 kernel.defaults 绕过去）
+  const viaDefaults = createApp(
+    defineApp({ modules: [defineModule({ name: 'm', actors: { Stateful } })] }),
+    { configDir: tempConfigDir(), env: {}, kernel: { logger: false, defaults: { persistence: 'events' } } },
+  );
+  await assert.rejects(() => viaDefaults.start(), /class 形态且启用了 'events' 持久化/);
+
+  // 不开持久化时 class 照常可用（守卫不能误伤）
+  const plain = createApp(
+    defineApp({ modules: [defineModule({ name: 'm', actors: { Stateful } })] }),
+    { configDir: tempConfigDir(), env: {} },
+  );
+  await plain.start();
+  assert.deepStrictEqual(await plain.actor('Stateful').ask({ n: 2 }), { n: 2 });
+  await plain.stop();
+});

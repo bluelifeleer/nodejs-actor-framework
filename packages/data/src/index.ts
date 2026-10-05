@@ -8,7 +8,8 @@
  *
  * 已实现（第 1 步）：事件信封 + upcast 注册表、快照信封 + 版本策略、
  * `defineEvolution()`（编译成内核 hook）。
- * 后续步骤：Aggregate（第 2 步）、Repository（第 3 步）、迁移框架（第 4 步）、
+ * 已实现（第 2 步）：事件溯源聚合 `defineAggregate()`（命令 → 事件、纯 applyEvent、信封接入）。
+ * 后续步骤：Repository（第 3 步）、迁移框架（第 4 步）、
  * Outbox（第 5 步）、投影（第 6 步）。
  */
 export {
@@ -43,6 +44,20 @@ export {
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
+
+export {
+  AggregateDefinitionError,
+  AggregateEvolutionError,
+  defaultCommandOf,
+  defineAggregate,
+  UnknownCommandError,
+  type AggregateCommand,
+  type AggregateCommandResult,
+  type AggregateContext,
+  type AggregateDefinition,
+  type AggregateEvent,
+  type AggregateSpec,
+} from './aggregate.ts';
 
 /** 数据层版本，便于诊断。 */
 export const DATA_LAYER_VERSION = '0.1.0';

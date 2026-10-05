@@ -13,8 +13,8 @@
 
 | 步 | 内容 | 验收（可跑） | 状态 |
 |---|---|---|---|
-| **1** | **schema 演进地基**：事件信封 + upcast 注册表（读取期）+ 快照版本策略 + 内核 `evolution` 最小 hook | **v1 数据在 v3 代码下可读**（upcast 链单测 + 真实 Actor 重放集成测试）；旧原始 JSON **不改一行**即可读；快照版本不匹配时迁移或**拒启动**；内核不回归 | ⏳ 本文档 |
-| 2 | **Aggregate**：命令→事件、`expectedVersion` 乐观并发、快照缓存 + 事件重放（含 offset） | 同一聚合被两个节点同时拥有时，旧 epoch 的写入被拒；崩溃重启后状态一致 | — |
+| **1** | **schema 演进地基**：事件信封 + upcast 注册表（读取期）+ 快照版本策略 + 内核 `evolution` 最小 hook | **v1 数据在 v3 代码下可读**（upcast 链单测 + 真实 Actor 重放集成测试）；旧原始 JSON **不改一行**即可读；快照版本不匹配时迁移或**拒启动**；内核不回归 | ✅ 已完成（§2/§4） |
+| **2** | **Aggregate**：命令→事件、`expectedVersion` 乐观并发、快照缓存 + 事件重放（含 offset） | 同一聚合被两个节点同时拥有时，旧 epoch 的写入被拒；崩溃重启后状态一致 | 🚧 **2a 完成**（§3）；2b/2c 待做 |
 | 3 | **Repository**：file / memory / SQL 薄适配 + **游标分页**（不用 offset） | 并发写入下游标分页不漏不重；外部 ORM 适配示例可跑 | — |
 | 4 | **迁移框架**：版本表 + 幂等 `up/down` + 启动校验 | 中途崩溃可重入；有未应用迁移时默认**拒绝启动** | — |
 | 5 | **Outbox**：事件与 outbox 同批写入 + dispatcher + 至少一次投递 | 投递至少一次；消费方按 `eventId` 去重有测试；失败进死信、积压进指标 | — |
@@ -148,7 +148,57 @@ packages/data/
 `@actor/data` 第 1 步**零依赖**（纯函数 + 结构类型），因此它既不依赖内核也不依赖 app，
 依赖方向不会出现环；`test/unit-app-boundary.test.js` 的守卫思路同样适用于新示例。
 
-## 3. 第 1 步验收标准
+## 3. 第 2 步（2a）：事件溯源聚合 `defineAggregate`
+
+形态选择：**返回内核认识的 handler bag**（`receive` / `applyEvent` / `state`），不是 class。
+理由有两条，第二条是这次才发现的（见 §5.3）：
+
+1. 内核的 handler bag 路径把 `this` 绑在 **cell 的实例**上，`this.state` 就是 cell 的状态；
+2. 元数据（`evolution` / `registry` / `name` / `events`）可以放在**不可枚举**属性上，
+   于是内核的 `unknown-keys` 拼写检查不会被误触发（`Object.keys(aggregate)` 只会有 handler 名）。
+
+```ts
+const Order = defineAggregate({
+  name: 'Order',
+  initialState: () => ({ status: 'created', totalCents: 0, items: 0 }),
+  events: [defineEventSchema({ type: 'ItemAdded', version: 2, upcasts: [
+    { from: 1, to: 2, up: (e) => ({ ...e, price: (e.price as number) * 100 }) },   // 元 → 分
+  ] })],
+  // 纯函数：实时处理与重启重放走**同一份**代码
+  applyEvent: (state, event) =>
+    event.type === 'ItemAdded' ? { ...state, totalCents: state.totalCents + event.price, items: state.items + 1 } : state,
+  // 命令只做"校验 + 产出事件"，绝不直接改状态
+  commands: {
+    addItem: (cmd, state) => {
+      if (state.status !== 'created') throw new Error('order already confirmed');
+      if (cmd.price <= 0) throw new Error('price must be positive');
+      return { type: 'ItemAdded', price: cmd.price };
+    },
+  },
+});
+
+await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolution: Order.evolution } });
+// 应用层同理：defineModule({ actors: { Order: { definition: Order, options: { persistence: … } } } })
+```
+
+| 约定 | 说明 |
+|---|---|
+| 命令签名 | `(command, state) => event \| event[] \| void`；**不得改状态**（传入的是顶层冻结副本，改了当场 `TypeError`） |
+| 命令返回值 | `receive` 返回**命令执行后的状态浅拷贝**，所以 `await actor.ask({type:'addItem', price:100})` 直接拿到新状态 |
+| 命令名来源 | 默认 `msg.command` → `msg.type`；可用 `commandOf` 自定义 |
+| 事件要求 | 事件体必须自带字符串 `type`（信封的 `type` 只用于查表，不注入事件体） |
+| 版本 | 信封的 `version` 取自 `events` schema 的当前版本；未声明的类型按 `v1` 落盘 |
+| 未知命令 | 抛 `UnknownCommandError`（列出已声明命令），走内核真实错误通道 |
+| 定义写错 | 构造期抛 `AggregateDefinitionError`（`initialState`/`applyEvent`/`commands` 全部检查） |
+
+**"忘了接 evolution"这条路径被单独照顾**：聚合自己会拆信封，所以当前版本的事件**不接 evolution
+也能正确工作**；但如果读到**旧版本**事件而升级链没接上，会抛 `AggregateEvolutionError`
+（指名类型与版本，并给出修法），而不是拿旧结构套新代码。
+
+> 第 2b 步（快照缓存 + 按 offset 重放）与第 2c 步（`expectedVersion` 乐观并发）仍未做，
+> 见 §1 的计划表与 §5 的进展。
+
+## 4. 第 1 步验收标准
 
 1. **v1 数据在 v3 代码下可读**：真实 Actor 用 `events` 模式落一批 v1 事件（含旧原始 JSON 格式），
    同一 Actor 以 v3 代码重启后 `ref.state()` 等于 v3 期望值（集成测试，不是纯函数自证）；
@@ -159,18 +209,21 @@ packages/data/
    指名 `stateVersion`；
 5. **不回归**：全量 `npm test` 通过、`npm run typecheck` 0 错误。
 
-## 4. 进展（第 1 步已完成）
+## 5. 进展
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| 设计（本文档） | ✅ | 决策 A/B/C 已确认 |
-| 内核 `evolution` hook | ✅ | `persistence.evolution = {upcast, decodeSnapshot, encodeSnapshot}`；默认恒等 |
-| `@actor/data` 事件信封 + 注册表 | ✅ | 构造期校验链缺口/歧义/未来版本；顶层冻结输入；旧格式与未知类型原样透传 |
-| `@actor/data` 快照策略 | ✅ | 四条读取规则 + `legacyVersion`；无迁移时**拒绝启动** |
-| 集成验证（v1→v3） | ✅ | 真实内核 + 真实文件：旧代码写、新代码读；混合日志重放；拒绝启动不破坏数据 |
-| 测试 | ✅ | `packages/data/test/*` 24 例；全量 383/383 通过；严格 typecheck 0 错误 |
+| **第 1 步：schema 演进** | ✅ | 内核 `evolution` hook + `@actor/data` 信封/注册表/快照策略；集成验证 v1→v3 |
+| 测试（第 1 步） | ✅ | `packages/data/test/*` 24 例；真实内核 + 真实文件（旧代码写、新代码读；混合日志重放；拒绝启动不破坏数据） |
+| **第 2a 步：聚合基类** | ✅ | `defineAggregate`（命令→事件、纯 `applyEvent`、信封接入、元数据不可枚举）；单元 16 例 + 集成 4 例（内核直连 / 应用层两条路径） |
+| 第 2b 步：快照缓存 + offset 重放 | ⏳ | 需要内核支持"快照 + 事件日志"共存；顺带补上 doc 04 §4.2 的"无迁移则从事件重建" |
+| 第 2c 步：`expectedVersion` 乐观并发 | ⏳ | 需要事件日志加**每聚合单调序号** + 条件追加；动手前先把格式决策摆出来 |
+| 第 3–6 步 | ⏳ | Repository / 迁移框架 / Outbox / 投影 |
 
-### 4.1 实现中抓出的三个真问题（写在这里，因为它们是"验证反哺设计"的证据）
+> **一处守卫**：应用层对 class 形态 Actor 的持久化现在会**启动期拒绝**（见 §5.3），
+> 因为它此前是"写盘成功但状态恢复不出来"的静默数据错误。
+
+### 5.1 实现中抓出的三个真问题（写在这里，因为它们是"验证反哺设计"的证据）
 
 1. **实时写入与重放不是同一形状**（设计缺陷，本步修掉）：最初 `persistEvent` 直接把传入对象
    交给 `applyEvent`，于是新代码写信封时内存拿到的是**信封**，而重启重放时拿到的是**payload**。
@@ -184,9 +237,38 @@ packages/data/
    修法：锚定为 `/data/`，并加守卫测试（`git check-ignore`）让这类静默失效当场失败；
    同一条守卫还顺手修掉了"按字符串扫 import 时把注释当成代码"的假失败。
 
-### 4.2 与设计草案（doc 04）的差异
+### 5.2 与设计草案（doc 04）的差异
 
 - 快照信封里**没有** `actorPath`：文件名已经由 actor 路径决定（`store/backends/naming.ts`），
   再存一遍只是冗余；`{snapshotVersion, stateVersion, takenAt, state}` 足够。
 - doc 04 §4.2 的"无迁移则从事件重建"**仍未实现**（见 §2.4）：它需要"快照 + 事件日志"同时存在，
   而当前内核持久化模式互斥，放到第 2 步（Aggregate）一起做。
+
+### 5.3 已知缺陷：应用层的 class 形态 Actor 不能持久化（本步发现，已加守卫）
+
+**现象（实测复现，不是推测）**：应用层声明一个 `class` Actor 并启用 `persistence: 'events'`，
+命令执行后事件**确实写进了盘**，但 `ref.state()` 始终是初始值；重启后状态也恢复不出来。
+
+**根因**：`Application.spawnActor()` 把 class 拆成 handler bag 时，是**new 一个"探测实例"**、
+把方法 `bind` 到这个实例上，再把 `instance.state` 作为模板交给内核的 `HandlerActor`
+（后者会**再拷一份**）。于是同一个 Actor 有两份状态：
+
+- 用户方法里的 `this` = 探测实例（`this.state` 是它的字段）；
+- cell 的 `state` = `HandlerActor` 的那份拷贝（`ref.state()`、快照、`applyEvent` 都作用于它）。
+
+再加上转发白名单里**没有** `applyEvent` / `postRecover`，事件重放根本不会调用用户的重放逻辑。
+`examples/app-web` 的 `Room` 之所以"看起来正常"，是因为它把状态放在自己的字段里、且从不使用
+持久化或 `ref.state()`。
+
+**本步的处理**（不做半吊子修复，先把静默错误变成明确错误）：
+
+- 应用层在 `start()` 时**拒绝** "class 形态 + `events`/`snapshot` 持久化"的组合，
+  错误信息给出出口（改用 handler bag / `defineAggregate`，或不开持久化）；
+  内核级默认持久化（`kernel.defaults.persistence`）同样被拦住；
+- 聚合因此**返回 handler bag 而不是 class**（见 §3），两条 spawn 路径都验证过；
+- 有回归测试钉住（`packages/app/test/app.test.ts`）。
+
+**正确的修法（建议，未实施）**：给内核 `defineActor` 增加"工厂"定义形态
+（`{ create: () => new Cls(deps), … }`），让应用层把**真正的类实例**交给内核，
+而不是探测实例 + 状态拷贝。这样 `this.state`、`ref.state()`、快照、`applyEvent` 会是同一个对象。
+这是一个独立的小里程碑（改内核定义形态 + 应用层装配 + 回归测试），不属于 M3。

@@ -1,0 +1,188 @@
+import { test } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { createSystem } from 'nodejs-actor-framework';
+import { FilePersistence } from 'nodejs-actor-framework/src/store/persistence.ts';
+import { createApp, defineApp, defineModule } from '@actor/app';
+
+import { defineAggregate, defineEventSchema, type AggregateEvent } from '../src/index.ts';
+
+/**
+ * 聚合的端到端验证：真实内核 + 真实文件 + 真实重启。
+ *
+ * 覆盖两条 spawn 路径（内核直连 / 应用层装配），因为它们的定义转发方式不同——
+ * 这也是"聚合返回 handler bag 而不是 class"的原因（见 docs/design/m3-data-evolution.md §5）。
+ */
+
+interface OrderState {
+  status: string;
+  totalCents: number;
+  items: number;
+}
+
+function tempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'actor-data-agg-'));
+}
+
+function orderAggregate(version = 2) {
+  return defineAggregate<OrderState>({
+    name: 'Order',
+    initialState: () => ({ status: 'created', totalCents: 0, items: 0 }),
+    events: [
+      defineEventSchema({
+        type: 'ItemAdded',
+        version,
+        upcasts: version >= 2 ? [{ from: 1, to: 2, up: (e) => ({ ...e, price: (e.price as number) * 100 }) }] : [],
+      }),
+      defineEventSchema({ type: 'Confirmed', version: 1 }),
+    ],
+    applyEvent: (state, event) => {
+      if (event.type === 'ItemAdded') {
+        return { ...state, totalCents: state.totalCents + (event.price as number), items: state.items + 1 };
+      }
+      if (event.type === 'Confirmed') return { ...state, status: 'confirmed' };
+      return state;
+    },
+    commands: {
+      addItem: (cmd, state) => {
+        if (state.status !== 'created') throw new Error('order already confirmed');
+        const price = (cmd as { price: number }).price;
+        if (price <= 0) throw new Error('price must be positive');
+        return { type: 'ItemAdded', price };
+      },
+      confirm: (_cmd, state) => (state.status === 'created' ? { type: 'Confirmed' } : undefined),
+    },
+  });
+}
+
+const persistenceFor = (aggregate: ReturnType<typeof orderAggregate>) => ({
+  mode: 'events' as const,
+  evolution: aggregate.evolution ?? undefined,
+});
+
+test('aggregate: 内核直连——命令落盘为信封，重启后状态由事件重建', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+  const Order = orderAggregate();
+
+  const system1 = createSystem({ logger: false, persistence: { dir } });
+  const ref1 = await system1.spawn(Order, { id: 'order-1', persistence: persistenceFor(Order) });
+
+  assert.deepStrictEqual(await ref1.ask({ type: 'addItem', price: 100 }), {
+    status: 'created',
+    totalCents: 100,
+    items: 1,
+  });
+  await ref1.ask({ type: 'addItem', price: 50 });
+
+  // 业务校验失败：命令抛错 → ask 收到真实错误 → 不产生事件、状态不变
+  await assert.rejects(() => ref1.ask({ type: 'addItem', price: -1 }), /price must be positive/);
+  assert.deepStrictEqual(await ref1.state(), { status: 'created', totalCents: 150, items: 2 });
+
+  assert.deepStrictEqual(await ref1.ask({ type: 'confirm' }), { status: 'confirmed', totalCents: 150, items: 2 });
+  await assert.rejects(() => ref1.ask({ type: 'addItem', price: 1 }), /order already confirmed/);
+  assert.deepStrictEqual(await ref1.state(), { status: 'confirmed', totalCents: 150, items: 2 });
+  await system1.stop();
+
+  const raw = await store.loadEvents('order-1');
+  assert.strictEqual(raw.length, 3, '两条 ItemAdded + 一条 Confirmed');
+  assert.deepStrictEqual(
+    (raw as { type: string; version: number; payload: unknown }[]).map((e) => [e.type, e.version, e.payload]),
+    [
+      ['ItemAdded', 2, { type: 'ItemAdded', price: 100 }],
+      ['ItemAdded', 2, { type: 'ItemAdded', price: 50 }],
+      ['Confirmed', 1, { type: 'Confirmed' }],
+    ],
+  );
+
+  // 重启：状态必须由事件重建，与写入期完全一致
+  const system2 = createSystem({ logger: false, persistence: { dir } });
+  const ref2 = await system2.spawn(Order, { id: 'order-1', persistence: persistenceFor(Order) });
+  assert.deepStrictEqual(await ref2.state(), { status: 'confirmed', totalCents: 150, items: 2 });
+  await system2.stop();
+});
+
+test('aggregate: 应用层装配路径同样可用（actor 定义就是聚合对象）', async () => {
+  const dir = tempDir();
+  const Order = orderAggregate();
+
+  const build = () =>
+    createApp(
+      defineApp({
+        modules: [
+          defineModule({
+            name: 'orders',
+            actors: { Order: { definition: Order, options: { persistence: persistenceFor(Order) } } },
+          }),
+        ],
+      }),
+      {
+        configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-data-agg-cfg-')),
+        env: {},
+        kernel: { logger: false, persistence: { dir } },
+      },
+    );
+
+  const app1 = build();
+  await app1.start();
+  assert.deepStrictEqual(await app1.actor('Order').ask({ type: 'addItem', price: 30 }), {
+    status: 'created',
+    totalCents: 30,
+    items: 1,
+  });
+  await app1.stop();
+
+  const app2 = build();
+  await app2.start();
+  assert.deepStrictEqual(await app2.actor('Order').state(), { status: 'created', totalCents: 30, items: 1 });
+  await app2.stop();
+});
+
+test('aggregate: 旧原始 JSON（v1）在 v2 聚合代码下可读（升级链 + 事件日志不改写）', async () => {
+  const dir = tempDir();
+
+  // --- 阶段 1：M3 之前的代码，直接写原始 JSON（元为单位的 price） ---
+  const legacy = {
+    preStart(this: { state: { totalCents: number } }) {
+      this.state = { totalCents: 0 };
+    },
+    async receive(this: { state: { totalCents: number } }, msg: { price?: number }, ctx: { persist(e: unknown): Promise<unknown> }) {
+      await ctx.persist({ type: 'ItemAdded', price: msg.price });
+      return this.state;
+    },
+    applyEvent(this: { state: { totalCents: number } }, event: AggregateEvent) {
+      if (event.type === 'ItemAdded') this.state.totalCents += event.price as number; // v1：元
+    },
+  };
+  const system1 = createSystem({ logger: false, persistence: { dir } });
+  const ref1 = await system1.spawn(legacy, { id: 'order-9', persistence: { mode: 'events' } });
+  await ref1.ask({ price: 7 });
+  await system1.stop();
+
+  // --- 阶段 2：v2 聚合（分为单位）+ 升级链 ---
+  const Order = orderAggregate(2);
+  const system2 = createSystem({ logger: false, persistence: { dir } });
+  const ref2 = await system2.spawn(Order, { id: 'order-9', persistence: persistenceFor(Order) });
+  assert.deepStrictEqual(await ref2.state(), { status: 'created', totalCents: 700, items: 1 }, '7 元 → 700 分');
+  await system2.stop();
+
+  // 盘上的旧数据没有被改写
+  const store = new FilePersistence({ baseDir: dir });
+  assert.deepStrictEqual(await store.loadEvents('order-9'), [{ type: 'ItemAdded', price: 7 }]);
+});
+
+test('aggregate: 未知命令走内核错误通道（ask 拿到真实错误，Actor 照常服务）', async () => {
+  const dir = tempDir();
+  const Order = orderAggregate();
+  const system = createSystem({ logger: false, persistence: { dir } });
+  const ref = await system.spawn(Order, { id: 'order-2', persistence: persistenceFor(Order) });
+
+  const rejects = assert.rejects(() => ref.ask({ type: 'nope' }), /没有命令 'nope'/);
+  const afterRestart = rejects.then(() => ref.ask({ type: 'addItem', price: 1 }));
+  await rejects;
+  assert.deepStrictEqual(await afterRestart, { status: 'created', totalCents: 1, items: 1 });
+  await system.stop();
+});

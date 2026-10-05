@@ -508,6 +508,25 @@ export class Application {
     const deps = spec.deps ? Object.fromEntries(spec.deps.map((d) => [d, this.providerDependency(d, name)])) : context;
     let definition: unknown;
     if (isClass(spec.definition)) {
+      // 已知缺陷（见 docs/design/m3-data-evolution.md §5）：class 形态被拆成 handler bag 时，
+      // 方法绑在"探测实例"上，而 cell 的状态是另一份拷贝——于是 events/snapshot 持久化会
+      // **写盘成功但状态恢复不出来**（静默数据错误）。宁可拒绝启动并把出口写清楚。
+      const persistence = spec.options?.persistence ?? this.kernelDefaultPersistence();
+      const mode =
+        typeof persistence === 'string'
+          ? persistence
+          : (persistence as { mode?: string } | null | undefined)?.mode;
+      if (mode === 'events' || mode === 'snapshot') {
+        throw new AssemblyError([
+          {
+            message:
+              `Actor '${name}' 是 class 形态且启用了 '${mode}' 持久化：当前不支持` +
+              '（事件/快照会落盘，但状态无法正确恢复）。' +
+              '请改用 handler bag 或 @actor/data 的 defineAggregate，或不要为该 Actor 开启持久化',
+            requester: `Actor '${name}'`,
+          },
+        ]);
+      }
       const instance = new (spec.definition as new (deps: unknown) => Record<string, unknown>)(deps);
       // 只转发内核认识的成员，并把方法绑定到实例上——否则方法被拆出来后 this 会丢。
       const forwarded: Record<string, unknown> = {};
@@ -526,6 +545,12 @@ export class Application {
       definition = defineActor(spec.definition as Parameters<typeof defineActor>[0]);
     }
     return system.spawn(definition, { id: spec.id ?? name, ...(spec.options ?? {}) });
+  }
+
+  /** 内核级默认持久化（`createApp(..., { kernel: { defaults: { persistence } } })`）。 */
+  private kernelDefaultPersistence(): unknown {
+    const kernel = this.options.kernel as { defaults?: { persistence?: unknown } } | undefined;
+    return kernel?.defaults?.persistence;
   }
 
   private providerDependency(dep: string, actorName: string): unknown {
