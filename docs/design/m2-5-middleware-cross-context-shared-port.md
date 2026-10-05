@@ -150,7 +150,7 @@ HTTP 直连"别的节点上的 socket"不是设计目标。
 | 模块级中间件便捷写法 | ✅ 完成 | `defineModule({ middleware, routes })` 等价于"该模块根路由器带中间件"（子树语义 R1） |
 | **路由语法糖** `routes({...})` + `withMiddleware` | ✅ 完成并验证 | 对象字面量表，编译成同一份 `RouterSpec` 数据（零新概念）；按方法分组；单条路由中间件用 Symbol 标记 |
 | 示例迁移（前缀分组 + 嵌套） | ✅ 完成并验证 | `examples/app-web` → `/api/*`；迁移过程抓出 3 个真问题（见下） |
-| **应用层两节点端到端**（M2 剩余项 1） | ✅ 完成并验证 | B 节点控制器 `ctx.actor('Room_A')` → gossip 发现 → 真实网关 → A 节点 Actor 执行；未发现时 404 + Actor 名字。见 `packages/web/test/cluster-location-transparency.test.ts` |
+| **应用层两节点端到端**（M2 剩余项 1） | ✅ 完成并验证 | B 节点控制器 `ctx.actor('Room_A')` → gossip 发现 → 真实网关 → A 节点 Actor 执行；未发现时 404 + Actor 名字。**网关由 `clusterPlugin` 自动启动，测试全程无 `app.kernel`**。见 `packages/web/test/cluster-location-transparency.test.ts` |
 
 **示例迁移抓出的 3 个问题**（记录在案，因为它们是"真实使用反哺框架"的证据）：
 1. 框架 bug：`routes({...})` 产物是 `RouterSpec` 对象，而应用层 collect 假设 `mod.routes` 是数组

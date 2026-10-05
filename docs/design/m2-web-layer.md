@@ -14,11 +14,8 @@
 > 访问日志（`httpPlugin` 内置 + 事件总线的 `requestLogPlugin` 两条路径）；HTTP 与 WS 共享端口。
 >
 > **未验证/未完成（不要当成已完成）**：
-> 1. **应用层集群的"入口自理"**：`clusterPlugin` 只贡献内核能力，**不会自己启动网关**
->    （应用层签名不暴露内核 `listen`）——当前用法是逃生通道 `app.kernel.listen({ host, port })`。
->    要做到"零逃生通道"，需要一个网关配置项（host/port）与自动 listen 的决策；
-> 2. **分片治理（M4）**：节点超时/再平衡/一致性哈希治理不在本层范围内，
->    本层只验证"发现即可达"这一条链路。
+> **分片治理（M4）**：节点超时/再平衡/一致性哈希治理不在本层范围内，
+> 本层只验证"发现即可达"这一条链路。
 
 # M2 设计：路由 + 控制器（Web 层）
 
@@ -193,16 +190,30 @@ get('/rooms/:id', defineController({
 ```
 A 节点  spawn Room_A（无 HTTP 入口）      B 节点  控制器 + httpPlugin
         clusterPlugin({ nodeId:'node-a' })       clusterPlugin({ nodeId:'node-b', seeds:[A 的 gossip] })
-        app.kernel.listen({ port: 0 })           app.kernel.listen({ port: 0 })
+        ← 两边的网关都由插件自己启动，测试里**全程没有 app.kernel** →
 ```
 
 三条硬证据：① B 的索引里出现远端 `Room_A` 且 peer `lastSeen > 0`（活着，不只是听说过）；
 ② A 节点 Actor 内部记录到**恰好一次**调用（消息真的跑在 A 上）；③ 未发现的名字返回
 **404 + Actor 名字**，而不是不透明的 500。
 
-**逃生通道（当前必须）**：应用层签名不暴露内核概念，`clusterPlugin` 也不会自己开网关，
-所以启动网关要写 `app.kernel.listen({ host, port })`（与 `examples/game-cluster.js` 同一做法）。
-把这一步收进配置是**待决策项**，见文首"未验证/未完成"第 1 条。
+**网关由插件自己起（不再需要逃生通道）**：装上 `clusterPlugin` 后本节点必须有一个可被对端连接的
+网关（actor 传输），否则 gossip 广播出去的地址无人应答。这一步在 `onReady` 完成，用户只读地址：
+
+```ts
+const cluster = clusterPlugin({ seeds: ['10.0.0.1:7200'] });
+const app = createApp(defineApp({ modules: [...], plugins: [cluster] }));
+
+await app.start();
+cluster.address();          // { host: '127.0.0.1', port: 52341 } —— 默认端口 0，由系统分配
+cluster.gossipAddress();    // 给别的节点当种子
+await cluster.waitFor('Room_A');   // 发现是最终一致的，需要时等一下
+cluster.remoteActors();     // 已发现的远端 Actor；peers() 看对端是否活着
+```
+
+端口默认 `0` 的理由：gossip 会广播**实际**端口，所以不必预先约定，也不会与 `httpPlugin`
+的默认端口（9000）撞车。要固定端口就用 `gatewayPort` 或 `APP_PLUGINS__CLUSTER__GATEWAY_PORT`；
+`autoListen: false` 可以退回自己管网关（此时 `address()` 为 `null`，跨节点能力由调用方负责）。
 
 ## 6. 验收标准（M2 出口）
 

@@ -118,6 +118,10 @@ export default definePlugin({
 - `setup` 在 provider 之前、`teardown` 在模块 `onStop` 之后（与内核插件顺序一致）；
 - 内置能力（cluster/metrics/tracing/deadLetters/rateLimit）在应用层包装成**内置插件**，
   用户在 `defineApp({ plugins })` 里显式启用，而不是被自动挂上（这也顺带解决"加载面 32 个模块"的问题）。
+  **例外是 cluster**：装上它之后本节点必须有一个可被对端连接的网关，纯包装做不到这一点，
+  所以它会在 `onReady` 自动启动网关，并暴露 `address()/gossipAddress()/waitFor()/remoteActors()/peers()`
+  这些**应用层概念**的查询方法（用户因此不需要 `app.kernel.listen(...)` 逃生通道）；
+  详见 `docs/design/m2-web-layer.md` §5.1。
 
 ## 7. 验收标准（M1 出口，全部可跑）
 

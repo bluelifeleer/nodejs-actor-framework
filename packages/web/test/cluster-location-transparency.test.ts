@@ -15,20 +15,10 @@ import { defineController, defineRoutes, get, httpPlugin } from '../src/index.ts
  * 用的是**同一个进程里的同一个内核**；这里两个节点各有自己的 gossip 与网关，
  * B 节点的控制器 `ctx.actor('Room_A')` **只有经 gossip 发现** 才可能拿到远端 ref。
  *
- * 应用层签名不暴露 listen/cluster（那是内核概念，见 app 层边界规则），因此与
- * `examples/game-cluster.js` 一样走 `app.kernel` 逃生通道显式启动网关。
+ * 关键点：**全程没有 `app.kernel`**。网关由 `clusterPlugin` 自己在 onReady 启动
+ * （见 packages/app/src/plugins.ts 的 clusterPlugin 注释）——这正是"应用层不出现内核概念"
+ * 这一边界规则的兑现方式。
  */
-
-/** `app.kernel` 是逃生通道（unknown）：这里只声明本测试真正用到的内核面。 */
-interface ClusterKernel {
-  listen(options: { host?: string; port?: number }): Promise<number>;
-  cluster: {
-    port: number;
-    waitFor(actorPath: string, timeoutMs?: number): Promise<unknown>;
-    remoteActors(): string[];
-    peers(): { lastSeen: number }[];
-  };
-}
 
 interface ActorHandleLike {
   ask(message: unknown, timeoutMs?: number): Promise<unknown>;
@@ -50,6 +40,7 @@ const GOSSIP = {
 test('cluster: 控制器在 B 节点、Actor 在 A 节点，ctx.actor 经 gossip 发现后跨节点 ask', async (t) => {
   // A 节点：只声明 Actor，没有任何 HTTP 入口（"业务节点"）
   const servedOnA: unknown[] = [];
+  const clusterA = clusterPlugin({ ...GOSSIP, nodeId: 'node-a' });
   const appA = createApp(
     defineApp({
       modules: [
@@ -65,19 +56,24 @@ test('cluster: 控制器在 B 节点、Actor 在 A 节点，ctx.actor 经 gossip
           },
         }),
       ],
-      plugins: [clusterPlugin({ ...GOSSIP, nodeId: 'node-a' })],
+      plugins: [clusterA],
     }),
     { configDir: tempConfigDir(), env: {} },
   );
 
   await appA.start();
-  const kernelA = appA.kernel as ClusterKernel;
-  await kernelA.listen({ host: '127.0.0.1', port: 0 });
-  const gossipA = kernelA.cluster.port;
-  assert.ok(gossipA > 0, 'A 节点的 gossip 应已监听（否则 B 无从发现）');
+  // 网关是插件自己起的（无需 app.kernel.listen）；gossip 的地址用于给 B 当种子
+  assert.ok(clusterA.address()?.port, 'A 节点的网关应由 clusterPlugin 自动启动');
+  const gossipA = clusterA.gossipAddress()?.port;
+  assert.ok(gossipA, 'A 节点的 gossip 应已监听（否则 B 无从发现）');
 
   // B 节点：只有控制器，**本地没有 Room_A**（"接入/边缘节点"）
   const httpB = httpPlugin({ port: 0, accessLog: false });
+  const clusterB = clusterPlugin({
+    ...GOSSIP,
+    nodeId: 'node-b',
+    seeds: [{ host: '127.0.0.1', port: gossipA }],
+  });
   const appB = createApp(
     defineApp({
       modules: [
@@ -98,10 +94,7 @@ test('cluster: 控制器在 B 节点、Actor 在 A 节点，ctx.actor 经 gossip
           ]),
         }),
       ],
-      plugins: [
-        httpB,
-        clusterPlugin({ ...GOSSIP, nodeId: 'node-b', seeds: [{ host: '127.0.0.1', port: gossipA }] }),
-      ],
+      plugins: [httpB, clusterB],
     }),
     { configDir: tempConfigDir(), env: {} },
   );
@@ -112,17 +105,13 @@ test('cluster: 控制器在 B 节点、Actor 在 A 节点，ctx.actor 经 gossip
   });
 
   await appB.start();
-  const kernelB = appB.kernel as ClusterKernel;
-  await kernelB.listen({ host: '127.0.0.1', port: 0 });
 
   // 发现是**最终一致**的：先等 gossip 把 A 的名册带到 B，再看 HTTP 行为
-  await kernelB.cluster.waitFor('Room_A', 10_000);
+  const meta = await clusterB.waitFor('Room_A', 10_000);
+  assert.strictEqual(meta.nodeId, 'node-a', 'Room_A 应被发现在 A 节点上');
+  assert.ok(clusterB.remoteActors().includes('Room_A'), 'B 的索引里应有远端 Room_A（而不是本地）');
   assert.ok(
-    kernelB.cluster.remoteActors().includes('Room_A'),
-    'B 的索引里应有远端 Room_A（而不是本地）',
-  );
-  assert.ok(
-    kernelB.cluster.peers().some((peer) => peer.lastSeen > 0),
+    clusterB.peers().some((peer) => peer.lastSeen > 0),
     'B 应有一个**活着的** peer，而不只是"听说过"',
   );
 

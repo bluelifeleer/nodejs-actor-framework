@@ -53,6 +53,10 @@ export {
   rateLimitPlugin,
   pubsubPlugin,
   clusterPlugin,
+  type ClusterActorMeta,
+  type ClusterPeer,
+  type ClusterPlugin,
+  type ClusterPluginOptions,
 } from './plugins.ts';
 
 /** 应用层版本，便于启动日志与诊断。 */
