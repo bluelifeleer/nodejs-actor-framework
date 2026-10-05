@@ -264,3 +264,100 @@ test('aggregate: 两个拥有者抢同一个聚合 → 后来者的命令被拒�
   await b.stop();
   await a.stop();
 });
+
+test('aggregate: 快照结构对不上但日志在 → 丢弃快照、从事件重建（doc 04 §4.2 规则 2）', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+
+  // 阶段 1：v1 代码 + 手动声明快照结构版本 1（每写一条事件存一次缓存）
+  const V1 = defineAggregate<{ totalCents: number }>({
+    name: 'Order',
+    initialState: () => ({ totalCents: 0 }),
+    events: [defineEventSchema({ type: 'ItemAdded', version: 1 })],
+    snapshot: { version: 1 },
+    applyEvent: (state, event) =>
+      event.type === 'ItemAdded' ? { ...state, totalCents: state.totalCents + (event.price as number) } : state,
+    commands: { addItem: (cmd) => ({ type: 'ItemAdded', price: (cmd as { price: number }).price }) },
+  });
+  const system1 = createSystem({ logger: false, persistence: { dir } });
+  const ref1 = await system1.spawn(V1, {
+    id: 'order-9',
+    persistence: { mode: 'events', evolution: V1.evolution ?? undefined, snapshot: { every: 1 } },
+  });
+  await ref1.ask({ type: 'addItem', price: 7 });
+  await system1.stop();
+
+  const cached = (await store.loadSnapshot('order-9')) as {
+    __snapshotAtSeq: number;
+    snapshot: { stateVersion: number; state: unknown };
+  };
+  assert.strictEqual(cached.__snapshotAtSeq, 1, '缓存记着重放到第 1 条');
+  assert.strictEqual(cached.snapshot.stateVersion, 1);
+  assert.deepStrictEqual(cached.snapshot.state, { totalCents: 7 });
+
+  // 阶段 2：状态结构变成 v2（多一个 items 字段）且**没有** migrate。
+  // 旧快照会被拒绝，但日志在 → 必须丢弃快照、从事件重建，而不是拒绝启动。
+  const V2 = defineAggregate<{ totalCents: number; items: number }>({
+    name: 'Order',
+    initialState: () => ({ totalCents: 0, items: 0 }),
+    events: [defineEventSchema({ type: 'ItemAdded', version: 1 })],
+    snapshot: { version: 2 },
+    applyEvent: (state, event) =>
+      event.type === 'ItemAdded'
+        ? { ...state, totalCents: state.totalCents + (event.price as number), items: state.items + 1 }
+        : state,
+    commands: { addItem: (cmd) => ({ type: 'ItemAdded', price: (cmd as { price: number }).price }) },
+  });
+  const system2 = createSystem({ logger: false, persistence: { dir } });
+  const ref2 = await system2.spawn(V2, {
+    id: 'order-9',
+    persistence: { mode: 'events', evolution: V2.evolution ?? undefined, snapshot: { every: 1 } },
+  });
+  assert.deepStrictEqual(
+    await ref2.state(),
+    { totalCents: 7, items: 1 },
+    'items=1 只可能来自事件重放（旧快照里没有这个字段）',
+  );
+  await system2.stop();
+
+  // 日志本身没有被改写（重建只是"再读一遍"，不写盘）
+  const log = (await store.loadEvents('order-9')) as { seq: number; payload: unknown }[];
+  assert.strictEqual(log.length, 1);
+  assert.strictEqual(log[0].seq, 1);
+  assert.deepStrictEqual(log[0].payload, { type: 'ItemAdded', price: 7 });
+});
+
+test('aggregate: 快照结构对不上且**没有日志可重建** → 拒绝启动（doc 04 §4.2 规则 3）', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+  // 手工造出"有快照缓存、没有事件日志"的状态（例如有人删了日志）
+  await store.saveSnapshot('order-x', {
+    __snapshotAtSeq: 5,
+    snapshot: { snapshotVersion: 1, stateVersion: 1, takenAt: 0, state: { totalCents: 1, items: 0 } },
+  });
+
+  const Order = defineAggregate<{ totalCents: number; items: number }>({
+    name: 'Order',
+    initialState: () => ({ totalCents: 0, items: 0 }),
+    events: [defineEventSchema({ type: 'ItemAdded', version: 1 })],
+    snapshot: { version: 2 }, // 没有 migrate
+    applyEvent: (state) => state,
+    commands: { addItem: () => ({ type: 'ItemAdded', price: 1 }) },
+  });
+
+  const system = createSystem({ logger: false, persistence: { dir } });
+  await assert.rejects(
+    () =>
+      system.spawn(Order, {
+        id: 'order-x',
+        persistence: { mode: 'events', evolution: Order.evolution ?? undefined, snapshot: { every: 0 } },
+      }),
+    (err: unknown) => {
+      assert.strictEqual((err as Error).name, 'StateEvolutionError');
+      assert.match((err as Error).message, /v1/);
+      return true;
+    },
+    '没有日志可重建时必须拒绝启动，而不是拿错结构凑合',
+  );
+  await system.stop();
+});

@@ -88,6 +88,17 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events',   evol
 await system.spawn(Tank,  { id: 'tank',    persistence: { mode: 'snapshot', evolution } });
 ```
 
+**可选快照缓存（`events` 模式）**：日志永远是真相，快照只是"已经重放到第几条"的缓存：
+
+```js
+await system.spawn(Acc, { id: 'acc', persistence: { mode: 'events', snapshot: { every: 100 } } });
+// every > 0：每写 100 条事件自动存一次；every: 0：只用 ctx.saveSnapshot() 手动存；不写这行 = 纯重放
+```
+
+恢复时先读快照、再只重放增量（`readLog({ fromSeq })`）；快照结构对不上时，**有日志就丢弃快照
+从事件重建**（日志是真相），**没有日志可重建才拒绝启动**（不拿错结构凑合）。没配置 `snapshot`
+时行为与以前**逐字节一致**（手工 `ctx.saveSnapshot()` 仍写裸状态，不会被当成缓存读）。
+
 **条件写（乐观并发）**：`events` 模式下内核会把「日志版本」（= 已写入的记录条数）带上一起写，
 后端版本对不上就抛 `PersistenceConflictError` 且**不写入**——挡的是"同一个聚合被两个节点同时拥有"。
 后端到底能保证什么可以查：

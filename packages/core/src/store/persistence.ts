@@ -337,9 +337,31 @@ function resolvePersistence(spec, fallbackStore) {
     store: normalized.store || fallbackStore || null,
     onStop: normalized.onStop !== false,
     mailboxStore: normalized.mailboxStore || null,
+    /**
+     * `events` 模式下的**快照缓存**：`{ every }`，`every > 0` 表示每写 N 条事件自动存一次
+     * （`0` = 只手动 `ctx.saveSnapshot()`）。`null` = 没启用（保持"纯重放"）。
+     *
+     * 语义（doc 04 §4.2 / docs/design/m3-data-evolution.md §6.2）：**快照是缓存，日志是真相**。
+     * 快照里带"已经应用到第几条事件"，恢复时只重放增量；快照不可用时丢弃并全量重放。
+     */
+    snapshot: resolveEventsSnapshot(mode, normalized.snapshot),
     /** Structure-evolution hooks (see resolveEvolution); null = raw bytes in, raw bytes out. */
     evolution: resolveEvolution(normalized.evolution),
   };
+}
+
+/** 只有 `events` 模式才有"快照缓存"这回事；其它模式传了就明确报错（不静默忽略）。 */
+function resolveEventsSnapshot(mode, snapshot) {
+  if (snapshot === undefined || snapshot === null || snapshot === false) return null;
+  if (mode !== 'events') {
+    throw new PersistenceError(`persistence.snapshot.every 只在 mode: 'events' 下有意义（当前 mode: '${mode}'）`);
+  }
+  if (snapshot === true) return { every: 0 };
+  const every = snapshot.every === undefined ? 0 : snapshot.every;
+  if (!Number.isInteger(every) || every < 0) {
+    throw new PersistenceError(`persistence.snapshot.every 必须是 >= 0 的整数（当前 ${String(every)}）`);
+  }
+  return { every };
 }
 
 /**
@@ -374,9 +396,15 @@ function resolveEvolution(evolution) {
   return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
-/** Call an evolution hook, rejecting an async result (see resolveEvolution). */
-function callEvolution(hook, value, label) {
-  const result = hook(value);
+/**
+ * Call an evolution hook, rejecting an async result (see resolveEvolution).
+ *
+ * Signature is `(hook, label, ...args)` on purpose: `(hook, value, label)` reads
+ * naturally but invites passing an argument *array* as the value — which silently
+ * calls the hook with one array instead of two arguments.
+ */
+function callEvolution(hook, label, ...args) {
+  const result = hook(...args);
   if (result && typeof result.then === 'function') {
     throw new PersistenceError(`persistence.evolution.${label} must be synchronous (returned a Promise)`);
   }

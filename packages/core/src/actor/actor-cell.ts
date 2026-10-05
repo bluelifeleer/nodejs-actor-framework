@@ -10,6 +10,18 @@ const ActorContext = require('./actor-context.ts');
 const { ActorRef } = require('./actor-ref.ts');
 const { defineActor } = require('./actor.ts');
 const { resolvePersistence, callEvolution } = require('../store/persistence.ts');
+
+/** `events` 模式快照的外层包装：只有内核关心"恢复到第几条"，用户状态原样放在 `snapshot` 里。 */
+function wrapEventsSnapshot(atSeq, snapshot) {
+  return { __snapshotAtSeq: atSeq, snapshot };
+}
+
+function unwrapEventsSnapshot(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const atSeq = raw.__snapshotAtSeq;
+  if (!Number.isInteger(atSeq) || atSeq < 0 || !('snapshot' in raw)) return null;
+  return { atSeq, snapshot: raw.snapshot };
+}
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
@@ -216,15 +228,20 @@ class ActorCell {
       }
     } else if (mode === 'events' && store) {
       const raw = await store.loadEvents(this.path);
+      // The log is the truth; a snapshot (if any) is only a cache that lets us skip
+      // the prefix we already folded into the saved state. See _restoreSnapshotCache.
+      const snapshotCacheEnabled = this.persistence.snapshot !== null;
+      const cached = snapshotCacheEnabled ? await this._restoreSnapshotCache(raw.length > 0) : null;
+      const fromSeq = cached ? cached.atSeq + 1 : null;
       // Structure evolution happens **on read**: the stored log is never rewritten,
       // so an upgrade is rollback-able and replays stay reproducible.
       // Prefer the batch hook: sequence continuity can only be checked when the
       // whole log is visible at once (a gap means events were lost).
-      const { events, lastVersion } = this._evolveLog(raw);
+      const { events, lastVersion } = this._evolveLog(raw, fromSeq);
       this._eventVersion = lastVersion;
       this._warnIfConcurrencyUnsupported();
       for (const event of events) this.instance.applyEvent(event);
-      this.context.restored = events.length > 0;
+      if (events.length > 0) this.context.restored = true;
       this.counters.recovered += events.length;
     } else if (mode === 'mailbox' && mailboxStore) {
       const records = await mailboxStore.load(this.path);
@@ -617,12 +634,10 @@ class ActorCell {
     // snapshot that refuses to migrate) never recovered anything, so persisting
     // its preStart defaults here would **overwrite the very data the error was
     // protecting**. Only a successfully started incarnation may write.
-    if (
-      this.persistence.mode === 'snapshot' &&
-      this.persistence.onStop &&
-      this.started &&
-      (this.instance || this.delegate)
-    ) {
+    const wantsStopSnapshot =
+      this.persistence.mode === 'snapshot' ||
+      (this.persistence.mode === 'events' && this.persistence.snapshot !== null);
+    if (wantsStopSnapshot && this.persistence.onStop && this.started && (this.instance || this.delegate)) {
       try {
         await this.saveSnapshot();
       } catch (err) {
@@ -708,6 +723,48 @@ class ActorCell {
   // --- persistence hooks ---------------------------------------------------
 
   /**
+   * `events` 模式下的快照缓存恢复。
+   *
+   * 三种结果：
+   *   - 没有快照 / 不是内核写的缓存 → `null`（老老实实全量重放）；
+   *   - 快照可用 → 把状态装上、返回 `{ atSeq }`，调用方只重放 `seq > atSeq` 的增量；
+   *   - 快照**不可用**（结构版本对不上等）→ 有事件日志就**丢弃快照、从 0 全量重放**
+   *     （doc 04 §4.2 规则 2：日志是真相，快照只是缓存）；没有日志可重建时**拒绝启动**
+   *     （规则 3：宁可不启动，也不拿错结构凑合）。
+   */
+  async _restoreSnapshotCache(hasEventLog) {
+    const { store } = this.persistence;
+    if (!store) return null;
+    const raw = await store.loadSnapshot(this.path);
+    if (raw === undefined) return null;
+    const cached = unwrapEventsSnapshot(raw);
+    if (!cached) return null; // 旧数据 / 外来文件：当作没有缓存
+    try {
+      const state = this._decodeSnapshotPayload(cached.snapshot);
+      if (state === undefined) return null;
+      this.instance.state = typeof state === 'object' && state !== null ? { ...state } : state;
+      this.context.restored = true;
+      return { atSeq: cached.atSeq };
+    } catch (err) {
+      if (!hasEventLog) throw err; // 无日志可重建 → 明确拒绝启动
+      this.system._log('snapshot_unusable', {
+        path: this.path,
+        atSeq: cached.atSeq,
+        err: err.message,
+        action: 'rebuild_from_events',
+      });
+      return null;
+    }
+  }
+
+  /** 快照里那层用户状态：交给数据层的 decodeSnapshot（版本校验/迁移在这里）。 */
+  _decodeSnapshotPayload(payload) {
+    const { evolution } = this.persistence;
+    if (!evolution || !evolution.decodeSnapshot) return payload;
+    return callEvolution(evolution.decodeSnapshot, 'decodeSnapshot', payload);
+  }
+
+  /**
    * Load a snapshot and run it through the evolution hook.
    *
    * `decodeSnapshot` may:
@@ -721,7 +778,7 @@ class ActorCell {
     const raw = await store.loadSnapshot(this.path);
     if (raw === undefined) return undefined;
     if (!evolution || !evolution.decodeSnapshot) return raw;
-    return callEvolution(evolution.decodeSnapshot, raw, 'decodeSnapshot');
+    return callEvolution(evolution.decodeSnapshot, 'decodeSnapshot', raw);
   }
 
   /**
@@ -731,11 +788,13 @@ class ActorCell {
    * continuity — "no event was lost" — can only be established with the whole log
    * in hand. A data layer that only provides `upcast` keeps working unchanged.
    */
-  _evolveLog(raw) {
+  _evolveLog(raw, fromSeq = null) {
     const { evolution } = this.persistence;
-    if (!evolution) return { events: raw, lastVersion: raw.length };
+    // 没有批量 hook 的路径按**条数**切增量：内核记的 atSeq 就是"日志版本 = 条数"
+    const slice = (records) => (fromSeq === null ? records : records.slice(Math.max(0, fromSeq - 1)));
+    if (!evolution) return { events: slice(raw), lastVersion: raw.length };
     if (evolution.readLog) {
-      const result = callEvolution(evolution.readLog, raw, 'readLog');
+      const result = callEvolution(evolution.readLog, 'readLog', raw, fromSeq === null ? {} : { fromSeq });
       if (!result || !Array.isArray(result.events)) {
         throw new PersistenceError('persistence.evolution.readLog must return { events: [...] }');
       }
@@ -744,9 +803,12 @@ class ActorCell {
       return { events: result.events, lastVersion: lastSeq === null ? raw.length : lastSeq };
     }
     if (evolution.upcast) {
-      return { events: raw.map((item) => callEvolution(evolution.upcast, item, 'upcast')), lastVersion: raw.length };
+      return {
+        events: slice(raw).map((item) => callEvolution(evolution.upcast, 'upcast', item)),
+        lastVersion: raw.length,
+      };
     }
-    return { events: raw, lastVersion: raw.length };
+    return { events: slice(raw), lastVersion: raw.length };
   }
 
   /** 后端不支持条件写时说一次（而不是让用户"以为有乐观并发保护"）。 */
@@ -784,24 +846,51 @@ class ActorCell {
     // envelope while the same event, replayed after a restart, arrives as its
     // payload — two different shapes for one event, i.e. state that drifts
     // between live and recovered.
-    const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, event, 'upcast') : event;
+    const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, 'upcast', event) : event;
     if (this.instance) this.instance.applyEvent(applied);
+    // 状态已更新，这时存缓存才是安全的（见 _autoSnapshotIfDue）
+    if (mode === 'events') await this._autoSnapshotIfDue();
     return event;
   }
 
   async saveSnapshot() {
-    const { store, evolution } = this.persistence;
+    const { store, evolution, mode } = this.persistence;
     if (!store) return undefined;
     const state = await this.fetchState();
     if (state === undefined) return undefined;
     // The caller gets the live state back; only what lands on disk goes through
     // encodeSnapshot (headers, version markers, …).
-    const stored = evolution && evolution.encodeSnapshot
-      ? callEvolution(evolution.encodeSnapshot, state, 'encodeSnapshot')
+    const payload = evolution && evolution.encodeSnapshot
+      ? callEvolution(evolution.encodeSnapshot, 'encodeSnapshot', state)
       : state;
+    // 启用了快照缓存的事件溯源模式：快照必须记住"这是重放到第几条时的状态"，
+    // 否则恢复时无法只重放增量（甚至会把状态套错位置）。
+    // 没启用时保持与 M3 之前**逐字节一致**（裸状态），这样"可选"是真的可选。
+    const stored =
+      mode === 'events' && this.persistence.snapshot !== null
+        ? wrapEventsSnapshot(this._eventVersion ?? 0, payload)
+        : payload;
     await store.saveSnapshot(this.path, stored);
     this._snapshotDirty = false;
     return state;
+  }
+
+  /**
+   * 每写 N 条事件自动存一次缓存。
+   *
+   * 时机很关键：必须在**事件应用到内存状态之后**调用，否则快照会记下"atSeq 已包含这条"
+   * 却存着不含它的状态，恢复时就会丢状态。失败只记日志——事件已经 durable，快照只是缓存。
+   */
+  async _autoSnapshotIfDue() {
+    const { mode, snapshot } = this.persistence;
+    if (mode !== 'events' || !snapshot || snapshot.every <= 0) return;
+    if (!this.instance) return; // worker 隔离不支持 events 模式
+    if ((this._eventVersion ?? 0) % snapshot.every !== 0) return;
+    try {
+      await this.saveSnapshot();
+    } catch (err) {
+      this.system._log('snapshot_auto_failed', { path: this.path, err: err.message });
+    }
   }
 
   /**

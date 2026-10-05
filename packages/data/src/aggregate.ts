@@ -22,6 +22,7 @@ import {
   type LegacyReader,
 } from './events.ts';
 import { defineEvolution, type PersistenceEvolution } from './evolution.ts';
+import type { SnapshotSchema } from './snapshot.ts';
 
 /** 事件体：必须自带 `type` 判别字段（信封的 type 只用于查表，不注入事件体）。 */
 export interface AggregateEvent {
@@ -56,6 +57,12 @@ export interface AggregateSpec<S = unknown> {
   commands: Record<string, AggregateCommand<S>>;
   /** 本聚合产出的事件 schema（交给 M3 第 1 步的注册表做结构升级）。 */
   events?: readonly EventSchema[];
+  /**
+   * 聚合**状态结构**的版本与迁移：配合 `persistence: { mode:'events', snapshot: { every } }`
+   * 的快照缓存使用——状态版本对不上时，有迁移就迁移，没有就**丢弃快照、从事件重建**
+   * （日志是真相，见 doc 04 §4.2）。
+   */
+  snapshot?: SnapshotSchema;
   /** 旧格式（无信封）事件怎么解读，见 `createEventRegistry`。 */
   legacy?: LegacyReader;
   /** 自定义"从消息取命令名"的方式。 */
@@ -257,7 +264,11 @@ export function defineAggregate<S>(spec: AggregateSpec<S>): AggregateDefinition<
 
   const name = spec.name ?? 'Aggregate';
   const registry = createEventRegistry(spec.events ?? [], spec.legacy === undefined ? {} : { legacy: spec.legacy });
-  const evolution = (spec.events?.length ?? 0) > 0 ? defineEvolution({ events: registry }) : null;
+  const hasEvents = (spec.events?.length ?? 0) > 0;
+  const evolution =
+    hasEvents || spec.snapshot !== undefined
+      ? defineEvolution({ ...(hasEvents ? { events: registry } : {}), ...(spec.snapshot ? { snapshot: spec.snapshot } : {}) })
+      : null;
 
   const definition = {
     state: () => spec.initialState(),

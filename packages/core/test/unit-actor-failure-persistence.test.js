@@ -567,3 +567,115 @@ test('persistence: 没有 capabilities() 的自定义适配器 → 能力为 fal
     await system.stop();
   }
 });
+
+// ---------------------------------------------------------------------------
+// events 模式的**可选快照缓存**（快照是缓存、日志是真相）
+// ---------------------------------------------------------------------------
+
+function counterDefinition(applied) {
+  return {
+    preStart() {
+      this.state = { n: 0 };
+    },
+    async receive(msg, ctx) {
+      await ctx.persist({ type: 'Bump', n: msg.n });
+      return this.state.n;
+    },
+    applyEvent(event) {
+      applied.push(event.n);
+      this.state.n += event.n;
+    },
+  };
+}
+
+test('persistence: events + snapshot.every —— 恢复时只重放增量（快照记着重放到第几条）', async () => {
+  const dir = uniqueDir('evsnap');
+  const applied = [];
+  const options = {
+    mode: 'events',
+    store: new FilePersistence({ baseDir: dir }),
+    snapshot: { every: 2 },
+    onStop: false, // 停机不覆盖缓存，好让"第 2 条"这个位置留在盘上
+  };
+
+  const system1 = createSystem(quiet);
+  const ref1 = await system1.spawn(counterDefinition(applied), { id: 'acc', persistence: options });
+  await ref1.ask({ type: 'bump', n: 1 });
+  await ref1.ask({ type: 'bump', n: 2 });
+  await ref1.ask({ type: 'bump', n: 3 });
+  assert.deepStrictEqual(applied, [1, 2, 3], '写入期逐条应用');
+
+  // 每 2 条自动存一次：第 2 条之后存的那次，状态是 n=1+2=3、位置是 2
+  const store = new FilePersistence({ baseDir: dir });
+  const cached = await store.loadSnapshot('acc');
+  assert.strictEqual(cached.__snapshotAtSeq, 2, '快照必须记住"重放到第几条"');
+  assert.deepStrictEqual(cached.snapshot, { n: 3 });
+  await system1.stop();
+
+  // 重启：前两条由快照提供，只重放第 3 条
+  applied.length = 0;
+  const system2 = createSystem(quiet);
+  const ref2 = await system2.spawn(counterDefinition(applied), {
+    id: 'acc',
+    persistence: { ...options, store: new FilePersistence({ baseDir: dir }) },
+  });
+  assert.deepStrictEqual(applied, [3], '走缓存时只重放增量');
+  assert.deepStrictEqual(await ref2.state(), { n: 6 }, '快照 n=3 + 第 3 条 n=3');
+  await system2.stop();
+});
+
+test('persistence: events + snapshot —— 停机时也存一次缓存（可关）', async () => {
+  const dir = uniqueDir('evsnap-stop');
+  const withStop = createSystem(quiet);
+  const store1 = new FilePersistence({ baseDir: dir });
+  const ref1 = await withStop.spawn(counterDefinition([]), {
+    id: 'acc',
+    persistence: { mode: 'events', store: store1, snapshot: { every: 0 } },
+  });
+  await ref1.ask({ type: 'bump', n: 5 });
+  await withStop.stop();
+
+  const cached = await new FilePersistence({ baseDir: dir }).loadSnapshot('acc');
+  assert.strictEqual(cached.__snapshotAtSeq, 1, '停机时存的是"第 1 条之后"的状态');
+  assert.deepStrictEqual(cached.snapshot, { n: 5 });
+
+  // 没启用缓存时：手工 saveSnapshot 仍然写**裸状态**（与 M3 之前逐字节一致）
+  const plainDir = uniqueDir('evsnap-plain');
+  const plain = createSystem(quiet);
+  const store2 = new FilePersistence({ baseDir: plainDir });
+  const ref2 = await plain.spawn(
+    {
+      preStart() {
+        this.state = { n: 0 };
+      },
+      async receive(msg, ctx) {
+        this.state.n += msg.n;
+        await ctx.persist({ type: 'Bump', n: msg.n });
+        await ctx.saveSnapshot();
+      },
+      applyEvent(event) {
+        this.state.n += event.n;
+      },
+    },
+    { id: 'plain', persistence: { mode: 'events', store: store2 } },
+  );
+  await ref2.ask({ type: 'bump', n: 1 }); // 注意：这里 applyEvent 会再加一次，只为验证格式
+  assert.deepStrictEqual(await store2.loadSnapshot('plain'), { n: 2 }, '没启用缓存时不套包装（老行为）');
+  await plain.stop();
+});
+
+test('persistence: snapshot.every 的参数校验与作用域（只在 events 模式有意义）', async () => {
+  const system = createSystem(quiet);
+  try {
+    await assert.rejects(
+      () => system.spawn(counterDefinition([]), { id: 'a', persistence: { mode: 'events', snapshot: { every: -1 } } }),
+      /snapshot\.every 必须是 >= 0 的整数/,
+    );
+    await assert.rejects(
+      () => system.spawn(counterDefinition([]), { id: 'b', persistence: { mode: 'snapshot', snapshot: { every: 1 } } }),
+      /只在 mode: 'events' 下有意义/,
+    );
+  } finally {
+    await system.stop();
+  }
+});

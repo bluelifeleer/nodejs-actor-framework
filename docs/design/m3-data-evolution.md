@@ -218,7 +218,7 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | **第 2a 步：聚合基类** | ✅ | `defineAggregate`（命令→事件、纯 `applyEvent`、信封接入、元数据不可枚举）；单元 16 例 + 集成 4 例（内核直连 / 应用层两条路径） |
 | **第 2b-① 步：`seq` + 批量读取 hook** | ✅ | 信封加**每聚合单调 `seq`**（聚合写入时发号、重放时把计数器推到同一位置）；注册表新增 `readLog(raws, {fromSeq})` —— 旧日志**按位置补号**、**断号当场报错**；内核 `_restore` 优先走批量 hook |
 | **第 2c-① 步：条件写 + 后端能力** | ✅ | `appendEvent(id, event, { expectedVersion })`（不匹配抛 `PersistenceConflictError` 且不写入）；`capabilities().conditionalAppend` = `'atomic' \| 'in-process' \| false`，`file`/`memory` 如实报**仅同进程**；内核自动带上日志版本，聚合因此开箱就有乐观并发 |
-| 第 2b-② 步：快照缓存 + 增量重放 | ⏳ | 需要内核支持"快照 + 事件日志"共存；顺带补上 doc 04 §4.2 的"无迁移则从事件重建" |
+| **第 2b-② 步：快照缓存 + 增量重放 + 从事件重建** | ✅ | `mode:'events'` + 可选 `snapshot:{every:N}`；快照带 `atSeq`，恢复时只重放增量；结构对不上时**有日志就丢弃快照重建**（doc 04 §4.2 规则 2）、**没日志才拒绝启动**（规则 3）；未配置时行为与以前逐字节一致 |
 | 第 2c 步：`expectedVersion` 乐观并发 | ⏳ | 需要事件日志加**每聚合单调序号** + 条件追加；动手前先把格式决策摆出来 |
 | 第 3–6 步 | ⏳ | Repository / 迁移框架 / Outbox / 投影 |
 
@@ -336,9 +336,23 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
    断号当场报错）；内核 `_restore` 优先用批量 hook；
 2. ✅ **已完成**：`appendEvent` 支持条件写（`expectedVersion`）+ 后端能力查询
    （`system.persistenceCapabilities()`）；内核 `persistEvent` 自动带上日志版本；
-3. `mode: 'events'` 支持可选快照：恢复时"快照 + 增量重放"（用 `readLog({ fromSeq })`），
-   快照不可用时**丢弃并全量重放**（补上 doc 04 §4.2 规则 2）；
-4. 聚合层接上 `expectedSeq`（命令产出的整批事件作为一个原子批次），并在不支持的 backend 上明确报/记降级。
+3. ✅ **已完成**：`mode: 'events'` 支持可选快照（`snapshot: { every }`）——恢复时"快照 + 增量重放"
+   （用 `readLog({ fromSeq })`），快照不可用时**丢弃并从事件重建**（doc 04 §4.2 规则 2）；
+   没有日志可重建时仍然拒绝启动（规则 3）；
+4. ⏳ 聚合层把命令产出的整批事件作为一个**原子批次**写入（当前是逐条条件写：一条命令的第二条若冲突，
+   第一条已经落盘——日志仍自洽，但不是"命令级原子"）；
+
+### 6.7 可选快照缓存的实现说明（第 2b-② 步）
+
+| 点 | 做法 |
+|---|---|
+| 谁是真相 | **事件日志**。快照只是缓存，里面记着"这是重放到第几条时的状态"（内核外层包装 `{ __snapshotAtSeq, snapshot }`），恢复时只重放 `seq > atSeq` 的增量 |
+| 与数据层格式的分工 | 内核只包"恢复到第几条"，**用户状态仍由数据层的 `encodeSnapshot`/`decodeSnapshot` 决定形状**（两个信封各管一层） |
+| 三种恢复结果 | ① 快照可用 → 装状态 + 增量重放；② 快照**不可用**（结构版本对不上等）且**有日志** → 丢弃快照、从 0 全量重放（doc 04 §4.2 规则 2，记一条 `snapshot_unusable` 日志）；③ 不可用且**没有日志** → **拒绝启动**（规则 3） |
+| 什么时候存 | `every > 0`：每写 N 条事件自动存一次（**在事件应用到内存状态之后**——否则缓存会记下"已包含这条"却存着不含它的状态）；`every: 0`：只手动 `ctx.saveSnapshot()`；停机时若启用了缓存也会存一次 |
+| 自动存失败 | 只记日志（`snapshot_auto_failed`）：事件已经 durable，缓存失败不该让命令失败 |
+| 兼容性 | 没配置 `snapshot` 时行为与 M3 之前**逐字节一致**（手工 `ctx.saveSnapshot()` 仍写裸状态，也不会被当成缓存读）——"可选"是真的可选 |
+| 聚合侧 | `defineAggregate({ snapshot: { version, migrate } })` 让聚合自己声明状态结构版本；配合快照缓存即可获得"迁移 / 重建 / 拒绝启动"三条策略 |
 
 ### 6.6 条件写的实现说明（第 2c-① 步）
 

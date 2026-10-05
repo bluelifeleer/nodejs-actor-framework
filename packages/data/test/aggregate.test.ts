@@ -286,6 +286,21 @@ test('aggregate: 元数据不可枚举（内核的 unknown-keys 拼写检查不�
   assert.strictEqual(Order.registry.currentVersion('ItemAdded'), 2);
 });
 
+test('aggregate: 声明 snapshot 会带出 decode/encode hook（快照缓存的结构版本由聚合自己管）', () => {
+  const WithSnapshot = defineAggregate<{ n: number }>({
+    initialState: () => ({ n: 0 }),
+    applyEvent: (state) => state,
+    commands: { noop: () => undefined },
+    snapshot: { version: 3 },
+  });
+  assert.strictEqual(WithSnapshot.evolution !== null, true);
+  assert.strictEqual(typeof WithSnapshot.evolution?.decodeSnapshot, 'function');
+  assert.strictEqual(typeof WithSnapshot.evolution?.encodeSnapshot, 'function');
+  const encoded = WithSnapshot.evolution?.encodeSnapshot?.({ n: 1 }) as { stateVersion: number; state: unknown };
+  assert.strictEqual(encoded.stateVersion, 3);
+  assert.deepStrictEqual(WithSnapshot.evolution?.decodeSnapshot?.(encoded), { n: 1 });
+});
+
 test('aggregate: 没声明 events 时没有 evolution（不该凭空造一个恒等演进）', () => {
   const Plain = defineAggregate<{ n: number }>({
     initialState: () => ({ n: 0 }),
