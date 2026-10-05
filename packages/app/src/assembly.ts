@@ -207,13 +207,36 @@ export class Application {
     return this.system;
   }
 
-  /** 取一个 Actor 句柄（Actor 不存在时抛错，避免静默拿到 undefined）。 */
+  /**
+   * 取一个 Actor 句柄。
+   *
+   * 顺序：**本地已 spawn 的 Actor** → **内核按名字解析**（装了 cluster 插件时，这会让
+   * `ctx.actor('player_001')` 触达其它节点上的 Actor，且调用方无需知道它在哪台机器上）。
+   * 都找不到时抛出明确错误，而不是静默返回 undefined。
+   */
   actor(name: string): ActorHandle {
     const handle = this.handles.get(name);
-    if (!handle) {
-      throw new AssemblyError([{ message: `不存在名为 '${name}' 的 Actor`, requester: '(app.actor)' }]);
+    if (handle) return handle;
+
+    // 位置透明：本地没有就交给内核解析（内核在装了集群插件时会查 gossip 索引，
+    // 返回一个首次使用时才建立连接的 ref；没装集群插件时返回空）。
+    if (this.system) {
+      const system = this.system as { resolve?: (path: string) => ActorHandle | null | undefined };
+      if (typeof system.resolve === 'function') {
+        try {
+          const resolved = system.resolve(name);
+          if (resolved) return resolved;
+        } catch {
+          /* 未发现：落到下面的明确报错 */
+        }
+      }
     }
-    return handle;
+    throw new AssemblyError([
+      {
+        message: `不存在名为 '${name}' 的 Actor（本地未 spawn，集群发现也没有找到）`,
+        requester: '(app.actor)',
+      },
+    ]);
   }
 
   /** 取一个已解析的 provider（供测试与插件使用）。 */

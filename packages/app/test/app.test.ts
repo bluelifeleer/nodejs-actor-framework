@@ -133,7 +133,40 @@ test('app: 取不存在的 Actor/provider 会明确报错，而不是返回 unde
     env: {},
   });
   await app.start();
-  assert.throws(() => app.actor('Nope'), /不存在名为 'Nope' 的 Actor/);
+  assert.throws(() => app.actor('Nope'), /不存在名为 'Nope' 的 Actor（本地未 spawn，集群发现也没有找到）/);
   assert.throws(() => app.get('nope'), /provider 'nope' 尚未解析/);
+  await app.stop();
+});
+
+
+test('app: actor() 位置透明——本地优先，其次交给内核解析（未装集群插件时给出明确错误）', async () => {
+  const app = createApp(
+    defineApp({ modules: [defineModule({ name: 'm', actors: { Local: async (msg: unknown) => `local:${String(msg)}` } })] }),
+    { configDir: tempConfigDir(), env: {} },
+  );
+  await app.start();
+
+  // 本地 Actor 直接命中（不经过内核解析）
+  assert.strictEqual(await app.actor('Local').ask('hi'), 'local:hi');
+
+  // 未知名：内核解析不到 → 明确报错（提示集群发现，而不是 undefined 或含糊信息）
+  assert.throws(() => app.actor('player_001'), /集群发现也没有找到/);
+  await app.stop();
+});
+
+
+test('app: 内核直接 spawn 的 Actor 也能被 actor() 解析（真实走内核解析路径）', async () => {
+  const app = createApp(defineApp({ modules: [defineModule({ name: 'm' })] }), {
+    configDir: tempConfigDir(),
+    env: {},
+  });
+  await app.start();
+
+  // 绕过应用层声明，直接在内核上 spawn —— 应用层的 handles 里没有它
+  const kernel = app.kernel as { spawn: (definition: unknown, options: unknown) => Promise<unknown> };
+  await kernel.spawn(async (msg: unknown) => `kernel:${String(msg)}`, { id: 'ViaKernel' });
+
+  // 因此这里必须走"内核按名字解析"这条路（装了 cluster 插件时它还会查 gossip 索引）
+  assert.strictEqual(await app.actor('ViaKernel').ask('hi'), 'kernel:hi');
   await app.stop();
 });

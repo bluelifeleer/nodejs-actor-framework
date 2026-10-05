@@ -1,10 +1,21 @@
-> **状态（M2 进行中）**：已实现路由表与匹配（路径/查询参数 + 启动期检查、方法归一化、
-> HEAD→GET 回退、OPTIONS→204+Allow）、控制器上下文（请求访问器 + 返回形态 + 错误映射）、
-> `defineController` 与输入校验（复用应用层字段描述符 `validateValues`）、插件生命周期钩子
-> （`onReady`/`onStopping`）、`httpPlugin`（node:http 零依赖 + 在途请求优雅停止）。
-> 端到端示例：`examples/app-web/`（200/201/400/404/405/504/HEAD/OPTIONS + 优雅退出）。
-> **剩余**：WebSocket（`ws('/path', Controller)`）、访问日志插件（`requestId` 回写响应头）、
-> 集群场景下的路由（把控制器与远程 Actor 结合）。
+> **状态（M2 基本完成）**：已实现路由表与匹配（路径/查询参数、启动期检查、方法归一化、
+> HEAD→GET 回退、OPTIONS→204+Allow、WS 路由复用同一套语法）、控制器上下文（访问器双形态 +
+> 返回形态 + 错误映射 + `requestId`）、`defineController` 与输入校验（复用应用层
+> `validateValues`）、插件生命周期钩子（`onReady`/`onStopping`）、`httpPlugin`（node:http
+> 零依赖、在途请求优雅停止、访问日志）、`wsPlugin`（复用内核零依赖 ws-server、每条消息一次
+> handle）、**位置透明**（`ctx.actor(name)`：本地 → 内核按名解析 → 明确报错）。
+> 端到端示例：`examples/app-web/`（含 WS 与 HTTP）。
+>
+> **已验证范围（如实）**：HTTP 200/201/400/404/405/504/HEAD/OPTIONS + 优雅停止；
+> WS 连接/消息/校验/404/优雅停止；位置透明的回退路径用**真实内核**验证（内核直接 spawn 的
+> Actor 不在应用层句柄表里，仍能被解析）。
+>
+> **未验证/未完成（不要当成已完成）**：
+> 1. **两节点集群端到端**（控制器在 B 节点、Actor 在 A 节点、经 gossip 发现后触达）——
+>    属 M4 集群里程碑的验收项；本层只保证"回退到内核解析"这条链路接通并有单测；
+> 2. **app 级事件总线 + 真正的 `requestLogPlugin`**——当前访问日志由 `httpPlugin` 自己记录
+>    （插件生命周期没有"每请求"事件）；总线属 M4 运维范畴；
+> 3. HTTP 与 WS 共享同一端口（可选优化，当前各监听自己的端口，均可配置）。
 
 # M2 设计：路由 + 控制器（Web 层）
 
