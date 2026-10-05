@@ -64,6 +64,8 @@ export interface RequestContext {
   get(name: string): unknown;
   config: unknown;
   log: unknown;
+  /** 每请求可变袋：中间件放鉴权结果等，控制器读取。 */
+  state: Record<string, unknown>;
 }
 
 export function createRequestContext(init: RequestContextInit): RequestContext {
@@ -91,6 +93,7 @@ export function createRequestContext(init: RequestContextInit): RequestContext {
     get: (init.get as RequestContext['get']) ?? (notWired('ctx.get') as RequestContext['get']),
     config: init.config ?? null,
     log: init.log ?? console,
+    state: {},
   };
 }
 

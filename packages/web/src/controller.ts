@@ -17,11 +17,14 @@ import {
   type HttpResponse,
   type RequestContext,
 } from './context.ts';
+import { composeMiddleware, type Middleware } from './middleware.ts';
 import { matchRoute, type HttpMethod, type Route } from './routes.ts';
 
 export interface ControllerSpec {
   /** 依赖的 provider 名字（由 httpPlugin 在启动时解析并注入 ctx.get）。 */
   deps?: readonly string[];
+  /** 控制器级中间件（在全局与路由级之后）。 */
+  middleware?: readonly Middleware[];
   /** 输入校验：复用应用层的字段描述符。键必须来自路径参数或已声明的查询参数。 */
   input?: ConfigSchema;
   handle: (input: Record<string, unknown>, ctx: RequestContext) => unknown | Promise<unknown>;
@@ -48,6 +51,8 @@ export interface DispatchRequest {
 export interface DispatchOptions {
   routes: readonly Route[];
   request: DispatchRequest;
+  /** 全局中间件（app 级，声明顺序）。 */
+  middleware?: readonly Middleware[];
   /** 由 httpPlugin 提供的接线（Actor 句柄、provider、配置、日志）。 */
   actor?: (name: string) => unknown;
   get?: (name: string) => unknown;
@@ -137,23 +142,24 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
   });
 
   try {
-    let input: Record<string, unknown> = declared;
-    if (spec.input) {
-      const { values, issues } = validateValues(spec.input, declared, `请求输入`);
-      if (issues.length > 0) {
-        return {
-          matched: true,
-          route,
-          status: 400,
-          requestId,
-          response: toErrorResponse(
-            new HttpError(400, 'input validation failed', { issues: issues satisfies ConfigIssue[] }),
-          ),
-        };
+    // 中间件链：全局 → 路由 → 控制器；输入校验紧贴 handle（鉴权/限流可先短路）
+    const chain: Middleware[] = [
+      ...(options.middleware ?? []),
+      ...((route.middleware ?? []) as readonly Middleware[]),
+      ...(spec.middleware ?? []),
+    ];
+    const run = composeMiddleware(chain);
+    const result = await run(ctx, async () => {
+      let input: Record<string, unknown> = declared;
+      if (spec.input) {
+        const { values, issues } = validateValues(spec.input, declared, `请求输入`);
+        if (issues.length > 0) {
+          throw new HttpError(400, 'input validation failed', { issues: issues satisfies ConfigIssue[] });
+        }
+        input = values;
       }
-      input = values;
-    }
-    const result = await spec.handle(input, ctx);
+      return spec.handle(input, ctx);
+    });
     const response = toResponse(result);
     return {
       matched: true,

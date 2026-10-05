@@ -7,6 +7,8 @@
 export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
 export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
 
+export { composeMiddleware, defineMiddleware, type Middleware } from './middleware.ts';
+
 export {
   defineController,
   dispatch,

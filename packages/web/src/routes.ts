@@ -48,6 +48,8 @@ export interface Route {
   readonly pathParams: readonly string[];
   readonly queryParams: readonly string[];
   readonly controller: ControllerLike | ((input: unknown, ctx: unknown) => unknown);
+  /** 路由级中间件（在全局中间件之后、控制器之前的链上）。 */
+  readonly middleware?: readonly unknown[];
 }
 
 function isControllerObject(value: unknown): value is ControllerLike {
@@ -59,6 +61,7 @@ export function parsePattern(
   method: RouteMethod | string,
   pattern: string,
   controller: Route['controller'],
+  middleware?: readonly unknown[],
 ): { route?: Route; issue?: RouteIssue } {
   const normalized = normalizeMethod(method);
   if (!normalized) {
@@ -118,19 +121,22 @@ export function parsePattern(
     }
   }
   return {
-    route: { method: methodValue, pattern, path, segments, pathParams, queryParams, controller },
+    route: {
+      method: methodValue, pattern, path, segments, pathParams, queryParams, controller,
+      ...(middleware ? { middleware } : {}),
+    },
   };
 }
 
 /** 构建路由表；返回路由与启动期问题（重复、非法模式）。 */
 export function buildRouteTable(
-  entries: readonly (readonly [RouteMethod, string, Route['controller']])[],
+  entries: readonly (readonly [RouteMethod, string, Route['controller'], (readonly unknown[] | undefined)?])[],
 ): { routes: Route[]; issues: RouteIssue[] } {
   const routes: Route[] = [];
   const issues: RouteIssue[] = [];
   const seen = new Map<string, Route>();
-  for (const [method, pattern, controller] of entries) {
-    const { route, issue } = parsePattern(method, pattern, controller);
+  for (const [method, pattern, controller, middleware] of entries) {
+    const { route, issue } = parsePattern(method, pattern, controller, middleware);
     if (issue || !route) {
       if (issue) issues.push(issue);
       continue;
@@ -223,16 +229,56 @@ export function matchRoute(routes: readonly Route[], input: MatchInput): MatchRe
   return { kind: 'not_found' };
 }
 
-export const get = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['GET', pattern, controller];
-export const post = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['POST', pattern, controller];
-export const put = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['PUT', pattern, controller];
-export const patch = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['PATCH', pattern, controller];
-export const del = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['DELETE', pattern, controller];
-export const head = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['HEAD', pattern, controller];
-export const options = (pattern: string, controller: Route['controller']): readonly [HttpMethod, string, Route['controller']] => ['OPTIONS', pattern, controller];
+export const get = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['GET', pattern, controller, middleware];
+export const post = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['POST', pattern, controller, middleware];
+export const put = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['PUT', pattern, controller, middleware];
+export const patch = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['PATCH', pattern, controller, middleware];
+export const del = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['DELETE', pattern, controller, middleware];
+export const head = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['HEAD', pattern, controller, middleware];
+export const options = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['OPTIONS', pattern, controller, middleware];
 
 /** WebSocket 路由：与 HTTP 路由共用模式语法（路径参数 / 查询参数 / 启动期检查）。 */
-export const ws = (pattern: string, controller: Route['controller']): readonly [RouteMethod, string, Route['controller']] => ['WS', pattern, controller];
+export const ws = (
+  pattern: string,
+  controller: Route['controller'],
+  middleware?: readonly unknown[],
+): readonly [(HttpMethod | RouteMethod), string, Route['controller'], (readonly unknown[] | undefined)?] =>
+  ['WS', pattern, controller, middleware];
 
 /** 声明一组路由（在 `defineModule({ routes })` 里使用）。 */
 export function defineRoutes(
