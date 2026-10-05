@@ -22,5 +22,21 @@ export {
   type LoadedConfig,
 } from './config.ts';
 
+export {
+  defineModule,
+  defineApp,
+  createApp,
+  Application,
+  AssemblyError,
+  type ActorHandle,
+  type ActorSpec,
+  type AppSpec,
+  type AssemblyIssue,
+  type CreateAppOptions,
+  type ModuleSpec,
+  type ProviderFactory,
+  type ProviderSpec,
+} from './assembly.ts';
+
 /** 应用层版本，便于启动日志与诊断。 */
 export const APP_LAYER_VERSION = '0.1.0';
