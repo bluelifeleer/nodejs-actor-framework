@@ -30,6 +30,7 @@ const { Actor, defineActor, ActorDefinition } = require('./actor/actor.ts');
 const { ActorRef, DeadLetterRef } = require('./actor/actor-ref.ts');
 const { ActorSystem, createSystem } = require('./actor/system.ts');
 const { RemoteRef, Peer } = require('./cluster/remote.ts');
+const ring = require('./cluster/ring.ts');
 const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
 const Mailbox = require('./actor/mailbox.ts');
 const ChildSupervisor = require('./actor/guardian.ts');
@@ -38,6 +39,8 @@ const RestartStrategy = require('./actor/restart-strategy.ts');
 const plugins = require('./plugins/index.ts');
 
 module.exports = {
+  // 集群治理：一致性哈希环（纯函数；所有权 = ownerOfShard(ring, shard)）
+  ring,
   // programming model
   Actor,
   defineActor,
