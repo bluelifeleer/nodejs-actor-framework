@@ -70,6 +70,11 @@ export interface PluginSpec {
   name: string;
   /** 插件自己的配置 schema：会被合并进应用配置的 `plugins.<name>.*` 下（一套配置体系）。 */
   config?: ConfigSchema;
+  /**
+   * 贡献给内核的能力插件（不透明类型：应用层不暴露内核内部类型）。
+   * 内置能力用 packages/app/src/plugins.ts 的包装函数生成。
+   */
+  kernelPlugins?: readonly unknown[];
   /** 在 provider 解析与 Actor spawn 之前执行。 */
   setup?: (app: Application, config: Record<string, unknown>) => void | Promise<void>;
   /** 在模块 onStop 与内核停止之后执行（逆序）。 */
@@ -246,8 +251,15 @@ export class Application {
     for (const name of this.providerSpecs.keys()) this.resolveProvider(name, [], resolveIssues);
     if (resolveIssues.length > 0) throw new AssemblyError(resolveIssues);
 
-    // 5) 启动内核并 spawn Actor
-    this.system = createSystem(this.options.kernel ?? { logger: false });
+    // 5) 启动内核并 spawn Actor —— 插件贡献的内核能力在此一次性装入
+    // （显式启用：未声明的能力不会被挂上，内核的加载面因此可控）
+    const contributed = this.pluginSpecs.flatMap((plugin) => plugin.kernelPlugins ?? []);
+    const kernelOptions: Record<string, unknown> = { ...(this.options.kernel ?? { logger: false }) };
+    if (contributed.length > 0) {
+      const existing = (kernelOptions.plugins as readonly unknown[] | undefined) ?? [];
+      kernelOptions.plugins = [...existing, ...contributed];
+    }
+    this.system = createSystem(kernelOptions);
     const system = this.system as { spawn: (d: unknown, o: unknown) => Promise<ActorHandle> };
     for (const [name, actorSpec] of this.actorSpecs) {
       this.handles.set(name, await this.spawnActor(system, name, actorSpec));
