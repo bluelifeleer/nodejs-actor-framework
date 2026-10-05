@@ -1,0 +1,191 @@
+/**
+ * 控制器上下文（M2 第 1 步）：请求访问器 + 返回形态。
+ *
+ * 纯数据与纯函数，不依赖 http 模块 —— 便于单测，也便于将来换服务器实现。
+ */
+
+/** 可调用访问器：`qs('k')` 与 `qs().get('k')` 两种写法等价。 */
+export interface Accessor<V> {
+  (key: string): V | undefined;
+  (): AccessorObject<V>;
+  get(key: string): V | undefined;
+  all(): Record<string, V>;
+  has(key: string): boolean;
+}
+
+export interface AccessorObject<V> {
+  get(key: string): V | undefined;
+  all(): Record<string, V>;
+  has(key: string): boolean;
+}
+
+function makeAccessor<V>(
+  source: () => Record<string, V>,
+  normalize: (key: string) => string = (key) => key,
+): Accessor<V> {
+  const lookup = (key: string): V | undefined => source()[normalize(key)];
+  const api: AccessorObject<V> = {
+    get: lookup,
+    all: () => ({ ...source() }),
+    has: (key: string) => Object.prototype.hasOwnProperty.call(source(), normalize(key)),
+  };
+  const callable = ((key?: string) => (key === undefined ? api : api.get(key))) as Accessor<V>;
+  return Object.assign(callable, api);
+}
+
+export type HeaderValue = string | string[];
+
+export interface RequestContextInit {
+  method: string;
+  path: string;
+  requestId: string;
+  params?: Record<string, string>;
+  query?: Record<string, string>;
+  headers?: Record<string, HeaderValue>;
+  body?: unknown;
+  actor?: (name: string) => unknown;
+  get?: (name: string) => unknown;
+  config?: unknown;
+  log?: unknown;
+}
+
+export interface RequestContext {
+  method: string;
+  path: string;
+  requestId: string;
+  /** 已解析的请求体（JSON 自动解析，否则原始文本；无体时为 undefined）。 */
+  body: unknown;
+  params: Accessor<string>;
+  qs: Accessor<string>;
+  headers: Accessor<HeaderValue>;
+  /** 取某个请求头的单个值（重复头取第一个）。 */
+  header(name: string): string | undefined;
+  actor(name: string): unknown;
+  get(name: string): unknown;
+  config: unknown;
+  log: unknown;
+}
+
+export function createRequestContext(init: RequestContextInit): RequestContext {
+  const paramsSource: Record<string, string> = { ...(init.params ?? {}) };
+  const querySource: Record<string, string> = { ...(init.query ?? {}) };
+  const headersSource: Record<string, HeaderValue> = {};
+  for (const [key, value] of Object.entries(init.headers ?? {})) headersSource[key.toLowerCase()] = value;
+
+  const notWired = (what: string) => (): never => {
+    throw new Error(`${what} 尚未接线（由 httpPlugin 在启动时提供）`);
+  };
+  return {
+    method: init.method,
+    path: init.path,
+    requestId: init.requestId,
+    body: init.body,
+    params: makeAccessor(() => paramsSource),
+    qs: makeAccessor(() => querySource),
+    headers: makeAccessor(() => headersSource, (key) => key.toLowerCase()),
+    header(name: string): string | undefined {
+      const value = headersSource[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    },
+    actor: (init.actor as RequestContext['actor']) ?? (notWired('ctx.actor') as RequestContext['actor']),
+    get: (init.get as RequestContext['get']) ?? (notWired('ctx.get') as RequestContext['get']),
+    config: init.config ?? null,
+    log: init.log ?? console,
+  };
+}
+
+// --- 返回形态 ---------------------------------------------------------------
+
+export interface HttpResponseInit {
+  status?: number;
+  contentType?: string;
+  headers?: Record<string, string>;
+}
+
+/** 控制器的显式返回：由 content type 决定序列化方式。 */
+export interface HttpResponse {
+  status: number;
+  contentType: string;
+  /** string 直接写；Uint8Array 原样写；null 表示空体。 */
+  body: string | Uint8Array | null;
+  headers: Record<string, string>;
+}
+
+function make(status: number, contentType: string, body: string | Uint8Array | null, init: HttpResponseInit = {}): HttpResponse {
+  return {
+    status: init.status ?? status,
+    contentType: init.contentType ?? contentType,
+    body,
+    headers: { ...(init.headers ?? {}) },
+  };
+}
+
+export const reply = {
+  json: (body: unknown, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'application/json; charset=utf-8', JSON.stringify(body ?? null), init),
+  text: (body: string, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'text/plain; charset=utf-8', body, init),
+  html: (body: string, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'text/html; charset=utf-8', body, init),
+  buffer: (body: Uint8Array, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'application/octet-stream', body, init),
+  protobuf: (body: Uint8Array, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'application/x-protobuf', body, init),
+  /** 完全自定义：状态码、内容类型、响应头。 */
+  send: (body: string | Uint8Array | null, init: HttpResponseInit = {}): HttpResponse =>
+    make(init.status ?? 200, init.contentType ?? 'application/octet-stream', body, init),
+  /** 无内容。 */
+  noContent: (init?: HttpResponseInit): HttpResponse => make(204, 'text/plain; charset=utf-8', null, init),
+};
+
+export class HttpError extends Error {
+  readonly status: number;
+  readonly details: unknown;
+  constructor(status: number, message: string, details?: unknown) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
+function isHttpResponse(value: unknown): value is HttpResponse {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'status' in value &&
+    'contentType' in value &&
+    'body' in value
+  );
+}
+
+/**
+ * 把控制器的返回值规范成响应。约定（docs/design/m2-web-layer.md §2.2）：
+ * 显式返回优先；对象/数组 → JSON 200；undefined → 204；其它标量 → 文本 200。
+ */
+export function toResponse(result: unknown): HttpResponse {
+  if (result === undefined) return reply.noContent();
+  if (isHttpResponse(result)) return result;
+  // 顺序要紧：Uint8Array 也是 object，必须先判字节，否则会被 JSON.stringify 成 {"0":1,...}
+  if (result instanceof Uint8Array) return reply.buffer(result);
+  if (typeof result === 'string') return reply.text(result);
+  if (result === null || typeof result === 'object') return reply.json(result);
+  return reply.text(String(result));
+}
+
+/** 把任意异常映射成响应（错误映射表见设计 §4）。 */
+export function toErrorResponse(error: unknown): HttpResponse {
+  if (error instanceof HttpError) {
+    return reply.json({ error: { status: error.status, message: error.message, details: error.details } }, { status: error.status });
+  }
+  const name = (error as { name?: string } | null)?.name;
+  const message = (error as { message?: string } | null)?.message ?? 'internal error';
+  // 内核的 AskTimeoutError 按 name 判定，不 import 内核类型（保持边界）
+  if (name === 'AskTimeoutError') {
+    return reply.json({ error: { status: 504, message: 'actor did not answer in time' } }, { status: 504 });
+  }
+  if (name === 'ActorNotFoundError') {
+    return reply.json({ error: { status: 404, message } }, { status: 404 });
+  }
+  return reply.json({ error: { status: 500, message: 'internal error' } }, { status: 500 });
+}

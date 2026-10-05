@@ -5,6 +5,21 @@
  * 本包不得 re-export 内核内部类型。
  */
 export {
+  createRequestContext,
+  HttpError,
+  reply,
+  toErrorResponse,
+  toResponse,
+  type Accessor,
+  type AccessorObject,
+  type HeaderValue,
+  type HttpResponse,
+  type HttpResponseInit,
+  type RequestContext,
+  type RequestContextInit,
+} from './context.ts';
+
+export {
   buildRouteTable,
   defineRoutes,
   del,

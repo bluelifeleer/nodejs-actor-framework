@@ -84,6 +84,43 @@ query_decl := name [ '=' ] { '&' name [ '=' ] }
 `input` schema 复用 M1 的字段描述符与校验规则；是否必填由 schema 决定
 （有 `default` 即可选，没有则必填）——与配置系统语义一致。
 
+## 2.2 请求访问器与返回形态（控制器 ctx）
+
+**请求访问器：两种写法等价，都支持**（用户要求）：
+
+```ts
+qs('page')            // 取单个查询参数
+qs().get('page')      // 同一语义的链式写法
+qs().all()            // 全部查询参数
+qs().has('page')
+headers('authorization')       // 请求头（大小写不敏感；重复头返回数组）
+headers().get('authorization')
+headers().all()
+params('id') / params().get('id')     // 路径参数
+body                                   // 已解析的请求体（JSON 自动解析；否则原始文本）
+method / path / requestId              // 请求元信息
+```
+
+实现方式：访问器本身是**可调用对象**（函数 + `.get/.all/.has` 方法），因此两种写法指向同一份数据，
+不存在"两套 API 行为不一致"的风险。
+
+**返回形态：默认 JSON，可显式指定状态码与内容类型**（用户要求）：
+
+| 写法 | 状态码 | Content-Type | 实际返回 |
+|---|---|---|---|
+| `return { ok: true }` | 200 | `application/json; charset=utf-8` | JSON 序列化 |
+| `return reply.json(data, { status: 201 })` | 201 | `application/json` | JSON |
+| `return reply.text('hello')` | 200 | `text/plain; charset=utf-8` | UTF-8 文本 |
+| `return reply.html('<h1>hi</h1>')` | 200 | `text/html; charset=utf-8` | HTML |
+| `return reply.buffer(bytes)` | 200 | `application/octet-stream` | 原始字节 |
+| `return reply.protobuf(bytes)` | 200 | `application/x-protobuf` | 原始字节（Protobuf 编码） |
+| `return reply.send(body, { status, contentType, headers })` | 自定义 | 自定义（含自定义响应头） | 由 contentType 决定 |
+| `return undefined` | 204 | — | 空 |
+| `throw new HttpError(404, 'not found')` | 404 | `application/json` | `{ error: { status, message, details? } }` |
+
+约定：**返回值决定形态，显式优先于隐式**；`contentType` 一律可被 `reply.send` 覆盖，
+框架不猜测业务意图，只在完全没有指定时按"对象 → JSON"处理。
+
 ## 3. 与装配的衔接（生命周期）
 
 ```
