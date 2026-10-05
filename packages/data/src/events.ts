@@ -176,6 +176,14 @@ export interface EventRegistry {
    * 旧格式按位置补号。`fromSeq` 用于第 2b 步的"快照 + 增量重放"。
    */
   readLog(raws: readonly unknown[], options?: { fromSeq?: number }): { events: unknown[]; lastSeq: number | null };
+  /**
+   * 与 `readLog` 同一套编号规则，但返回 `{seq, eventId, event}`：
+   * 投递（outbox）与投影需要"这条事件的**序号**与 **id**"——去重与断点都靠它们。
+   */
+  readEntries(
+    raws: readonly unknown[],
+    options?: { fromSeq?: number },
+  ): { entries: { seq: number; eventId: string | null; event: unknown }[]; lastSeq: number | null };
   /** 某个类型的当前版本；未注册则 `null`。 */
   currentVersion(type: string): number | null;
   /** 已注册的事件类型。 */
@@ -309,12 +317,13 @@ export function createEventRegistry(
    *
    * `fromSeq` 是给第 2b 步"快照 + 增量重放"用的：只要 `seq >= fromSeq` 的事件。
    */
-  const readLog = (
+  /** 走一遍日志：补号/连续性检查在此统一实现，`readLog` 与 `readEntries` 共用。 */
+  const walk = (
     raws: readonly unknown[],
-    readOptions: { fromSeq?: number } = {},
-  ): { events: unknown[]; lastSeq: number | null } => {
+    readOptions: { fromSeq?: number },
+    onEntry: (entry: { seq: number; eventId: string | null; event: unknown }) => void,
+  ): { lastSeq: number | null } => {
     const fromSeq = readOptions.fromSeq ?? null;
-    const events: unknown[] = [];
     let cursor = 0;
     let lastSeq: number | null = null;
 
@@ -347,16 +356,33 @@ export function createEventRegistry(
 
       if (fromSeq !== null && cursor < fromSeq) return;
       const event = interpreted === null ? raw : applyChain(interpreted);
-      events.push(event);
+      const eventId = isEventEnvelope(raw) && typeof raw.eventId === 'string' ? raw.eventId : null;
+      onEntry({ seq: cursor, eventId, event });
     });
 
+    return { lastSeq };
+  };
+
+  const readLog = (
+    raws: readonly unknown[],
+    readOptions: { fromSeq?: number } = {},
+  ): { events: unknown[]; lastSeq: number | null } => {
+    const events: unknown[] = [];
+    const { lastSeq } = walk(raws, readOptions, (entry) => events.push(entry.event));
     return { events, lastSeq };
+  };
+
+  const readEntries = (raws: readonly unknown[], readOptions: { fromSeq?: number } = {}) => {
+    const entries: { seq: number; eventId: string | null; event: unknown }[] = [];
+    const { lastSeq } = walk(raws, readOptions, (entry) => entries.push(entry));
+    return { entries, lastSeq };
   };
 
   return {
     upcast,
     upcastAll: (raw) => raw.map(upcast),
     readLog,
+    readEntries,
     currentVersion: (type) => byType.get(type)?.version ?? null,
     types: () => [...byType.keys()].sort(),
   };

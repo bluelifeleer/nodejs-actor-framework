@@ -17,7 +17,7 @@
 | **2** | **Aggregate**：命令→事件、`expectedVersion` 乐观并发、快照缓存 + 事件重放（含 offset） | 同一聚合被两个节点同时拥有时，旧 epoch 的写入被拒；崩溃重启后状态一致 | 🚧 **2a 完成**（§3）；2b/2c 待做 |
 | 3 | **Repository**：file / memory / SQL 薄适配 + **游标分页**（不用 offset） | 并发写入下游标分页不漏不重；外部 ORM 适配示例可跑 | — |
 | 4 | **迁移框架**：版本表 + 幂等 `up/down` + 启动校验 | 中途崩溃可重入；有未应用迁移时默认**拒绝启动** | ✅ 已完成（§8） |
-| 5 | **Outbox**：事件与 outbox 同批写入 + dispatcher + 至少一次投递 | 投递至少一次；消费方按 `eventId` 去重有测试；失败进死信、积压进指标 | — |
+| 5 | **Outbox**：事件与 outbox 同批写入 + dispatcher + 至少一次投递 | 投递至少一次；消费方按 `eventId` 去重有测试；失败进死信、积压进指标 | ✅ 已完成（§9） |
 | 6 | **投影**：订阅 / checkpoint / 去重 / 重建 | 从 0 重建**不丢不重**；离线重建 + 原子切换 | — |
 
 ## 2. 第 1 步详细设计
@@ -558,3 +558,54 @@ const status = await runner.status();    // { applied, pending, interrupted, unk
 
 **与仓储/聚合的关系**：迁移改的是存储结构（表、列、索引），聚合与仓储只是它的使用者。
 所以迁移测试不依赖内核：`store` 就是版本表，`up({ store })` 里可以拿任意数据层能力去做事。
+
+## 9. 第 5 步：Outbox（已实现）
+
+### 9.1 关键设计选择：**事件日志本身就是 outbox**
+
+doc 04 §6 要求"事件与 outbox 记录在**同一次写入**里落盘"，因为"先存再发、中间崩溃就丢消息"。
+如果把 outbox 做成**另一张表 / 另一个文件**，就又要面对两次写入之间的崩溃窗口（还得为此造一个
+分布式事务）。而事件日志本身就是原子写入的记录：
+
+> **事件落盘 = outbox 记录落盘**（同一次 append），投递进度只需要一个**游标**。
+
+于是不需要新格式、不需要双写、也不需要在第 1 步的信封上再加字段——`seq`/`eventId` 已经够用
+（这正是第 1 步把它们留出来的原因）。
+
+### 9.2 语义（每条都有测试）
+
+| 语义 | 实现 | 证据 |
+|---|---|---|
+| **至少一次** | **发布成功之后才推进游标**。崩溃在"已发布、未推进"之间 → 下次重发 | 注入一个"写完游标前必崩"的游标：投递序列变成 `[evt-1, evt-1, evt-2, evt-3]`——第一条确实发了两次 |
+| **保序** | 一条失败就停在这一条（后面的先不发） | 第二条失败时，游标停在 1、第三条不投 |
+| **毒消息不堵死** | 重试到 `maxAttempts`（默认 3）后进死信并**跳过**它，继续后面的 | 第二条永远失败 → 第二次 drain 时进死信、第三条照常投递 |
+| **消费幂等** | `createDedupeSet({ repository })`：**直接复用第 3 步的仓储**——`insert` 撞主键就是"重复投递" | memory / file / **SQL（主键约束，真去重）**三种仓储都验过：同一 `deliveryId` 三次投递 → `handled / duplicate / duplicate`，业务只跑一次 |
+| **可过滤** | `select(entry)` 决定哪些事件要投；被过滤的也**推进游标**（否则每轮都要重读） | 只投 `ItemAdded`：`skipped=1`，游标推到 3 |
+| **游标可持久** | memory / file（原子写、跨实例）/ SQL（自动建表）三个适配器 | 跨实例读取、损坏时明确报错 |
+
+```ts
+const dispatcher = createOutboxDispatcher({
+  reader: createOutboxLogReader({ loadRecords: () => store.loadEvents('order-1'), registry: Order.registry, actorPath: 'order-1' }),
+  cursor: createFileOutboxCursor({ dir: './data' }),
+  publish: (entry) => pubsub.publish('orders', entry.event),          // 你的投递通道
+  select: (entry) => (entry.event as { type: string }).type !== 'Internal',
+  onDeadLetter: (entry, err) => deadLetters.add(entry, err),          // 接内核的死信/指标
+  log: (message, meta) => console.log(message, meta),
+});
+
+await dispatcher.drainOnce();                 // 手动跑一轮（测试/运维都方便）
+dispatcher.start({ intervalMs: 1000 });       // 或起轮询
+await system.spawn(dispatcher.asActor(), { id: 'outbox' });   // 或当 Actor 用
+```
+
+### 9.3 如实记录的两处边界
+
+1. **轮询用的是 `setInterval`**：内核还没有可注入时钟/定时器（M0.2 的原语尚未实现，见
+   `docs/design/m0/02-primitives.md`），所以 dispatcher 自己用 `setInterval` + `postStop` 清理 +
+   `unref()`（不钉住进程）。内核定时器到位后，这里换成 `ctx.schedule(...)` 即可——接口不用变。
+2. **死信与指标只给钩子**：数据层不依赖内核，所以 `onDeadLetter` / `stats()` 是回调与数字；
+   接到内核的 `deadLettersPlugin` / `metricsPlugin` 是**应用层**的事（上面注释里的那一行）。
+   跨节点投递同理：`publish` 由你用 pubsub/集群实现，本步不做。
+
+**证据（测试）**：`packages/data/test/outbox.test.ts` 8 例，含"至少一次"的注入式崩溃、
+"毒消息跳过"、"三种仓储的去重"、以及**用真内核 spawn `asActor()` 轮询投递 / 停掉后不再投**。

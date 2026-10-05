@@ -11,7 +11,8 @@
  * 已实现（第 2 步）：事件溯源聚合 `defineAggregate()`（命令 → 事件、纯 applyEvent、信封接入）。
  * 已实现（第 3 步）：仓储契约 + memory / file / SQL 适配器（游标分页 / 等值过滤 / version 乐观锁）。
  * 已实现（第 4 步）：迁移框架（版本表 + 幂等 up/down + 默认拒绝启动）。
- * 后续：Outbox（第 5 步）、投影（第 6 步）。
+ * 已实现（第 5 步）：Outbox（事件日志即 outbox + 投递游标 + 至少一次 + 消费幂等去重）。
+ * 后续：投影（第 6 步）。
  */
 export {
   createEventEnvelope,
@@ -45,6 +46,31 @@ export {
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
+
+export {
+  createDedupeSet,
+  createFileOutboxCursor,
+  createIdempotentConsumer,
+  createMemoryOutboxCursor,
+  createOutboxDispatcher,
+  createOutboxLogReader,
+  createSqlOutboxCursor,
+  OutboxDeliveryError,
+  OutboxError,
+  type DedupeSet,
+  type FileOutboxCursorOptions,
+  type IdempotentConsumerOptions,
+  type OutboxCursorStore,
+  type OutboxDispatcher,
+  type OutboxDispatcherOptions,
+  type OutboxDrainResult,
+  type OutboxEntry,
+  type OutboxLogReader,
+  type OutboxLogReaderOptions,
+  type OutboxSqlRunner,
+  type OutboxStats,
+  type SqlOutboxCursorOptions,
+} from './outbox/index.ts';
 
 export {
   createFileMigrationStore,
