@@ -194,6 +194,14 @@ export function defineApp<S extends ConfigSchema>(spec: AppSpec<S>): AppSpec<S> 
 export class Application {
   private readonly providerSpecs = new Map<string, ProviderSpec>();
   private readonly actorSpecs = new Map<string, ActorSpec>();
+  /**
+   * 路径 → { 定义, spawn 选项 }（M4 第 3b 步）。
+   *
+   * 集群接管时需要"用同一个定义把 Actor 在新 owner 上重建"，而"这个 actorId 是哪个定义、用什么
+   * 持久化选项"是**应用层**的知识（模块的 `actors:` 声明 + 依赖注入）。所以在这里记账，并在启动后
+   * 把它交给内核的 `ownership.recreate`。
+   */
+  private readonly actorDefinitions = new Map<string, { definition: unknown; options: Record<string, unknown> }>();
   private readonly providerValues = new Map<string, unknown>();
   private readonly handles = new Map<string, ActorHandle>();
   private readonly modules: ModuleSpec[] = [];
@@ -352,6 +360,15 @@ export class Application {
     }
     this.system = createSystem(kernelOptions);
     const system = this.system as { spawn: (d: unknown, o: unknown) => Promise<ActorHandle> };
+    // 装了集群插件时，把"路径 → 定义"交给它：接管别的节点交出来的 Actor 时内核会回调这里。
+    // 注意时机：插件的 setup 发生在**内核 init（listen）时**，所以这里先试一次，并挂到 'listening'
+    // 上再装一次——否则 ownership 还不存在，钩子会静默装不上（真踩过）。
+    const installRecreate = (): void => {
+      const ownership = (this.system as { ownership?: { recreate?: unknown } } | null)?.ownership;
+      if (ownership) ownership.recreate = (path: string) => this.actorDefinitions.get(String(path)) ?? null;
+    };
+    installRecreate();
+    (this.system as { on?: (event: string, fn: () => void) => void }).on?.('listening', installRecreate);
     for (const [name, actorSpec] of this.actorSpecs) {
       this.handles.set(name, await this.spawnActor(system, name, actorSpec));
     }
@@ -544,7 +561,12 @@ export class Application {
     } else {
       definition = defineActor(spec.definition as Parameters<typeof defineActor>[0]);
     }
-    return system.spawn(definition, { id: spec.id ?? name, ...(spec.options ?? {}) });
+    const spawnOptions = { id: spec.id ?? name, ...(spec.options ?? {}) };
+    const handle = await system.spawn(definition, spawnOptions);
+    // 记下路径 → 定义：集群在本节点接管别人的 Actor 时要用（见 actorDefinitions 的注释）
+    const handlePath = (handle as { path?: string }).path ?? String(spawnOptions.id);
+    this.actorDefinitions.set(handlePath, { definition, options: spawnOptions });
+    return handle;
   }
 
   /** 内核级默认持久化（`createApp(..., { kernel: { defaults: { persistence } } })`）。 */

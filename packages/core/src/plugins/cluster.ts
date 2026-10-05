@@ -164,7 +164,107 @@ function cluster(options = {}) {
       /** 已宣布离场的节点（含本节点在 drain() 时宣布的）：环要立刻排除它们。 */
       const leaving = new Set();
       const leavingKey = 'leaving:';
+      const ADOPT_PREFIX = 'adopt:';
       const takeover = { promoted: 0, shards: [] };
+      let singletonsPromoted = false;
+      let promotedThisPass = false;
+      /** 接管统计（第 6 步的指标也从这里读）。 */
+      const adoption = { adopted: 0, skipped: 0, failed: 0 };
+      /**
+       * 多数派判据（第 5 步，已确认的 D4）：`2 * live > highWater`。
+       *
+       * `highWater` = 本节点**见过的最多成员数**（高水位），这样"我们曾经是 3 个，现在只剩我 1 个"
+       * 会被判成少数派；而一个刚启动、只见过自己的节点不会误判（1*2 > 1）。
+       * 判据刻意简单：越简单越不容易在分区里出现"两边都以为自己是多数派"。
+       */
+      let highWater = 1;
+      const quorumState = () => {
+        const live = Math.max(1, gossip.info().nodes.filter((node) => !leaving.has(node)).length);
+        highWater = Math.max(highWater, live);
+        return { live, highWater, ok: live * 2 > highWater };
+      };
+
+      /** 单例（第 4 步）：每个节点都登记定义，只有 owner 真的运行。 */
+      const singletons = new Map();
+      /** 一条离开/超时事件带来的"待接管 Actor"（在注册表被清掉之前先记下来）。 */
+      let pendingAdoptions = [];
+
+      /** 环变化前先记下"原主人交出来的、且落到我们头上的、可迁移的" Actor。 */
+      const collectAdoptions = (departingNode) => {
+        for (const [path, value] of index) {
+          if (!value || value.nodeId !== departingNode) continue;
+          if (value.transferable === false) {
+            adoption.skipped += 1;
+            system._log('cluster_adoption_skipped', { path, reason: 'transferable: false' });
+            continue;
+          }
+          const shard = ringUtil.shardOf(String(path), shardCount);
+          pendingAdoptions.push({ path: String(path), shard, from: departingNode });
+        }
+      };
+
+      /**
+       * 单例（第 4 步）：**每个节点都调用** `spawnSingleton` 登记定义，只有单例 shard 的 owner
+       * 真正运行它。它不是一个分布式锁——是"尽力而为的单例"（doc 05 §1.4）。
+       */
+      const SINGLETON_SHARD = 0;
+      const adoptSingletons = async () => {
+        for (const [id, spec] of singletons) {
+          const runsHere = guard.ownerOf(SINGLETON_SHARD) === gossip.nodeId;
+          const running = system.cells.has(id);
+          if (runsHere && !running) {
+            try {
+              await system.spawn(spec.definition, { id, ...(spec.options || {}) });
+              adoption.adopted += 1;
+              system.emit('cluster_singleton_started', id);
+            } catch (err) {
+              adoption.failed += 1;
+              system._log('cluster_singleton_start_failed', { id, err: err && err.message });
+            }
+          } else if (!runsHere && running) {
+            // 不再是 owner：停掉本地实例（新 owner 会起来）
+            await (system.cells.get(id) ? system.cells.get(id).ref.stop() : Promise.resolve()).catch(() => undefined);
+            system.emit('cluster_singleton_stopped', id);
+          }
+        }
+      };
+
+      /** 环更新之后：把落到我们头上的 Actor 用**同一个定义**重建（状态从共享存储恢复）。 */
+      const adoptPending = async () => {
+        if (pendingAdoptions.length === 0) return;
+        const adoptions = pendingAdoptions;
+        pendingAdoptions = [];
+        const stillPending = [];
+        for (const item of adoptions) {
+          if (guard.ownerOf(item.shard) !== gossip.nodeId) {
+            stillPending.push(item); // 环还没更新到"归我"：留着等下一次提升，别丢
+            continue;
+          }
+          if (system.cells.has(item.path)) continue; // 已经在了（比如是本地的）
+          // 重建钩子可以来自插件配置（测试/嵌入式）或 system.ownership（应用层启动后装上）
+          const recreate =
+            typeof options.recreate === 'function'
+              ? options.recreate
+              : system.ownership && typeof system.ownership.recreate === 'function'
+                ? system.ownership.recreate
+                : null;
+          const recreated = recreate === null ? null : recreate(item.path);
+          if (!recreated || !recreated.definition) {
+            adoption.failed += 1;
+            system._log('cluster_adoption_no_definition', { path: item.path });
+            continue;
+          }
+          try {
+            await system.spawn(recreated.definition, { id: item.path, ...(recreated.options || {}) });
+            adoption.adopted += 1;
+            system.emit('cluster_actor_adopted', item.path, item.from);
+          } catch (err) {
+            adoption.failed += 1;
+            system._log('cluster_adoption_failed', { path: item.path, err: err && err.message });
+          }
+        }
+        if (stillPending.length > 0) pendingAdoptions.push(...stillPending);
+      };
       /** 一旦开始离场就永久冻结：这是"不再双主"的关键——旧 owner 主动停止服务。 */
       let handingOver = false;
 
@@ -199,10 +299,27 @@ function cluster(options = {}) {
                 system._log('cluster_on_shards_promoted_failed', { shard, err: err && err.message });
               }
             }
+            if (shard === SINGLETON_SHARD) singletonsPromoted = true;
+            promotedThisPass = true;
           }
           if (claimsDirty) publishClaims();
         }
         previousRing = next;
+        // 环把某个 shard 提升给我 → 这就是接管的权威信号（清单只是"有哪些 Actor 要接"的提示）
+        if (promotedThisPass) {
+          promotedThisPass = false;
+          void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
+        }
+        // 单例：本节点是否接管了单例 shard
+        // 单例：环一变就要重新判断"我该不该跑它"——既有提升（成为 owner）也有**降级**（离场时
+        // 失去 owner 身份必须停掉本地实例，否则会出现两个实例）。refreshRing 是同步的，所以异步做。
+        if (singletons.size > 0) {
+          void adoptSingletons().catch((err) =>
+            system._log('cluster_singleton_adoption_error', { err: err && err.message }),
+          );
+        }
+        // 普通 Actor 的接管（异步，不阻塞环刷新）
+        void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
         return next;
       };
 
@@ -235,6 +352,17 @@ function cluster(options = {}) {
               if (claimsDirty) publishClaims();
             }
           }
+          if (options.enforceQuorum === true) {
+            const quorum = quorumState();
+            if (!quorum.ok) {
+              return {
+                ok: false,
+                reason:
+                  `quorum：本节点处于少数派（live ${quorum.live} / highWater ${quorum.highWater}），` +
+                  '拒绝写入（503 语义：请重试到多数派）',
+              };
+            }
+          }
           if (handingOver) {
             // 冻结：本节点已经在离场，属于这些 shard 的请求一律拒绝，并告诉对端该找谁
             return {
@@ -263,12 +391,15 @@ function cluster(options = {}) {
       };
 
       const announce = (ref) => {
+        const cell = system.cells.get(ref.path) || system.cells.get(ref.id);
         gossip.setLocal(ref.path, {
           type: 'actor',
           nodeId: gossip.nodeId,
           actorId: ref.path,
           host: gossip.advertiseHost,
           gatewayPort: gatewayPort(),
+          // 可迁移性随注册表一起传播：接管方据此决定"要不要接手这个 Actor"
+          transferable: cell ? cell.transferable !== false : true,
         });
       };
 
@@ -293,11 +424,34 @@ function cluster(options = {}) {
       const onUpdate = (key, value) => {
         if (key.startsWith('subs:')) return;
         refreshRing(); // 成员视图可能变了（谁在环上决定所有权）
+        if (key.startsWith(ADOPT_PREFIX)) {
+          // 离场方给出的接管清单：落到我们头上的（且可迁移的）Actor 由我们重建
+          if (value && value.type === 'adoption-manifest' && Array.isArray(value.actors)) {
+            for (const actor of value.actors) {
+              if (!actor || typeof actor.path !== 'string') continue;
+              if (actor.transferable === false) {
+                adoption.skipped += 1;
+                system._log('cluster_adoption_skipped', { path: actor.path, reason: 'transferable: false' });
+                continue;
+              }
+              pendingAdoptions.push({ path: actor.path, shard: Number(actor.shard), from: value.nodeId });
+            }
+            // **先刷新环再接管**：清单与离场标记常常同一轮到达，谁接手取决于环更新之后的结果；
+            // 顺序反了会因为"这个 shard 还不归我"而把条目一直挂着（靠环提升时再兜住）。
+            refreshRing();
+            void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
+          }
+          return;
+        }
         if (key.startsWith(leavingKey)) {
           // 有人宣布离场：立刻把它从环里去掉（确定性），并重算（会触发新 owner 加代）
           if (value === true || (value && value.type === 'leaving')) {
-            leaving.add(key.slice(leavingKey.length));
-            if (key !== `${leavingKey}${gossip.nodeId}`) refreshRing();
+            const departing = key.slice(leavingKey.length);
+            leaving.add(departing);
+            if (departing !== gossip.nodeId) {
+              collectAdoptions(departing); // 注册表被清掉之前先记下来
+              refreshRing();
+            }
           }
           return;
         }
@@ -327,6 +481,7 @@ function cluster(options = {}) {
         index.delete(key);
       };
       const onNodeTimeout = (nodeId) => {
+        collectAdoptions(nodeId); // 故障路径：没有优雅交接，靠状态恢复（doc 05 §1.3）
         for (const [key, value] of [...index]) if (value.nodeId === nodeId) index.delete(key);
         refreshRing(); // 成员掉线 → 环变了 → 它原来的 shard 归别人
       };
@@ -341,6 +496,20 @@ function cluster(options = {}) {
 
       await gossip.start();
       onListening(); // announce whatever already exists
+
+      /**
+       * **定时重算环**：成员变化不一定伴随注册表更新（一个刚加入、还没有任何 Actor 的节点就是
+       * 这种情况），只靠事件驱动的刷新会让所有权视图停在旧成员集合上——"成员视图是纯函数"这条
+       * 前提需要它**跟着视图走**，而不是跟着事件走。
+       */
+      const ringTimer = setInterval(() => {
+        try {
+          refreshRing();
+        } catch (err) {
+          system._log('cluster_ring_refresh_failed', { err: err && err.message });
+        }
+      }, 200);
+      if (typeof ringTimer.unref === 'function') ringTimer.unref();
 
       system.cluster = {
         gossip,
@@ -387,6 +556,29 @@ function cluster(options = {}) {
           refreshRing(true);
 
           const moved = new Map();
+          // 先算出"谁接手哪些 shard"，并把**接管清单**发布出去：接手方据此重建 Actor。
+          // 不能指望接手方去读注册表——离场时 Actor 条目会变成 tombstone，跟清单抢同一轮 gossip。
+          for (const shard of ownedBefore) moved.set(shard, guard.ownerOf(shard));
+          const manifest = [];
+          for (const cell of system.cells.values()) {
+            if (cell.stopped) continue;
+            const cellPath = cell.ref && cell.ref.path ? cell.ref.path : cell.id;
+            if (!cellPath) continue;
+            const shard = ringUtil.shardOf(String(cellPath), shardCount);
+            if (!moved.has(shard)) continue;
+            manifest.push({
+              path: String(cellPath),
+              shard,
+              to: moved.get(shard),
+              transferable: cell.transferable !== false,
+            });
+          }
+          gossip.setLocal(`${ADOPT_PREFIX}${gossip.nodeId}`, {
+            type: 'adoption-manifest',
+            nodeId: gossip.nodeId,
+            actors: manifest,
+            ts: Date.now(),
+          });
           for (const shard of ownedBefore) moved.set(shard, { from: gossip.nodeId, to: guard.ownerOf(shard) });
 
           // 2) 冻结由 verifyIncoming 里的 handingOver 判定负责（见下）
@@ -409,7 +601,17 @@ function cluster(options = {}) {
             if (moved.has(ringUtil.shardOf(String(path), shardCount))) localActors.push(cell);
           }
           const persisted = [];
+          const untransferable = [];
           for (const cell of localActors) {
+            if (cell.transferable === false) {
+              // 明确失败，而不是假装能迁移：持有 socket/句柄的 Actor 只能让客户端重连
+              untransferable.push(cell.ref.path);
+              system._log('cluster_drain_untransferable', {
+                path: cell.ref.path,
+                hint: 'transferable: false —— 这个 Actor 的连接会断开，请让客户端重连（不要假装能迁 socket）',
+              });
+              continue;
+            }
             try {
               await cell.saveSnapshot();
               persisted.push(cell.ref.path);
@@ -427,9 +629,59 @@ function cluster(options = {}) {
             shards: [...moved.entries()].map(([shard, info]) => ({ shard, ...info })),
             promoted: takeover.promoted,
             actors: persisted,
+            untransferable,
             drainedMs: timeoutMs - Math.max(0, deadline - Date.now()),
             inflight: remaining,
             timedOut: remaining > 0,
+          };
+        },
+        /**
+         * 单例：**每个节点都调用**（通常在各节点的启动流程里），只有单例 shard 的 owner 真的运行。
+         * 返回 `{ local }`：本节点是否真的起来了。它不是分布式锁，接管有延迟。
+         */
+        async spawnSingleton(definition, singletonOptions = {}) {
+          const id = singletonOptions.id ? String(singletonOptions.id) : 'singleton';
+          singletons.set(id, { definition, options: { ...singletonOptions, id } });
+          refreshRing();
+          await adoptSingletons();
+          return { id, local: system.cells.has(id), owner: guard.ownerOf(SINGLETON_SHARD) };
+        },
+        /** 当前单例归属（诊断用）。 */
+        singletons: () => [...singletons.keys()].map((id) => ({
+          id,
+          owner: guard.ownerOf(SINGLETON_SHARD),
+          local: system.cells.has(id),
+        })),
+        /** 多数派状态（第 5 步）：应用层据此返回 503。 */
+        quorum: () => {
+          refreshRing();
+          return quorumState();
+        },
+        /** 应用层在写之前调用：少数派时抛错（比静默接受写更安全）。 */
+        assertWritable() {
+          const quorum = quorumState();
+          if (!quorum.ok) {
+            throw new Error(
+              `quorum：本节点处于少数派（live ${quorum.live} / highWater ${quorum.highWater}），拒绝写入`,
+            );
+          }
+          return quorum;
+        },
+        /** 第 6 步：一处拿到所有集群治理指标（读之前先对齐成员视图）。 */
+        metrics: () => {
+          refreshRing();
+          return {
+            ownership: { shards: shardCount, owned: guard.stats().owned, claims: guard.stats().claims },
+            fencing: {
+              skipped: fencingStats.skipped,
+              rejected: fencingStats.rejected,
+              conflicts: fencingStats.conflicts,
+              promoted: takeover.promoted,
+              handedOver: handingOver,
+            },
+            adoption: { ...adoption },
+            singletons: [...singletons.keys()].length,
+            quorum: quorumState(),
           };
         },
         /** 某个 actor 在本地环上归谁（诊断用）。 */
@@ -455,6 +707,7 @@ function cluster(options = {}) {
           throw new Error(`cluster: "${path}" was not discovered within ${timeoutMs}ms`);
         },
         _teardownListeners() {
+          clearInterval(ringTimer);
           system.off('actor_registered', onRegistered);
           system.off('actor_stopped', onStopped);
           system.off('listening', onListening);

@@ -22,9 +22,9 @@
 | **1** | **一致性哈希环 + 所有权计算**：纯函数、确定性、虚拟节点；`ownerOf(actorPath)`；成员变更只影响变更点区间 | 同一成员视图下**所有节点算出同一 owner**；增删一个成员只迁移 ≈1/N 的 shard（迁移量可测） | ⏳ |
 | 2 | **所有权守卫 + fencing token**：`shardEpoch`；跨节点消息带 epoch；接收端拒绝旧 epoch（"旧 owner 说的话不算数"） | 旧 epoch 的消息**必被拒**（fencing 测试） | ✅ 2a 完成（§3.3）；2b 接网关待做 |
 | 3 | **优雅交接**：冻结 → 排空 → 导出（快照 + 事件 offset）→ 在新 owner 上恢复 → epoch+1 → 释放；幂等可重试 | 3 节点：下线一个节点，它的 shard 全部交接**且无消息丢失**（有测试） | — |
-| 4 | **Singleton**：`shardCount = 1` 的特例 + 接管延迟语义（尽力而为的单例，不是分布式锁） | 全集群唯一 owner；owner 下线后新 owner 接管（有测试） | — |
-| 5 | **少数派拒写 + 脑裂边界**：多数派判据 + 503 + 重试提示；文档写清质量等级 | 少数派拒写、多数派继续服务（有测试） | — |
-| 6 | **可迁移性声明 + 指标**：`transferable: false` 的 Actor 在下线时**明确失败**（不假装能迁 socket）；所有权/迁移进 metrics | 不可迁移 Actor 给出明确错误；指标可见 | — |
+| 4 | **Singleton**：`shardCount = 1` 的特例 + 接管延迟语义（尽力而为的单例，不是分布式锁） | 全集群唯一 owner；owner 下线后新 owner 接管（有测试） | ✅ §5.5 |
+| 5 | **少数派拒写 + 脑裂边界**：多数派判据 + 503 + 重试提示；文档写清质量等级 | 少数派拒写、多数派继续服务（有测试） | ✅ §5.6 |
+| 6 | **可迁移性声明 + 指标**：`transferable: false` 的 Actor 在下线时**明确失败**（不假装能迁 socket）；所有权/迁移进 metrics | 不可迁移 Actor 给出明确错误；指标可见 | ✅ §5.7 |
 
 **doc 06 的 M4 验收**（三条）：① 3 节点下线一个 → shard 全部交接且无消息丢失；② 旧 owner 用旧 epoch 发消息必须被拒；③ 扩缩容迁移量符合预期。第 1 步就把 ③ 的可测基础（环 + 迁移量）建起来。
 
@@ -277,10 +277,50 @@ Actor 明确失败而不是假装能迁移。
 本地 Actor 已释放；**新 owner 自动加代且计数可见**；离场节点对旧 shard 的请求给出**带接手方名字的
 重定向**。
 
-### 5.4 还没做（3b）：新 owner 上重建 Actor
+### 5.4 3b：新 owner 上重建 Actor（已实现）
 
-现在只保证"状态能恢复、旧 owner 不再服务、请求被明确重定向"，还**没有**在新 owner 上把 Actor 用
-同一个定义重新创建出来。缺的一环是**路径 → 定义**的映射：内核只知道 `spawn(definition, options)`，
-而"这个 actorId 对应哪个定义、用什么持久化选项"是**应用层**的知识（模块的 `actors: { Room: ... }`）。
-计划：应用层提供 `definitionFor(path)`，内核在 `onShardsPromoted` 里用它 spawn + 从存储恢复，
-然后 doc 06 的"无消息丢失"才算端到端可验（还要断言"同一条消息没有被处理两次"）。
+**权威信号是"环把我提升为这个 shard 的 owner"，不是"清单到了"**。流程：
+
+1. 离场方在 drain 里发布**接管清单**（`adopt:<nodeId>` = `[{path, shard, to, transferable}]`）——
+   为什么不让接手方去读注册表？因为 Actor 条目在离场时会变成 tombstone，和清单抢同一轮 gossip，
+   靠"猜"会漏（第一版就是这么错的）；
+2. 接手方收到清单 → 先 `refreshRing()`（谁接手取决于环更新之后的结果）→ 把条目放进待接管队列；
+3. 环真的把它提升为 owner 时，才用 `recreate(path)` 拿定义 + spawn（状态由 D3 从共享存储恢复）；
+   这一轮还没轮到它的条目**留在队列里**，等下一次提升（不丢）。
+
+`recreate` 由**应用层**提供（"路径 → 定义"是应用层的知识：模块的 `actors:` 声明 + 依赖注入）：
+`@actor/app` 在 spawn 时记账 `path → {definition, options}`，并在 `listening` 时把它装到
+`system.ownership.recreate` 上（插件的 setup 发生在内核 init 时，装早了会静默失效——真踩过）。
+
+**doc 06 的"无消息丢失"因此端到端可验**：Actor 在 A 上处理 1 条消息 → A 优雅离场 → 接手节点按定义
+重建 → 客户端继续问它，返回 **2**（状态从共享存储恢复，既不是从 0 重来，也不是重复处理）。
+
+### 5.5 Singleton（第 4 步）
+
+`cluster.spawnSingleton(definition, { id })`：**每个节点都调用**（通常在各节点启动流程里），只有
+单例 shard（0 号）的 owner 真的运行。环变化时重新判断——**既有提升也有降级**（离场时失去 owner
+身份必须停掉本地实例，否则会出现两个实例，这也是踩出来的）。语义照 doc 05 §1.4：**尽力而为的单例，
+不是分布式锁**；接管有延迟。测试断言"全集群只有一个"并且 owner 离场后"仍然只有一个，且换人了"。
+
+### 5.6 少数派拒写（第 5 步）
+
+判据（已确认的 D4）：`2 * live > highWater`，其中 `highWater` 是**本节点见过的最多成员数**——
+"我们曾经是 3 个，现在只剩我 1 个"会被判成少数派，而刚启动只见过自己的节点不会误判。
+`enforceQuorum: true` 时入站请求被拒（503 语义 + 重试提示），应用层也可以用
+`cluster.quorum()` / `cluster.assertWritable()` 自己决定怎么返回。
+
+### 5.7 可迁移性声明与指标（第 6 步）
+
+`spawn(def, { transferable: false })`：持有 socket / 文件句柄的 Actor 在 drain 时**明确失败**——
+列进 `summary.untransferable`、**不存快照**（存了也没人能恢复 socket）、日志给出"客户端重连"的提示；
+`transferable` 随注册表传播，接手方据此**跳过**它（`adoption.skipped` 可见）。绝不假装能迁 socket。
+
+`cluster.metrics()` 一处读到：`ownership`（shards/owned/claims）、`fencing`（skipped/rejected/
+conflicts/promoted/handedOver）、`adoption`（adopted/skipped/failed）、`singletons`、`quorum`。
+
+### 5.8 本步踩到的两个真问题（都是"有实现、但没接上"）
+
+1. **`pruneStaleNodes()` 没有生产调用点**（见提交 d927e49）：过期成员永不剔除 → 多数派判据永远
+   认为人还齐 → 少数派拒写形同虚设，`node_timeout` 与故障接管也永不发生。现在每轮 gossip 前先剔除。
+2. **接管顺序**：清单与离场标记常常同一轮到达，先处理清单时环里还有离场者 → 判定"不归我"就丢掉。
+   现在"先刷新环、再由**环提升**驱动接管"，未轮到的条目留队列。

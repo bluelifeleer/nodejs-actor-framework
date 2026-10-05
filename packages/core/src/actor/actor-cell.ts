@@ -99,6 +99,12 @@ class ActorCell {
 
     // --- isolation ---------------------------------------------------------
     this.isolation = this.options.isolation || 'inline';
+    /**
+     * 可迁移性（M4 第 6 步）：持有 socket / 文件句柄 / 定时器的 Actor 声明 `transferable: false`，
+     * 交接时**明确失败**而不是假装能迁移（doc 05 §1.3：客户端重连才是正确语义）。
+     * 默认 true：纯状态 Actor 可以靠"快照 + 事件"在别处重建。
+     */
+    this.transferable = this.options.transferable !== false;
     if (!['inline', 'worker'].includes(this.isolation)) {
       throw new DefinitionError(`unknown isolation "${this.isolation}" (expected inline|worker)`);
     }
