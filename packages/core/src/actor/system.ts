@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -18,7 +17,7 @@ const RestartStrategy = require('./restart-strategy.ts');
 const { randomBytes } = require('node:crypto');
 
 /** 生成 span/trace id（十六进制；OTLP 要的就是这种形式）。 */
-function randomHex(bytes) {
+function randomHex(bytes: number): string {
   return randomBytes(Math.ceil(bytes / 2)).toString('hex').slice(0, bytes);
 }
 
@@ -40,8 +39,146 @@ const DEFAULT_ACTOR_OPTIONS = {
  * systems can coexist in one process (which the previous env-driven singletons
  * made impossible).
  */
+/** 可注入时钟（结构型：内核是 CJS，不能从 clock.ts 里 import 类型）。 */
+interface Clock {
+  now(): number;
+  setTimeout(cb: () => void, ms: number, options?: { unref?: boolean }): { id: number };
+  clearTimeout(handle: { id: number } | null | undefined): void;
+  setInterval(cb: () => void, ms: number, options?: { unref?: boolean }): { id: number };
+  clearInterval(handle: { id: number } | null | undefined): void;
+}
+
+/** ActorCell 的结构视图：只声明系统真正用到的成员。 */
+interface CellLike {
+  readonly id: string;
+  readonly path: string;
+  readonly ref: unknown;
+  stopped: boolean;
+  running: boolean;
+  readonly children: Map<string, unknown>;
+  readonly mailbox: { size: number };
+  readonly counters: Record<string, number>;
+  readonly isolation?: string;
+  readonly supervisor: { remove(childId: string): void };
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  _runTurn(messagesPerTurn: number): Promise<void>;
+  setParent(parent: unknown): void;
+  _restart(reason: unknown): Promise<void>;
+  readonly started: boolean;
+  inspect(): Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** 插件契约（与 index.d.ts 的 Plugin 同形）。 */
+interface PluginLike {
+  name: string;
+  setup?(system: ActorSystem): void | Promise<void>;
+  teardown?(system: ActorSystem): void | Promise<void>;
+}
+
+/** 信封：调度器/邮箱里传递的那条消息。 */
+interface EnvelopeLike {
+  payload?: unknown;
+  retryCount?: number;
+  sender?: unknown;
+  [key: string]: unknown;
+}
+
+/** span（M5 第 4 步）：处理一条消息的生命周期。 */
+interface Span {
+  name: string;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  sampled: boolean;
+  startTimeMs: number;
+  endTimeMs?: number;
+  durationMs?: number;
+  status?: 'ok' | 'error';
+  attributes: Record<string, string | number | boolean>;
+}
+
+/** 插件提供的服务（具体形状由各插件决定）。 */
+interface PluginService {
+  [key: string]: unknown;
+}
+
+interface ActorSystemOptions {
+  logger?: ((event: string, meta?: Record<string, unknown>) => void) | false | null;
+  name?: string;
+  clock?: Clock;
+  spanSink?: { onSpan(span: Span): void } | null;
+  defaults?: Record<string, unknown>;
+  messagesPerTurn?: number;
+  cellsPerTurn?: number;
+  persistence?: Record<string, unknown> | null;
+  persistenceDir?: string;
+  mailboxStore?: unknown;
+  maxDeadLetters?: number;
+  plugins?: PluginLike[];
+  shutdownTimeoutMs?: number;
+}
+
 class ActorSystem extends EventEmitter {
-  constructor(options = {}) {
+  name: string;
+  logger: ((event: string, meta?: Record<string, unknown>) => void) | null;
+  clock: Clock;
+  spanSink: { onSpan(span: Span): void } | null;
+  startedAt: number;
+  stopped: boolean;
+  actorDefaults: {
+    mailbox: { maxSize: number; overflow: string };
+    supervision: { strategy: string; maxRestarts: number; withinSeconds: number };
+    failure: string;
+    maxRetry: number;
+    retryBackoffMs: number;
+    maxRetryBackoffMs: number;
+    persistence: string;
+    askTimeoutMs: number;
+    [key: string]: unknown;
+  };
+  scheduler: InstanceType<typeof InlineScheduler>;
+  persistenceStore: unknown;
+  mailboxStore: unknown;
+  rootSupervisor: InstanceType<typeof ChildSupervisor>;
+  /** 路径（或唯一 id）-> cell。 */
+  cells: Map<string, CellLike>;
+  deadLetters: unknown[];
+  maxDeadLetters: number;
+  _seq: number;
+  /** 可选的 server gateway（`listen()` 之后存在）。 */
+  server: {
+    boundPort: number;
+    listen(): Promise<void>;
+    close?(): Promise<void>;
+    on(event: string, handler: (...args: never[]) => void): void;
+  } | null;
+  /** nodeId / "host:port" -> peer 连接。 */
+  peers: Map<
+    string,
+    {
+      readonly nodeId: string;
+      readonly host: string;
+      readonly port: number;
+      ref(path: string): unknown;
+      close(): Promise<void>;
+    }
+  >;
+  _plugins: PluginLike[];
+  installed: Map<string, PluginLike>;
+  _initPromise: Promise<void> | null;
+  tracer: { buildContext(parent: unknown): unknown; child(parent: unknown): unknown } | null;
+  rateLimitPolicy: { capacity: number; rate: number } | null;
+  deadLetterStore: { init?(): Promise<void>; enqueue(entry: unknown): Promise<unknown>; readAll?(): Promise<unknown[]>; clear?(): Promise<unknown> } | null;
+  deadLetterSink: ((entry: unknown) => Promise<unknown>) | null;
+  cluster: PluginService | null;
+  pubsub: PluginService | null;
+  metrics: PluginService | null;
+  metricsExporter: PluginService | null;
+  shutdownTimeoutMs: number;
+
+  constructor(options: ActorSystemOptions = {}) {
     super();
     if (options.logger === false) this.logger = null;
     else this.logger = options.logger || null;
@@ -54,20 +191,27 @@ class ActorSystem extends EventEmitter {
     this.startedAt = this.clock.now();
     this.stopped = false;
 
+    const defaults = (options.defaults ?? {}) as {
+      mailbox?: Record<string, unknown>;
+      supervision?: Record<string, unknown>;
+    };
     this.actorDefaults = {
       ...DEFAULT_ACTOR_OPTIONS,
-      ...(options.defaults || {}),
-      mailbox: { ...DEFAULT_ACTOR_OPTIONS.mailbox, ...((options.defaults || {}).mailbox || {}) },
-      supervision: { ...DEFAULT_ACTOR_OPTIONS.supervision, ...((options.defaults || {}).supervision || {}) },
-    };
+      ...defaults,
+      mailbox: { ...DEFAULT_ACTOR_OPTIONS.mailbox, ...(defaults.mailbox ?? {}) },
+      supervision: { ...DEFAULT_ACTOR_OPTIONS.supervision, ...(defaults.supervision ?? {}) },
+    } as ActorSystem['actorDefaults'];
 
     this.scheduler = new InlineScheduler({
       messagesPerTurn: options.messagesPerTurn,
       cellsPerTurn: options.cellsPerTurn,
-      onError: (err, cell) => this._log('scheduler_error', { path: cell && cell.path, err: err.message }),
+      onError: (err: Error, cell: { path?: string }) => this._log('scheduler_error', { path: cell.path, err: err.message }),
     });
 
-    const persistenceSpec = options.persistence;
+    const persistenceSpec = options.persistence as
+      | { loadSnapshot?: unknown; backend?: string; dir?: string }
+      | null
+      | undefined;
     if (persistenceSpec && typeof persistenceSpec === 'object' && typeof persistenceSpec.loadSnapshot === 'function') {
       this.persistenceStore = persistenceSpec; // an adapter instance
     } else if (persistenceSpec && typeof persistenceSpec === 'object' && persistenceSpec.backend === 'memory') {
@@ -85,20 +229,16 @@ class ActorSystem extends EventEmitter {
       withinSeconds: this.actorDefaults.supervision.withinSeconds,
     });
 
-    /** @type {Map<string, ActorCell>} path (and unambiguous id) -> cell */
     this.cells = new Map();
     this.deadLetters = [];
     this.maxDeadLetters = options.maxDeadLetters || 1000;
     this._seq = 0;
     /** Optional server gateway (system.listen) and connected peers. */
     this.server = null;
-    /** @type {Map<string, import('./remote').Peer>} */
     this.peers = new Map();
 
     // --- plugin services ---------------------------------------------------
-    /** @type {Array<object>} */
-    this._plugins = [...(options.plugins || [])].filter(Boolean);
-    /** @type {Map<string, object>} installed plugins by name */
+    this._plugins = [...(options.plugins ?? [])].filter(Boolean);
     this.installed = new Map();
     this._initPromise = null;
     /**
@@ -118,7 +258,7 @@ class ActorSystem extends EventEmitter {
     this.metricsExporter = null;
 
     /** How long a graceful actor stop may take before it is forced. */
-    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? config.actor.shutdownTimeoutMs;
+    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? (config.actor.shutdownTimeoutMs as number);
   }
 
   /**
@@ -138,7 +278,7 @@ class ActorSystem extends EventEmitter {
   }
 
   /** The installed plugin with that name, or null. */
-  plugin(name) {
+  plugin(name: string): PluginLike | null {
     return this.installed.get(name) || null;
   }
 
@@ -156,38 +296,39 @@ class ActorSystem extends EventEmitter {
    * `system.spanSink` 是**结构型**接缝：任何 `{ onSpan(span) }` 都能接（内核不依赖 OTel SDK）。
    * 内置的 `plugins.otlp()` 就是一个 sink；想接官方 SDK 就自己实现 onSpan。
    */
-  _startSpan(input) {
+  _startSpan(input: { name: string; trace?: unknown; attributes?: Record<string, string | number | boolean> }): Span | null {
     if (!this.spanSink) return null;
-    const parent = input.trace && typeof input.trace === 'object' ? input.trace : null;
+    const parent = (input.trace ?? null) as { traceId?: unknown; spanId?: unknown; sampled?: unknown } | null;
     return {
       name: String(input.name),
-      traceId: parent && typeof parent.traceId === 'string' ? parent.traceId : randomHex(32),
+      traceId: parent !== null && typeof parent.traceId === 'string' ? parent.traceId : randomHex(32),
       spanId: randomHex(16),
-      parentSpanId: parent && typeof parent.spanId === 'string' ? parent.spanId : null,
+      parentSpanId: parent !== null && typeof parent.spanId === 'string' ? parent.spanId : null,
       sampled: parent === null ? true : parent.sampled !== false,
       startTimeMs: this.clock.now(),
-      attributes: { ...(input.attributes || {}) },
+      attributes: { ...(input.attributes ?? {}) },
     };
   }
 
   /** 结束 span 并交给 sink；sink 抛错不能影响 Actor（只记日志）。 */
-  _endSpan(span, outcome) {
-    if (!span || !this.spanSink) return;
+  _endSpan(span: Span | null, outcome: { status?: string; durationMs?: number; error?: unknown; at?: number }): void {
+    if (span === null || !this.spanSink) return;
     span.status = outcome.status === 'error' ? 'error' : 'ok';
-    span.endTimeMs = typeof outcome.at === 'number' ? outcome.at : span.startTimeMs + (outcome.durationMs || 0);
+    span.endTimeMs = typeof outcome.at === 'number' ? outcome.at : span.startTimeMs + (outcome.durationMs ?? 0);
     span.durationMs = Number(outcome.durationMs) || 0;
-    if (outcome.error) {
-      span.attributes['error.type'] = outcome.error.name || 'Error';
-      span.attributes['error.message'] = String(outcome.error.message || outcome.error);
+    const error = outcome.error;
+    if (error !== null && error !== undefined) {
+      span.attributes['error.type'] = error instanceof Error ? error.name : 'Error';
+      span.attributes['error.message'] = error instanceof Error ? error.message : String(error);
     }
     try {
       this.spanSink.onSpan(span);
     } catch (err) {
-      this._log('span_sink_failed', { err: err && err.message });
+      this._log('span_sink_failed', { err: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  async spawn(definition, options = {}) {
+  async spawn(definition: unknown, options: { id?: string; isolation?: string; [key: string]: unknown } = {}): Promise<unknown> {
     if (this.stopped) throw new ActorStoppedError('actor system is stopped');
     await this.init();
     const defn = options.isolation === 'worker'
@@ -209,7 +350,7 @@ class ActorSystem extends EventEmitter {
     try {
       await cell._init();
     } catch (err) {
-      this._log('actor_init_failed', { path: cell.path, err: err.message });
+      this._log('actor_init_failed', { path: cell.path, err: err instanceof Error ? err.message : String(err) });
       const decision = this.rootSupervisor.decide(id);
       if (decision.action === 'escalate') {
         await this._onEscalation(cell, err);
@@ -223,7 +364,7 @@ class ActorSystem extends EventEmitter {
           await target._restart(err);
           recovered = target.started;
         } catch (retryErr) {
-          this._log('actor_init_retry_failed', { path: target.path, err: retryErr.message });
+          this._log('actor_init_retry_failed', { path: target.path, err: retryErr instanceof Error ? retryErr.message : String(retryErr) });
         }
       }
       if (!recovered) throw err;
@@ -234,20 +375,20 @@ class ActorSystem extends EventEmitter {
   }
 
   /** Spawn and await readiness in one call (alias with a friendlier name). */
-  async start(definition, options) {
+  async start(definition: unknown, options?: Record<string, unknown>): Promise<unknown> {
     return this.spawn(definition, options);
   }
 
   // --- lookup --------------------------------------------------------------
 
-  /** @returns {import('./actor-ref').ActorRef|null} */
-  resolve(idOrPath) {
+  /** 解析出 ActorRef（本地唯一 id / 路径，或集群插件给出的远端引用）。 */
+  resolve(idOrPath: string): unknown | null {
     const key = String(idOrPath);
     const direct = this.cells.get(key);
     if (direct && !direct.stopped) return direct.ref;
     // Convenience fallback for a bare id, but only when it is unambiguous:
     // "alice" may exist under several parents, and guessing would be wrong.
-    let match = null;
+    let match: CellLike | null = null;
     for (const cell of this.cells.values()) {
       if (cell.stopped || cell.id !== key) continue;
       if (match) return null; // ambiguous
@@ -256,21 +397,22 @@ class ActorSystem extends EventEmitter {
     if (match) return match.ref;
 
     // Cluster plugin: a path that is not local may live on a known peer.
-    if (this.cluster && typeof this.cluster.resolveRemote === 'function') {
-      return this.cluster.resolveRemote(key);
+    const remoteResolve = this.cluster?.resolveRemote;
+    if (typeof remoteResolve === 'function') {
+      return (remoteResolve as (target: string) => unknown)(key);
     }
     return null;
   }
 
   /** Like resolve(), but throws when the actor is unknown. */
-  ref(idOrPath) {
+  ref(idOrPath: string): unknown {
     const found = this.resolve(idOrPath);
     if (!found) throw new ActorNotFoundError(`no actor registered as "${idOrPath}"`);
     return found;
   }
 
   /** Introspection for one actor (works for stopped-but-remembered ids too). */
-  inspect(idOrPath) {
+  inspect(idOrPath: string): Record<string, unknown> {
     const key = String(idOrPath);
     const cell = this.cells.get(key);
     if (cell) return cell.inspect();
@@ -284,7 +426,7 @@ class ActorSystem extends EventEmitter {
   }
 
   /** Every live actor path, depth-first. */
-  listActors() {
+  listActors(): string[] {
     return [...this.cells.keys()].sort();
   }
 
@@ -298,7 +440,7 @@ class ActorSystem extends EventEmitter {
    * Serve this node's actors to peers. Returns the bound port, so passing
    * `port: 0` is a convenient way to get an ephemeral port in tests.
    */
-  async listen(options = {}) {
+  async listen(options: Record<string, unknown> = {}): Promise<unknown> {
     if (this.stopped) throw new ActorStoppedError('actor system is stopped');
     // Match the documented contract above: listen() bootstraps plugins too, not
     // just spawn(). A pure gateway node has no actors, yet the cluster plugin
@@ -307,7 +449,7 @@ class ActorSystem extends EventEmitter {
     await this.init();
     if (this.server) return this.server.boundPort;
     const server = createServerGateway(this, options);
-    server.on('tell_error', (err, target) => this._log('remote_tell_failed', { target, err: err.message }));
+    server.on('tell_error', ((err: Error, target: string) => this._log('remote_tell_failed', { target, err: err.message })) as (...args: never[]) => void);
     try {
       await server.listen();
     } catch (err) {
@@ -319,7 +461,7 @@ class ActorSystem extends EventEmitter {
     return server.boundPort;
   }
 
-  get port() {
+  get port(): number | null {
     return this.server ? this.server.boundPort : null;
   }
 
@@ -329,15 +471,16 @@ class ActorSystem extends EventEmitter {
    * 存在的理由：没有它时，"以为有乐观并发保护、其实没有"是最危险的状态——
    * `file` 后端只能保证**同进程**，两个进程写同一目录不会被拦住。
    */
-  persistenceCapabilities() {
+  persistenceCapabilities(): Record<string, unknown> {
     const store = this.persistenceStore;
-    const reported = store && typeof store.capabilities === 'function' ? store.capabilities() : null;
+    const candidate = store as { capabilities?: () => Record<string, unknown> } | null;
+    const reported = candidate !== null && typeof candidate.capabilities === 'function' ? candidate.capabilities() : null;
     // 默认值就是"什么都不保证"：自定义适配器不实现 capabilities() 时不会让人误以为有保护
     return { conditionalAppend: false, batchAppend: false, ...(reported || {}) };
   }
 
   /** Connect to a peer node and get a handle that hands out remote ActorRefs. */
-  async connect(options = {}) {
+  async connect(options: Record<string, unknown> = {}): Promise<unknown> {
     if (!options.host || options.port === undefined) {
       throw new TypeError('connect({ host, port }) is required');
     }
@@ -364,30 +507,31 @@ class ActorSystem extends EventEmitter {
    * is connected), so call sites stay close to local code.
    * @returns {import('./remote').RemoteRef}
    */
-  remote(spec) {
+  remote(spec: string): unknown {
     const text = String(spec);
     const at = text.lastIndexOf('@');
     if (at < 0) {
-      if (this.peers.size === 1) return [...this.peers.values()][0].ref(text);
+      const only = [...this.peers.values()][0];
+      if (this.peers.size === 1 && only !== undefined) return only.ref(text);
       throw new ActorNotFoundError(
         `remote("${spec}") needs "path@host:port" when ${this.peers.size} peers are connected`,
       );
     }
     const path = text.slice(0, at);
     const target = text.slice(at + 1);
-    const peer = this.peers.get(target) || [...this.peers.values()].find((p) => p.nodeId === target);
-    if (!peer) throw new ActorNotFoundError(`no peer "${target}" is connected; call connect() first`);
+    const peer = this.peers.get(target) ?? [...this.peers.values()].find((candidate) => candidate.nodeId === target);
+    if (peer === undefined) throw new ActorNotFoundError(`no peer "${target}" is connected; call connect() first`);
     return peer.ref(path);
   }
 
   /** Connected peers, for introspection. */
-  listPeers() {
+  listPeers(): { key: string; nodeId: string }[] {
     return [...this.peers.values()].map((peer) => ({ key: `${peer.host}:${peer.port}`, nodeId: peer.nodeId }));
   }
 
   // --- system-level supervision -------------------------------------------
 
-  async _onRootCrash(cell, reason) {
+  async _onRootCrash(cell: CellLike, reason: unknown): Promise<void> {
     const decision = this.rootSupervisor.decide(cell.id);
     if (decision.action === 'escalate') {
       await this._onEscalation(cell, reason);
@@ -411,7 +555,7 @@ class ActorSystem extends EventEmitter {
    * everything and emits `system_failure` — a silent give-up would hide a
    * permanent fault.
    */
-  async _onEscalation(cell, reason) {    const error = reason instanceof EscalationError
+  async _onEscalation(cell: CellLike, reason: unknown): Promise<void> {    const error = reason instanceof EscalationError
       ? reason
       : new EscalationError(`actor ${cell ? cell.path : '(unknown)'} failed and could not be restarted`, {
         cause: reason,
@@ -428,29 +572,29 @@ class ActorSystem extends EventEmitter {
 
   // --- bookkeeping ---------------------------------------------------------
 
-  _register(cell) {
+  _register(cell: CellLike): void {
     // Paths are the unique address; a parent's local id is not globally unique,
     // so only paths are indexed (resolve() still accepts an unambiguous id).
     this.cells.set(cell.path, cell);
     this.emit('actor_registered', cell.ref);
   }
 
-  _unregister(cell) {
+  _unregister(cell: CellLike): void {
     if (this.cells.get(cell.path) === cell) this.cells.delete(cell.path);
     this.emit('actor_stopped', cell.path);
   }
 
-  _onMailboxRejected(cell, envelope) {
+  _onMailboxRejected(cell: CellLike, envelope: EnvelopeLike): void {
     this.emit('mailbox_full', cell.ref, envelope.payload);
   }
 
-  _deadLetter(cell, envelope, err) {
+  _deadLetter(cell: CellLike, envelope: EnvelopeLike, err: unknown): Promise<void> | void {
     const entry = {
-      ts: Date.now(),
+      ts: this.clock.now(),
       path: cell.path,
       payload: envelope.payload,
-      retryCount: envelope.retryCount || 0,
-      error: err && err.message,
+      retryCount: envelope.retryCount ?? 0,
+      error: err instanceof Error ? err.message : err === undefined ? undefined : String(err),
     };
     this.deadLetters.push(entry);
     if (this.deadLetters.length > this.maxDeadLetters) this.deadLetters.shift();
@@ -460,33 +604,34 @@ class ActorSystem extends EventEmitter {
     if (this.deadLetterStore) {
       Promise.resolve(
         this.deadLetterStore.enqueue({ actorId: cell.path, msg: envelope.payload, reason: entry.error, retryCount: entry.retryCount }),
-      ).catch((storeErr) => this._log('dead_letter_persist_failed', { err: storeErr.message }));
+      ).catch((storeErr: unknown) => this._log('dead_letter_persist_failed', { err: storeErr instanceof Error ? storeErr.message : String(storeErr) }));
     }
     this._log('dead_letter', entry);
     this.emit('dead_letter', entry);
   }
 
   /** Dead letters: from the durable store when one is installed, else memory. */
-  async readDeadLetters() {
-    if (this.deadLetterStore && typeof this.deadLetterStore.readAll === 'function') {
-      return this.deadLetterStore.readAll();
-    }
+  async readDeadLetters(): Promise<unknown[]> {
+    const readAll = this.deadLetterStore?.readAll;
+    if (typeof readAll === 'function') return readAll.call(this.deadLetterStore);
     return [...this.deadLetters];
   }
 
-  async clearDeadLetters() {
+  /** 清空死信（内存视图 + 落盘的那个），返回清掉的条数。 */
+  async clearDeadLetters(): Promise<number> {
+    const removed = this.deadLetters.length;
     this.deadLetters.length = 0;
-    if (this.deadLetterStore && typeof this.deadLetterStore.clear === 'function') {
-      await this.deadLetterStore.clear();
-    }
+    const clear = this.deadLetterStore?.clear;
+    if (typeof clear === 'function') await clear.call(this.deadLetterStore);
+    return removed;
   }
 
-  _nextChildSeq() {
+  _nextChildSeq(): number {
     this._seq += 1;
     return this._seq;
   }
 
-  _log(event, meta) {
+  _log(event: string, meta?: Record<string, unknown>): void {
     if (this.logger) {
       try {
         this.logger(event, meta);
@@ -500,7 +645,7 @@ class ActorSystem extends EventEmitter {
   // --- shutdown ------------------------------------------------------------
 
   /** Stop every actor gracefully and wait for the scheduler to settle. */
-  async stop() {
+  async stop(): Promise<void> {
     if (this.stopped) {
       await this.scheduler.drain();
       return;
@@ -526,8 +671,10 @@ class ActorSystem extends EventEmitter {
 
     // Close the transports last: actors may still have been exchanging
     // messages while they drained.
-    if (this.server) {
-      await this.server.close().catch(() => {});
+    const server = this.server;
+    if (server !== null) {
+      const close = server.close?.bind(server);
+      if (close !== undefined) await close().catch(() => undefined);
       this.server = null;
     }
     for (const peer of this.peers.values()) await peer.close().catch(() => {});
@@ -541,7 +688,7 @@ class ActorSystem extends EventEmitter {
         // `await` also covers synchronous teardown functions.
         await plugin.teardown(this);
       } catch (err) {
-        this._log('plugin_teardown_failed', { plugin: plugin.name, err: err.message });
+        this._log('plugin_teardown_failed', { plugin: plugin.name, err: err instanceof Error ? err.message : String(err) });
       }
     }
     this.installed.clear();
@@ -549,11 +696,12 @@ class ActorSystem extends EventEmitter {
   }
 
   /** Statistics for dashboards/metrics. */
-  stats() {    let mailboxDepth = 0;
+  stats(): Record<string, unknown> {
+    let mailboxDepth = 0;
     let deadLettered = 0;
     for (const cell of this.cells.values()) {
       mailboxDepth += cell.mailbox.size;
-      deadLettered += cell.counters.deadLettered;
+      deadLettered += cell.counters.deadLettered ?? 0;
     }
     return {
       name: this.name,

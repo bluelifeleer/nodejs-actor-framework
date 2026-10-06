@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -17,25 +16,89 @@ const config = require('../config.ts');
  * (ACTOR_METRICS_ENABLED=1).
  */
 
-function escapeLabelValue(value) {
+/** Prometheus 文本格式里的标签值（转义反斜杠/引号/换行）。 */
+type Labels = Record<string, string | number>;
+
+/** 一条样本（值 + 标签）。 */
+interface Sample {
+  labels: Labels;
+  value: number;
+}
+
+/** 一个指标族（Prometheus 的 HELP/TYPE + 样本）。 */
+interface Family {
+  name: string;
+  type: 'counter' | 'gauge';
+  help: string;
+  samples: Sample[];
+}
+
+/** 族提供者：可以在一次抓取前刷新计数器（插件用）。 */
+type Collector = (exporter: MetricsExporter) => void;
+
+/** 指标实例的最小视图（obs/metrics.ts 的 Metrics）。 */
+interface MetricsLike {
+  snapshot(): Record<string, Record<string, number>>;
+}
+
+/** 框架（ActorSystem）的最小视图：只列导出用到的成员。 */
+interface FrameworkStats {
+  actors: number;
+  peers: number;
+  mailboxDepth: number;
+  deadLetters: number;
+  deadLettered: number;
+  scheduled: number;
+  rootSupervisor: { id: string; restartsInWindow: number; escalations: number };
+  [key: string]: unknown;
+}
+
+interface FrameworkLike {
+  stats(): FrameworkStats;
+  cells: Map<string, { isolation?: string; path: string; counters: Record<string, number>; mailbox: { size: number } }>;
+  pubsub?: { topics(): string[] } | null;
+  cluster?: {
+    remoteActors?(): unknown[];
+    peers?(): unknown[];
+    claims?(): unknown[];
+    metrics?(): Record<string, unknown>;
+    quorum?: { size?: number; healthy?: number; total?: number };
+  } | null;
+  memory?: { [key: string]: unknown };
+  persistence?: unknown;
+}
+
+interface MetricsExporterOptions {
+  host?: string;
+  port?: number;
+  path?: string;
+  metrics: MetricsLike;
+  framework?: FrameworkLike | null;
+  storeBackend?: string;
+  collectors?: Collector[];
+  maxPerActorSeries?: number;
+}
+
+function escapeLabelValue(value: unknown): string {
   return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-function formatValue(value) {
+function formatValue(value: unknown): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '0';
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-function formatLabels(labels) {
+function formatLabels(labels: Labels | null | undefined): string {
   const keys = Object.keys(labels || {});
   if (keys.length === 0) return '';
-  const parts = keys.sort().map((key) => `${key}="${escapeLabelValue(labels[key])}"`);
+  const source = labels as Labels;
+  const parts = keys.sort().map((key) => `${key}="${escapeLabelValue(source[key])}"`);
   return `{${parts.join(',')}}`;
 }
 
 /** Render families into the Prometheus text format deterministically. */
-function renderFamilies(families) {
+function renderFamilies(families: Family[]): string {
   const lines = [];
   for (const family of families) {
     if (!family.samples || family.samples.length === 0) continue;
@@ -54,22 +117,32 @@ function renderFamilies(families) {
 }
 
 class MetricsExporter {
-  /**
-   * @param {{host?:string, port?:number, path?:string, metrics:object,
-   *          framework?:ActorSystem, storeBackend?:string}} options
-   */
-  constructor(options = {}) {
-    this.host = options.host || config.metrics.exporter.host;
-    this.port = options.port === undefined ? config.metrics.exporter.port : options.port;
-    this.path = options.path || config.metrics.exporter.path;
+  readonly host: string;
+  port: number;
+  readonly path: string;
+  readonly metrics: MetricsLike;
+  readonly storeBackend: string | undefined;
+  /** 传了框架就额外导出集群/进程相关的 gauge。 */
+  readonly framework: FrameworkLike | null;
+  /** 额外的族提供者（插件用）。 */
+  readonly collectors: Collector[];
+  /** 每 actor 序列的基数上限（防止 Prometheus 基数爆炸）。 */
+  readonly maxPerActorSeries: number;
+  server: import('node:http').Server | null;
+  /** 实际监听端口（`port: 0` 时由系统分配）。 */
+  boundPort: number | null;
+  /** 已服务的抓取次数。 */
+  requests: number;
+
+  constructor(options: MetricsExporterOptions) {
+    this.host = options.host ?? (config.metrics.exporter.host as string);
+    this.port = options.port === undefined ? (config.metrics.exporter.port as number) : options.port;
+    this.path = options.path ?? (config.metrics.exporter.path as string);
     this.metrics = options.metrics;
     this.storeBackend = options.storeBackend;
-    /** An ActorSystem: switches the cluster gauges to framework shape. */
-    this.framework = options.framework || null;
-    /** Extra family providers, for plugins. */
-    this.collectors = options.collectors || [];
-    /** Cardinality guard for per-actor series. */
-    this.maxPerActorSeries = options.maxPerActorSeries || 500;
+    this.framework = options.framework ?? null;
+    this.collectors = options.collectors ?? [];
+    this.maxPerActorSeries = options.maxPerActorSeries ?? 500;
     this.server = null;
     this.boundPort = null;
     this.requests = 0;
@@ -77,9 +150,9 @@ class MetricsExporter {
 
   // --- metric families ------------------------------------------------------
 
-  _actorFamilies() {
-    const snapshot = this.metrics && typeof this.metrics.snapshot === 'function' ? this.metrics.snapshot() : {};
-    const families = [
+  _actorFamilies(): Family[] {
+    const snapshot = this.metrics.snapshot();
+    const families: { name: string; type: 'counter' | 'gauge'; help: string; field: string; scale?: number }[] = [
       { name: 'actor_messages_received_total', type: 'counter', help: 'Messages accepted into an actor mailbox.', field: 'received' },
       { name: 'actor_messages_handled_total', type: 'counter', help: 'Messages handled successfully.', field: 'handled' },
       { name: 'actor_messages_failed_total', type: 'counter', help: 'Messages that exhausted their retries.', field: 'failed' },
@@ -100,14 +173,14 @@ class MetricsExporter {
       help: family.help,
       samples: Object.entries(snapshot).map(([actor, values]) => ({
         labels: { actor },
-        value: (values[family.field] || 0) * (family.scale || 1),
+        value: (values[family.field] ?? 0) * (family.scale ?? 1),
       })),
     }));
   }
 
   /** Store + process metrics, shared by the queue-shaped and framework-shaped views. */
-  _commonFamilies() {
-    const families = [];
+  _commonFamilies(): Family[] {
+    const families: Family[] = [];
     if (this.storeBackend) {
       families.push({
         name: 'actor_store_info',
@@ -150,9 +223,10 @@ class MetricsExporter {
    * runtime's registry/supervisor. Per-actor series are capped so a system with
    * thousands of actors cannot blow up Prometheus cardinality.
    */
-  _frameworkFamilies() {
+  _frameworkFamilies(): Family[] {
     const system = this.framework;
-    const families = [];
+    if (system === null) return [];
+    const families: Family[] = [];
     const stats = system.stats();
     const remoteActors = system.cluster && typeof system.cluster.remoteActors === 'function'
       ? system.cluster.remoteActors().length
@@ -219,7 +293,7 @@ class MetricsExporter {
     });
 
     let workers = 0;
-    const perActor = [];
+    const perActor: Sample[] = [];
     for (const cell of system.cells.values()) {
       if (cell.isolation === 'worker') workers += 1;
       if (perActor.length < this.maxPerActorSeries) {
@@ -254,7 +328,7 @@ class MetricsExporter {
   }
 
   /** All families, in a stable order. */
-  snapshot() {
+  snapshot(): Family[] {
     // Collectors run first: a scraper must see the counters as of this scrape,
     // not as of the last sampling interval.
     for (const collector of this.collectors) collector(this);
@@ -265,14 +339,14 @@ class MetricsExporter {
     return families;
   }
 
-  render() {
+  render(): string {
     return renderFamilies(this.snapshot());
   }
 
   // --- HTTP ----------------------------------------------------------------
 
-  _handle(req, res) {
-    const url = req.url.split('?')[0];
+  _handle(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void {
+    const url = (req.url ?? '').split('?')[0];
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405, { Allow: 'GET, HEAD' });
       res.end('method not allowed\n');
@@ -284,12 +358,12 @@ class MetricsExporter {
       return;
     }
     this.requests += 1;
-    let body;
+    let body: string;
     try {
       body = this.render();
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end(`metrics rendering failed: ${err.message}\n`);
+      res.end(`metrics rendering failed: ${err instanceof Error ? err.message : String(err)}\n`);
       return;
     }
     res.writeHead(200, {
@@ -299,22 +373,26 @@ class MetricsExporter {
     res.end(req.method === 'HEAD' ? undefined : body);
   }
 
-  listen() {
-    return new Promise((resolve, reject) => {
-      const server = http.createServer((req, res) => this._handle(req, res));
+  /** 开始监听；返回实际端口（`port: 0` 时由系统分配）。 */
+  listen(): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      const server = http.createServer((req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => this._handle(req, res));
       this.server = server;
-      server.on('error', (err) => reject(err));
+      server.on('error', (err: Error) => reject(err));
       server.listen(this.port, this.host, () => {
-        this.boundPort = server.address().port;
-        this.port = this.boundPort;
-        resolve(this.boundPort);
+        const address = server.address();
+        const port = address !== null && typeof address === 'object' ? address.port : this.port;
+        this.boundPort = port;
+        this.port = port;
+        resolve(port);
       });
     });
   }
 
-  async close() {
-    if (!this.server) return;
-    await new Promise((resolve) => this.server.close(() => resolve()));
+  async close(): Promise<void> {
+    const server = this.server;
+    if (server === null) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     this.server = null;
   }
 }
