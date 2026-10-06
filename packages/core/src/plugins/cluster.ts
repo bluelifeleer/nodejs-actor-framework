@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -25,16 +24,128 @@ const { ActorStoppedError } = require('../actor/errors.ts');
  * a gossip round has carried it to the peer.
  */
 
+/** gossip 里记下的一条 actor 位置。 */
+interface ActorMeta {
+  host: string;
+  gatewayPort: number;
+  nodeId?: string | null;
+  /** M4 第 5 步：这条 actor 记录是否声明"可迁移"（交接用）。 */
+  transferable?: boolean;
+  [key: string]: unknown;
+}
+
+/** 连接到一个 peer 后的能力（system.connect 的返回值）。 */
+interface PeerLike {
+  ref(path: string): {
+    tell(msg: unknown, sender?: unknown, trace?: unknown): boolean;
+    ask(msg: unknown, timeoutMs?: number, sender?: unknown, trace?: unknown): Promise<unknown>;
+    stop(): Promise<void>;
+  };
+}
+
+/** 结构型 system 视图（内核是 CJS，不能 import type）。 */
+interface ClusterSystem {
+  readonly name: string;
+  /**
+   * 应用层在启动后装上的所有权服务：集群插件会写入 shardCount/requireFencing/guard，
+   * 并读取 `recreate`（"把某条 Actor 在原定义上重建"的钩子）。
+   */
+  ownership: {
+    recreate?: (path: string) => { definition: unknown; options?: Record<string, unknown> } | null;
+    shardCount?: number;
+    requireFencing?: boolean;
+    guard?: unknown;
+    [key: string]: unknown;
+  } | null;
+  server: {
+    boundPort: number;
+    on?(event: string, handler: (...args: never[]) => void): void;
+    /** 在途请求数（优雅离场时排空用）。 */
+    inflight?(): number;
+    /** 内部标记：fencing 事件只接一次。 */
+    __fencingWired?: boolean;
+  } | null;
+  readonly cells: Map<
+    string,
+    {
+      path: string;
+      ref: { path?: string; id?: string; stop?(): Promise<void> };
+      stopped?: boolean;
+      transferable?: boolean;
+      saveSnapshot?(): Promise<void>;
+      _init?: () => Promise<void>;
+    }
+  >;
+  cluster: unknown;
+  connect(options: { host: string; port: number }): Promise<PeerLike>;
+  spawn(definition: unknown, options?: Record<string, unknown>): Promise<{ path: string }>;
+  resolve(target: string): unknown;
+  stop(target?: unknown): Promise<void>;
+  on(event: string, handler: (...args: never[]) => void): void;
+  off(event: string, handler: (...args: never[]) => void): void;
+  emit(event: string, ...args: unknown[]): void;
+  _log(event: string, meta?: Record<string, unknown>): void;
+}
+
+/** gossip 的接口（cluster/gossip.ts 的 Gossip）。 */
+interface GossipLike {
+  readonly nodeId: string;
+  readonly host: string;
+  readonly advertiseHost: string;
+  readonly port: number;
+  boundPort: number;
+  readonly intervalMs: number;
+  readonly peerTimeoutMs: number;
+  readonly codec: number;
+  readonly seeds: unknown[];
+  start(): Promise<{ port: number }>;
+  stop(): Promise<void>;
+  setLocal(key: string, value: unknown): void;
+  delLocal(key: string): void;
+  on(event: string, handler: (...args: never[]) => void): void;
+  info(): Record<string, unknown>;
+  pruneStaleNodes(now?: number): string[];
+}
+
+/** registry 记录（LWW）。 */
+interface RegistryEntry {
+  key: string;
+  value: unknown;
+  ts: number;
+  nodeId: string;
+  deleted?: boolean;
+}
+
+/** 插件配置。 */
+interface ClusterPluginOptions {
+  /** 重建钩子（测试/嵌入式用；应用层也可以装到 `system.ownership.recreate`）。 */
+  recreate?: (path: string) => { definition: unknown; options?: Record<string, unknown> } | null;
+  onShardsPromoted?: (shard: number, previousOwner: string | null) => void;
+  requireFencing?: boolean;
+  nodeId?: string;
+  port?: number;
+  host?: string;
+  advertiseHost?: string;
+  seeds?: (string | { host: string; port: number })[];
+  intervalMs?: number;
+  peerTimeoutMs?: number;
+  tls?: unknown;
+  codec?: number | string;
+  gatewayPort?: number | null;
+  shardCount?: number;
+  [key: string]: unknown;
+}
+
 /** A remote actor found through gossip; connects on first use. */
 class DiscoveredRef {
-  system: any;
-  _path: string;
-  host: any;
-  gatewayPort: any;
-  nodeId: any;
-  _peer: any;
+  readonly system: ClusterSystem;
+  readonly _path: string;
+  readonly host: string;
+  readonly gatewayPort: number;
+  readonly nodeId: string | null;
+  _peer: PeerLike | null;
 
-  constructor(system: any, path: any, meta: any) {
+  constructor(system: ClusterSystem, path: string, meta: ActorMeta) {
     this.system = system;
     this._path = String(path);
     this.host = meta.host;
@@ -43,70 +154,70 @@ class DiscoveredRef {
     this._peer = null;
   }
 
-  get id() {
+  get id(): string | undefined {
     const parts = this._path.split('/');
     return parts[parts.length - 1];
   }
 
-  get path() {
+  get path(): string {
     return this._path;
   }
 
-  get isLocal() {
+  get isLocal(): boolean {
     return false;
   }
 
-  async _resolvePeer() {
-    if (this._peer) return this._peer;
+  async _resolvePeer(): Promise<PeerLike> {
+    if (this._peer !== null) return this._peer;
     this._peer = await this.system.connect({ host: this.host, port: this.gatewayPort });
     return this._peer;
   }
 
-  tell(msg, sender, trace) {
+  tell(msg: unknown, sender?: unknown, trace?: unknown): boolean {
     this._resolvePeer()
       .then((peer) => peer.ref(this._path).tell(msg, sender, trace))
-      .catch((err) => {
+      .catch((err: unknown) => {
         // Fire-and-forget failures have no caller to reject, so make them
         // observable through both the log and an event.
-        this.system._log('cluster_tell_failed', { path: this._path, err: err.message });
+        this.system._log('cluster_tell_failed', { path: this._path, err: err instanceof Error ? err.message : String(err) });
         this.system.emit('remote_tell_failed', this._path, err);
       });
     return true; // handed to the (lazy) transport
   }
 
-  async ask(msg, timeoutMs, sender, trace) {
+  async ask(msg: unknown, timeoutMs?: number, sender?: unknown, trace?: unknown): Promise<unknown> {
     const peer = await this._resolvePeer();
     return peer.ref(this._path).ask(msg, timeoutMs, sender, trace);
   }
 
-  async stop() {
+  async stop(): Promise<void> {
     const peer = await this._resolvePeer();
     return peer.ref(this._path).stop();
   }
 
-  inspect() {
+  inspect(): never {
     throw new ActorStoppedError(
       `inspect() is local-only; "${this._path}" was discovered on ${this.nodeId || `${this.host}:${this.gatewayPort}`}`,
     );
   }
 
-  state() {
+  state(): Promise<never> {
     return Promise.reject(new ActorStoppedError('state() is local-only for a discovered actor'));
   }
 
-  toString() {
+  toString(): string {
     return `DiscoveredRef(${this._path}@${this.nodeId || `${this.host}:${this.gatewayPort}`})`;
   }
 }
 
-function cluster(options = {}) {
-  const index = new Map(); // actor path -> { host, gatewayPort, nodeId }
+function cluster(options: ClusterPluginOptions = {}) {
+  const index = new Map<string, ActorMeta>(); // actor path -> 位置
 
   return {
     name: 'cluster',
 
-    async setup(system) {
-      const gossip = new Gossip(options.nodeId || system.name, options.port === undefined ? 0 : options.port, {
+    async setup(system: ClusterSystem) {
+      const gossip: GossipLike = new Gossip(options.nodeId ?? system.name, options.port === undefined ? 0 : options.port, {
         host: options.host || config.gossip.host,
         advertiseHost: options.advertiseHost || config.gossip.advertiseHost,
         seeds: options.seeds || config.gossip.seeds,
@@ -121,7 +232,7 @@ function cluster(options = {}) {
       // ---- fencing / 分片所有权（M4 第 2b 步）--------------------------------
       // 谁拥有哪个 shard：用 gossip 的成员视图**本地确定性算**（D1，不共识）。
       // epoch：本节点只在自己确实是 owner 时给出声明（claimFor，不自封）。
-      const shardCount = Number.isInteger(options.shardCount) ? options.shardCount : 256;
+      const shardCount: number = Number.isInteger(options.shardCount) ? (options.shardCount as number) : 256;
       const guard = createOwnershipGuard({ nodeId: gossip.nodeId, shardCount });
       const fencingStats = { skipped: 0, rejected: 0, conflicts: 0 };
 
@@ -148,7 +259,7 @@ function cluster(options = {}) {
       };
 
       /** 记住"我声明过这个 shard 的第几代"，有变化才重新发布。 */
-      const rememberClaim = (shard, epoch) => {
+      const rememberClaim = (shard: number, epoch: number): void => {
         if (publishedClaims.get(shard) === epoch) return;
         publishedClaims.set(shard, epoch);
         claimsDirty = true;
@@ -159,13 +270,13 @@ function cluster(options = {}) {
        * 事件可能漏掉"新节点加入"，而所有权判断容不得用旧视图（那正是"未收敛窗口"）。
        * 用成员集合的签名避免无谓重建。
        */
-      let membersKey = null;
-      let previousRing = null;
+      let membersKey: string | null = null;
+      let previousRing: ReturnType<typeof ringUtil.createRing> | null = null;
       /** 已宣布离场的节点（含本节点在 drain() 时宣布的）：环要立刻排除它们。 */
       const leaving = new Set();
       const leavingKey = 'leaving:';
       const ADOPT_PREFIX = 'adopt:';
-      const takeover = { promoted: 0, shards: [] };
+      const takeover: { promoted: number; shards: number[] } = { promoted: 0, shards: [] };
       let singletonsPromoted = false;
       let promotedThisPass = false;
       /** 接管统计（第 6 步的指标也从这里读）。 */
@@ -178,19 +289,20 @@ function cluster(options = {}) {
        * 判据刻意简单：越简单越不容易在分区里出现"两边都以为自己是多数派"。
        */
       let highWater = 1;
-      const quorumState = () => {
-        const live = Math.max(1, gossip.info().nodes.filter((node) => !leaving.has(node)).length);
+      const quorumState = (): { live: number; highWater: number; ok: boolean } => {
+        const nodes = (gossip.info().nodes ?? []) as string[];
+        const live = Math.max(1, nodes.filter((node: string) => !leaving.has(node)).length);
         highWater = Math.max(highWater, live);
         return { live, highWater, ok: live * 2 > highWater };
       };
 
       /** 单例（第 4 步）：每个节点都登记定义，只有 owner 真的运行。 */
-      const singletons = new Map();
+      const singletons = new Map<string, { definition: unknown; options?: Record<string, unknown> }>();
       /** 一条离开/超时事件带来的"待接管 Actor"（在注册表被清掉之前先记下来）。 */
-      let pendingAdoptions = [];
+      let pendingAdoptions: { path: string; shard: number; from: string }[] = [];
 
       /** 环变化前先记下"原主人交出来的、且落到我们头上的、可迁移的" Actor。 */
-      const collectAdoptions = (departingNode) => {
+      const collectAdoptions = (departingNode: string): void => {
         for (const [path, value] of index) {
           if (!value || value.nodeId !== departingNode) continue;
           if (value.transferable === false) {
@@ -219,22 +331,24 @@ function cluster(options = {}) {
               system.emit('cluster_singleton_started', id);
             } catch (err) {
               adoption.failed += 1;
-              system._log('cluster_singleton_start_failed', { id, err: err && err.message });
+              system._log('cluster_singleton_start_failed', { id, err: err instanceof Error ? err.message : String(err) });
             }
           } else if (!runsHere && running) {
             // 不再是 owner：停掉本地实例（新 owner 会起来）
-            await (system.cells.get(id) ? system.cells.get(id).ref.stop() : Promise.resolve()).catch(() => undefined);
+            const existing = system.cells.get(id);
+            const ref = existing?.ref as { stop(): Promise<void> } | undefined;
+            if (ref !== undefined) await ref.stop().catch(() => undefined);
             system.emit('cluster_singleton_stopped', id);
           }
         }
       };
 
       /** 环更新之后：把落到我们头上的 Actor 用**同一个定义**重建（状态从共享存储恢复）。 */
-      const adoptPending = async () => {
+      const adoptPending = async (): Promise<void> => {
         if (pendingAdoptions.length === 0) return;
         const adoptions = pendingAdoptions;
         pendingAdoptions = [];
-        const stillPending = [];
+        const stillPending: { path: string; shard: number; from: string }[] = [];
         for (const item of adoptions) {
           if (guard.ownerOf(item.shard) !== gossip.nodeId) {
             stillPending.push(item); // 环还没更新到"归我"：留着等下一次提升，别丢
@@ -248,7 +362,7 @@ function cluster(options = {}) {
               : system.ownership && typeof system.ownership.recreate === 'function'
                 ? system.ownership.recreate
                 : null;
-          const recreated = recreate === null ? null : recreate(item.path);
+          const recreated = recreate === null ? null : (recreate as (path: string) => { definition: unknown; options?: Record<string, unknown> } | null)(item.path);
           if (!recreated || !recreated.definition) {
             adoption.failed += 1;
             system._log('cluster_adoption_no_definition', { path: item.path });
@@ -260,7 +374,7 @@ function cluster(options = {}) {
             system.emit('cluster_actor_adopted', item.path, item.from);
           } catch (err) {
             adoption.failed += 1;
-            system._log('cluster_adoption_failed', { path: item.path, err: err && err.message });
+            system._log('cluster_adoption_failed', { path: item.path, err: err instanceof Error ? err.message : String(err) });
           }
         }
         if (stillPending.length > 0) pendingAdoptions.push(...stillPending);
@@ -272,10 +386,10 @@ function cluster(options = {}) {
        * 环 = 成员视图（**排除离场者**）的纯函数。离场用一条注册表标记表达，
        * 于是"节点要走了"这件事在**所有节点上确定性可见**，不必等心跳超时。
        */
-      const refreshRing = (force = false) => {
+      const refreshRing = (force = false): ReturnType<typeof guard.updateRing> => {
         // 离场者（**包括本节点自己在 drain 时**）一律排除：否则离场节点算出的新 owner 还是它自己。
         // 成员可能变成空集（单节点集群离场）——那也是有效状态：此时 owner 为 null（没人接管）。
-        const members = gossip.info().nodes.filter((node) => !leaving.has(node));
+        const members = ((gossip.info().nodes ?? []) as string[]).filter((node: string) => !leaving.has(node));
         const key = [...members].sort().join(',');
         if (!force && key === membersKey) return;
         membersKey = key;
@@ -294,9 +408,9 @@ function cluster(options = {}) {
             // 通知上层（应用层在这里把 Actor 在新的 owner 上重建）
             if (typeof options.onShardsPromoted === 'function') {
               try {
-                options.onShardsPromoted(shard, previousRing ? ringUtil.ownerOfShard(previousRing, shard) : null);
+                options.onShardsPromoted?.(shard, previousRing !== null ? ringUtil.ownerOfShard(previousRing, shard) : null);
               } catch (err) {
-                system._log('cluster_on_shards_promoted_failed', { shard, err: err && err.message });
+                system._log('cluster_on_shards_promoted_failed', { shard, err: err instanceof Error ? err.message : String(err) });
               }
             }
             if (shard === SINGLETON_SHARD) singletonsPromoted = true;
@@ -308,7 +422,9 @@ function cluster(options = {}) {
         // 环把某个 shard 提升给我 → 这就是接管的权威信号（清单只是"有哪些 Actor 要接"的提示）
         if (promotedThisPass) {
           promotedThisPass = false;
-          void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
+          void adoptPending().catch((err: unknown) =>
+          system._log('cluster_adoption_error', { err: err instanceof Error ? err.message : String(err) }),
+        );
         }
         // 单例：本节点是否接管了单例 shard
         // 单例：环一变就要重新判断"我该不该跑它"——既有提升（成为 owner）也有**降级**（离场时
@@ -319,7 +435,9 @@ function cluster(options = {}) {
           );
         }
         // 普通 Actor 的接管（异步，不阻塞环刷新）
-        void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
+        void adoptPending().catch((err: unknown) =>
+          system._log('cluster_adoption_error', { err: err instanceof Error ? err.message : String(err) }),
+        );
         return next;
       };
 
@@ -327,8 +445,9 @@ function cluster(options = {}) {
         shardCount,
         requireFencing: options.requireFencing === true,
         guard,
+        ...(options.recreate === undefined ? {} : { recreate: options.recreate }),
         /** 出站：只有本节点**确实是**这个 shard 的 owner 时才给出 epoch（否则不带字段）。 */
-        epochFor(path) {
+        epochFor(path: string): number | null {
           if (handingOver) return null; // 离场中：不再为任何 shard 背书
           refreshRing();
           const shard = ringUtil.shardOf(String(path), shardCount);
@@ -339,7 +458,17 @@ function cluster(options = {}) {
           return claim.epoch;
         },
         /** 入站判定：见 docs/design/m4-cluster-governance.md §3.4.5 的三条规则。 */
-        verifyIncoming({ targetActorId, shardEpoch, peerNodeId, peerSupportsFencing }) {
+        verifyIncoming({
+          targetActorId,
+          shardEpoch,
+          peerNodeId,
+          peerSupportsFencing,
+        }: {
+          targetActorId?: string;
+          shardEpoch?: number;
+          peerNodeId?: string;
+          peerSupportsFencing?: boolean;
+        }): { ok: boolean; reason?: string } {
           if (!targetActorId) return { ok: true };
           refreshRing();
           const shard = ringUtil.shardOf(String(targetActorId), shardCount);
@@ -394,7 +523,8 @@ function cluster(options = {}) {
         },
       };
 
-      const announce = (ref) => {
+      /** 把一条本地 Actor 的位置（含可迁移性）写进 gossip 注册表。 */
+      const announce = (ref: { path: string; id: string }): void => {
         const cell = system.cells.get(ref.path) || system.cells.get(ref.id);
         gossip.setLocal(ref.path, {
           type: 'actor',
@@ -407,49 +537,61 @@ function cluster(options = {}) {
         });
       };
 
-      const onRegistered = (ref) => announce(ref);
-      const onStopped = (path) => gossip.delLocal(String(path));
-      const onListening = () => {
+      const onRegistered = (ref: { path: string; id: string }): void => announce(ref);
+      const onStopped = (path: string): void => gossip.delLocal(String(path));
+      const onListening = (): void => {
         // The gateway port is only known after listen(): re-announce so peers
         // get a reachable address.
-        for (const cell of system.cells.values()) if (!cell.stopped) announce(cell.ref);
+        for (const cell of system.cells.values()) if (cell.stopped !== true) announce(cell.ref as { path: string; id: string });
         refreshRing();
         // 降级与拒绝必须**可见**（软升级策略的前提）：计数从网关事件来
-        if (system.server && typeof system.server.on === 'function' && !system.server.__fencingWired) {
-          system.server.__fencingWired = true;
-          system.server.on('fencing_skipped', () => {
+        const server = system.server;
+        if (server !== null && typeof server.on === 'function' && server.__fencingWired !== true) {
+          server.__fencingWired = true;
+          server.on('fencing_skipped', () => {
             fencingStats.skipped += 1;
           });
-          system.server.on('ownership_rejected', () => {
+          server.on('ownership_rejected', () => {
             fencingStats.rejected += 1;
           });
         }
       };
-      const onUpdate = (key, value) => {
+      const onUpdate = (key: string, value: unknown): void => {
         if (key.startsWith('subs:')) return;
         refreshRing(); // 成员视图可能变了（谁在环上决定所有权）
+        // registry 的值是异构 JSON（actor 位置 / 接管清单 / shard 声明 / 离场标记），
+        // 这里按 `type` 判别；判别不上的**直接忽略**（别猜），与 gossip 的容错策略一致。
+        const entry = (value ?? {}) as {
+          type?: string;
+          nodeId?: string;
+          ts?: number;
+          actors?: { path?: unknown; shard?: unknown; transferable?: unknown }[];
+          claims?: Record<string, number>;
+        };
         if (key.startsWith(ADOPT_PREFIX)) {
           // 离场方给出的接管清单：落到我们头上的（且可迁移的）Actor 由我们重建
-          if (value && value.type === 'adoption-manifest' && Array.isArray(value.actors)) {
-            for (const actor of value.actors) {
+          if (entry.type === 'adoption-manifest' && Array.isArray(entry.actors)) {
+            for (const actor of entry.actors) {
               if (!actor || typeof actor.path !== 'string') continue;
               if (actor.transferable === false) {
                 adoption.skipped += 1;
                 system._log('cluster_adoption_skipped', { path: actor.path, reason: 'transferable: false' });
                 continue;
               }
-              pendingAdoptions.push({ path: actor.path, shard: Number(actor.shard), from: value.nodeId });
+              pendingAdoptions.push({ path: actor.path, shard: Number(actor.shard), from: entry.nodeId ?? '' });
             }
             // **先刷新环再接管**：清单与离场标记常常同一轮到达，谁接手取决于环更新之后的结果；
             // 顺序反了会因为"这个 shard 还不归我"而把条目一直挂着（靠环提升时再兜住）。
             refreshRing();
-            void adoptPending().catch((err) => system._log('cluster_adoption_error', { err: err && err.message }));
+            void adoptPending().catch((err: unknown) =>
+          system._log('cluster_adoption_error', { err: err instanceof Error ? err.message : String(err) }),
+        );
           }
           return;
         }
         if (key.startsWith(leavingKey)) {
           // 有人宣布离场：立刻把它从环里去掉（确定性），并重算（会触发新 owner 加代）
-          if (value === true || (value && value.type === 'leaving')) {
+          if (value === true || entry.type === 'leaving') {
             const departing = key.slice(leavingKey.length);
             leaving.add(departing);
             if (departing !== gossip.nodeId) {
@@ -461,13 +603,13 @@ function cluster(options = {}) {
         }
         if (key.startsWith(CLAIM_PREFIX)) {
           // 对端的声明：epoch 更高 = 所有权换代；同 epoch 换人 = **双主声明**，必须报出来
-          if (value && value.type === 'shard-claims' && value.claims) {
-            for (const [shardText, epoch] of Object.entries(value.claims)) {
+          if (entry.type === 'shard-claims' && entry.claims !== undefined) {
+            for (const [shardText, epoch] of Object.entries(entry.claims)) {
               const result = guard.observe({
                 shard: Number(shardText),
-                ownerNodeId: value.nodeId || key.slice(CLAIM_PREFIX.length),
+                ownerNodeId: entry.nodeId ?? key.slice(CLAIM_PREFIX.length),
                 epoch: Number(epoch),
-                at: value.ts || Date.now(),
+                at: entry.ts ?? Date.now(),
               });
               if (!result.accepted && String(result.reason).includes('双主声明')) {
                 fencingStats.conflicts += 1;
@@ -477,14 +619,14 @@ function cluster(options = {}) {
           }
           return;
         }
-        if (!value || value.type !== 'actor') return;
-        index.set(key, value);
+        if (entry.type !== 'actor') return;
+        index.set(key, entry as ActorMeta);
       };
-      const onDelete = (key) => {
+      const onDelete = (key: string): void => {
         if (key.startsWith('subs:')) return;
         index.delete(key);
       };
-      const onNodeTimeout = (nodeId) => {
+      const onNodeTimeout = (nodeId: string): void => {
         collectAdoptions(nodeId); // 故障路径：没有优雅交接，靠状态恢复（doc 05 §1.3）
         for (const [key, value] of [...index]) if (value.nodeId === nodeId) index.delete(key);
         refreshRing(); // 成员掉线 → 环变了 → 它原来的 shard 归别人
@@ -496,7 +638,7 @@ function cluster(options = {}) {
       gossip.on('registry_update', onUpdate);
       gossip.on('registry_delete', onDelete);
       gossip.on('node_timeout', onNodeTimeout);
-      gossip.on('auth_error', (reason) => system._log('cluster_auth_error', { reason }));
+      gossip.on('auth_error', ((reason: unknown) => system._log('cluster_auth_error', { reason })) as (...args: never[]) => void);
 
       await gossip.start();
       onListening(); // announce whatever already exists
@@ -510,7 +652,7 @@ function cluster(options = {}) {
         try {
           refreshRing();
         } catch (err) {
-          system._log('cluster_ring_refresh_failed', { err: err && err.message });
+          system._log('cluster_ring_refresh_failed', { err: err instanceof Error ? err.message : String(err) });
         }
       }, 200);
       if (typeof ringTimer.unref === 'function') ringTimer.unref();
@@ -522,7 +664,7 @@ function cluster(options = {}) {
         },
         peers: () => gossip.info().peers,
         nodes: () => gossip.info().nodes,
-        lookup: (path) => index.get(String(path)) || null,
+        lookup: (path: string): ActorMeta | null => index.get(String(path)) ?? null,
         /** Every actor discovered on other nodes. */
         remoteActors: () => [...index.keys()].sort(),
         /** Sync: returns a lazily-connecting ref, or null when unknown. */
@@ -532,7 +674,7 @@ function cluster(options = {}) {
         fencing: () => ({
           supported: true,
           shardCount,
-          requireFencing: system.ownership.requireFencing,
+          requireFencing: system.ownership?.requireFencing === true,
           skipped: fencingStats.skipped,
           rejected: fencingStats.rejected,
           conflicts: fencingStats.conflicts,
@@ -548,10 +690,10 @@ function cluster(options = {}) {
          *   5. **释放**：停掉这些 Actor（新 owner 会用同一份存储恢复）。
          * 返回摘要：交出了哪些 shard、各自归谁、排空了几个、有没有超时。
          */
-        async drain(drainOptions = {}) {
-          const timeoutMs = Number.isFinite(drainOptions.timeoutMs) ? drainOptions.timeoutMs : 5000;
+        async drain(drainOptions: { timeoutMs?: number; stopActors?: boolean } = {}): Promise<Record<string, unknown>> {
+          const timeoutMs = Number.isFinite(drainOptions.timeoutMs) ? (drainOptions.timeoutMs as number) : 5000;
           const stopActors = drainOptions.stopActors !== false;
-          const ownedBefore = [];
+          const ownedBefore: number[] = [];
           for (let shard = 0; shard < shardCount; shard += 1) if (guard.ownsShard(shard)) ownedBefore.push(shard);
 
           // 1) 宣布离场（自己也算离场者，环里不再有自己）
@@ -559,21 +701,22 @@ function cluster(options = {}) {
           gossip.setLocal(`${leavingKey}${gossip.nodeId}`, true);
           refreshRing(true);
 
-          const moved = new Map();
+          const moved = new Map<number, { from: string; to: string | null }>();
           // 先算出"谁接手哪些 shard"，并把**接管清单**发布出去：接手方据此重建 Actor。
           // 不能指望接手方去读注册表——离场时 Actor 条目会变成 tombstone，跟清单抢同一轮 gossip。
-          for (const shard of ownedBefore) moved.set(shard, guard.ownerOf(shard));
-          const manifest = [];
+          for (const shard of ownedBefore) moved.set(shard, { from: gossip.nodeId, to: guard.ownerOf(shard) });
+          const manifest: { path: string; shard: number; to: string | null; transferable: boolean }[] = [];
           for (const cell of system.cells.values()) {
             if (cell.stopped) continue;
-            const cellPath = cell.ref && cell.ref.path ? cell.ref.path : cell.id;
+            const ref = cell.ref as { path?: string } | null;
+            const cellPath = ref !== null && typeof ref.path === 'string' ? ref.path : cell.path;
             if (!cellPath) continue;
             const shard = ringUtil.shardOf(String(cellPath), shardCount);
             if (!moved.has(shard)) continue;
             manifest.push({
               path: String(cellPath),
               shard,
-              to: moved.get(shard),
+              to: moved.get(shard)?.to ?? null,
               transferable: cell.transferable !== false,
             });
           }
@@ -589,7 +732,10 @@ function cluster(options = {}) {
           handingOver = true;
 
           // 3) 排空在途请求
-          const pending = () => (system.server && typeof system.server.inflight === 'function' ? system.server.inflight() : 0);
+          const pending = (): number => {
+            const server = system.server as { inflight?(): number } | null;
+            return server !== null && typeof server.inflight === 'function' ? server.inflight() : 0;
+          };
           const deadline = Date.now() + timeoutMs;
           while (pending() > 0 && Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 10));
@@ -597,36 +743,43 @@ function cluster(options = {}) {
           const remaining = pending();
 
           // 4/5) 落盘 + 释放：只动"这些 shard 上"的本地 Actor
-          const localActors = [];
+          const localActors: { ref: { path?: string; id?: string; stop?(): Promise<void> }; path: string; transferable?: boolean; saveSnapshot?(): Promise<void> }[] = [];
           for (const cell of system.cells.values()) {
-            if (cell.stopped) continue;
-            const path = cell.ref && cell.ref.path ? cell.ref.path : cell.id;
+            if (cell.stopped === true) continue;
+            const path = typeof cell.ref.path === 'string' ? cell.ref.path : cell.path;
             if (!path) continue;
             if (moved.has(ringUtil.shardOf(String(path), shardCount))) localActors.push(cell);
           }
-          const persisted = [];
-          const untransferable = [];
+          const persisted: string[] = [];
+          const untransferable: string[] = [];
           for (const cell of localActors) {
             if (cell.transferable === false) {
               // 明确失败，而不是假装能迁移：持有 socket/句柄的 Actor 只能让客户端重连
-              untransferable.push(cell.ref.path);
+              const cellPath = typeof cell.ref.path === 'string' ? cell.ref.path : cell.path;
+              untransferable.push(cellPath);
               system._log('cluster_drain_untransferable', {
-                path: cell.ref.path,
+                path: cellPath,
                 hint: 'transferable: false —— 这个 Actor 的连接会断开，请让客户端重连（不要假装能迁 socket）',
               });
               continue;
             }
             try {
-              await cell.saveSnapshot();
-              persisted.push(cell.ref.path);
+              if (typeof cell.saveSnapshot === 'function') await cell.saveSnapshot();
+              persisted.push(typeof cell.ref.path === 'string' ? cell.ref.path : cell.path);
             } catch (err) {
-              system._log('cluster_drain_snapshot_failed', { path: cell.ref.path, err: err && err.message });
+              system._log('cluster_drain_snapshot_failed', {
+                path: typeof cell.ref.path === 'string' ? cell.ref.path : cell.path,
+                err: err instanceof Error ? err.message : String(err),
+              });
             }
           }
           if (stopActors) {
             // 注意：是 `ref.stop()`（停这一个 Actor）。`system.stop()` **不接受参数**、会停掉整个系统
             // （连插件一起 teardown）——这个 API 误用曾经把 drain 变成"把自己也关了"。
-            for (const cell of localActors) await cell.ref.stop().catch(() => undefined);
+            for (const cell of localActors) {
+              const stop = cell.ref.stop;
+              if (typeof stop === 'function') await stop.call(cell.ref).catch(() => undefined);
+            }
           }
           return {
             nodeId: gossip.nodeId,
@@ -643,8 +796,11 @@ function cluster(options = {}) {
          * 单例：**每个节点都调用**（通常在各节点的启动流程里），只有单例 shard 的 owner 真的运行。
          * 返回 `{ local }`：本节点是否真的起来了。它不是分布式锁，接管有延迟。
          */
-        async spawnSingleton(definition, singletonOptions = {}) {
-          const id = singletonOptions.id ? String(singletonOptions.id) : 'singleton';
+        async spawnSingleton(
+          definition: unknown,
+          singletonOptions: { id?: string; [key: string]: unknown } = {},
+        ): Promise<{ id: string; local: boolean; owner: string | null }> {
+          const id = singletonOptions.id !== undefined ? String(singletonOptions.id) : 'singleton';
           singletons.set(id, { definition, options: { ...singletonOptions, id } });
           refreshRing();
           await adoptSingletons();
@@ -689,11 +845,11 @@ function cluster(options = {}) {
           };
         },
         /** 某个 actor 在本地环上归谁（诊断用）。 */
-        ownerOfActor: (path) => {
+        ownerOfActor: (path: string): string | null => {
           refreshRing();
           return guard.ownerOf(ringUtil.shardOf(String(path), shardCount));
         },
-        resolveRemote: (path) => {
+        resolveRemote: (path: string): DiscoveredRef | null => {
           const meta = index.get(String(path));
           if (!meta || !meta.host || !meta.gatewayPort) return null;
           // Never hand out a ref that points back at this node.
@@ -701,7 +857,7 @@ function cluster(options = {}) {
           return new DiscoveredRef(system, path, meta);
         },
         /** Wait until a path is discoverable (useful in tests and startup). */
-        async waitFor(path, timeoutMs = 10000) {
+        async waitFor(path: string, timeoutMs = 10000): Promise<ActorMeta | null> {
           const deadline = Date.now() + timeoutMs;
           while (Date.now() < deadline) {
             const meta = index.get(String(path));
@@ -719,12 +875,13 @@ function cluster(options = {}) {
       };
     },
 
-    async teardown(system) {
-      if (system && system.cluster) {
-        system.cluster._teardownListeners();
-        await system.cluster.gossip.stop().catch(() => {});
-        system.cluster = null;
+    async teardown(system: ClusterSystem | null): Promise<void> {
+      const clusterService = system?.cluster as { _teardownListeners?(): void; gossip?: { stop(): Promise<void> } } | null | undefined;
+      if (clusterService !== null && clusterService !== undefined) {
+        clusterService._teardownListeners?.();
+        await clusterService.gossip?.stop().catch(() => undefined);
       }
+      if (system !== null && system !== undefined) system.cluster = null;
       index.clear();
     },
   };
