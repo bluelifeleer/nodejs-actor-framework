@@ -205,7 +205,18 @@ export function defineActor<M = unknown, R = unknown, S = any>(
 // Persistence adapters
 // ---------------------------------------------------------------------------
 
+export interface PersistenceCapabilities {
+  conditionalAppend: 'atomic' | 'in-process' | false;
+  batchAppend: 'atomic' | 'in-process' | false;
+}
+
 export interface PersistenceAdapter {
+  /**
+   * What this backend can actually guarantee. Both fields are three-valued:
+   * `'atomic'` (safe across processes) / `'in-process'` (this process only) / `false`.
+   * Read it before assuming a conditional write protects you from another process.
+   */
+  capabilities?(): PersistenceCapabilities;
   loadSnapshot(id: ActorPath): Promise<unknown>;
   saveSnapshot(id: ActorPath, state: unknown): Promise<void>;
   deleteSnapshot(id: ActorPath): Promise<unknown>;

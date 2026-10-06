@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -28,22 +27,40 @@ const { PersistenceError, PersistenceConflictError } = require('../actor/errors.
  * 之所以要把它查得出来：没有这个信息时，"以为有乐观并发保护、其实没有"是最危险的状态
  * （见 docs/design/m3-data-evolution.md §6.4）。
  */
-const DEFAULT_CAPABILITIES = Object.freeze({ conditionalAppend: false, batchAppend: false });
+/** 后端能保证什么（`false` = 不支持）。 */
+/**
+ * 后端能保证什么。两个字段都是**三值**：`'atomic'`（跨进程也原子）/
+ * `'in-process'`（只保证本进程）/ `false`（不支持）。
+ *
+ * 不接受"布尔化"：`batchAppend: true` 会丢掉"只在本进程内原子"这个关键信息，
+ * 而用户正是靠它判断"能不能多开一个进程写同一份日志"。
+ */
+interface PersistenceCapabilities {
+  conditionalAppend: 'atomic' | 'in-process' | false;
+  batchAppend: 'atomic' | 'in-process' | false;
+}
+
+const DEFAULT_CAPABILITIES: PersistenceCapabilities = Object.freeze({ conditionalAppend: false, batchAppend: false });
+
+/** 一次写入的选项：`expectedVersion` 是**日志当前版本（= 记录条数）**。 */
+interface AppendOptions {
+  expectedVersion?: number;
+}
 
 /** Interface documentation; both adapters below implement it. */
 class PersistenceAdapter {
   /* eslint-disable no-unused-vars */
-  capabilities() {
+  capabilities(): PersistenceCapabilities {
     return DEFAULT_CAPABILITIES;
   }
 
-  async loadSnapshot(id) {
+  async loadSnapshot(id: string): Promise<unknown> {
     return undefined;
   }
 
-  async saveSnapshot(id, state) {}
+  async saveSnapshot(id: string, state: unknown): Promise<void> {}
 
-  async deleteSnapshot(id) {}
+  async deleteSnapshot(id: string): Promise<void> {}
 
   /**
    * Append one event.
@@ -53,7 +70,7 @@ class PersistenceAdapter {
    * 用"条数"而不是"事件里的 seq"，是为了让后端保持格式无关（它们不认识信封）；
    * 而数据层的 `readLog` 已经保证 seq 连续，所以条数就是最后一条事件的 seq。
    */
-  async appendEvent(id, event, options = {}) {
+  async appendEvent(id: string, event: unknown, options: AppendOptions = {}): Promise<void> {
     void options;
   }
 
@@ -64,8 +81,8 @@ class PersistenceAdapter {
    * 想要"整批要么都在、要么都不在"，适配器要实现它并把 `capabilities().batchAppend` 报上来；
    * 内核只在能力非 false 时才走批量路径（否则退回逐条并记一条日志）。
    */
-  async appendEvents(id, events, options = {}) {
-    const written = [];
+  async appendEvents(id: string, events: unknown[], options: AppendOptions = {}): Promise<number> {
+    const written: unknown[] = [];
     for (const event of events) {
       await this.appendEvent(id, event, written.length === 0 ? options : {});
       written.push(event);
@@ -73,16 +90,16 @@ class PersistenceAdapter {
     return written.length;
   }
 
-  async loadEvents(id) {
+  async loadEvents(id: string): Promise<unknown[]> {
     return [];
   }
 
-  async deleteEvents(id) {}
+  async deleteEvents(id: string): Promise<void> {}
   /* eslint-enable no-unused-vars */
 }
 
 /** 条件写失败的统一错误信息（后端各自抛出，字段一致）。 */
-function appendConflict(id, expectedVersion, actualVersion) {
+function appendConflict(id: string, expectedVersion: number, actualVersion: number): Error {
   return new PersistenceConflictError(
     `"${String(id)}" 的条件写入失败：期望日志版本 ${expectedVersion}，实际 ${actualVersion}` +
       '（另一个实例/节点已经写过这个聚合了？先重新加载再重试）',
@@ -91,8 +108,8 @@ function appendConflict(id, expectedVersion, actualVersion) {
 }
 
 /** 校验 `options.expectedVersion`（防止把 undefined/NaN 当成"期望 0"）。 */
-function readExpectedVersion(options) {
-  const expected = options ? options.expectedVersion : undefined;
+function readExpectedVersion(options: AppendOptions | null | undefined): number | null {
+  const expected = options === null || options === undefined ? undefined : options.expectedVersion;
   if (expected === undefined) return null;
   if (!Number.isInteger(expected) || expected < 0) {
     throw new PersistenceError(`expectedVersion 必须是 >= 0 的整数（当前 ${String(expected)}）`);
@@ -101,6 +118,11 @@ function readExpectedVersion(options) {
 }
 
 class MemoryPersistence extends PersistenceAdapter {
+  /** actorId -> 快照。 */
+  readonly snapshots: Map<string, unknown>;
+  /** actorId -> 事件日志。 */
+  readonly events: Map<string, unknown[]>;
+
   constructor() {
     super();
     this.snapshots = new Map();
@@ -108,47 +130,53 @@ class MemoryPersistence extends PersistenceAdapter {
   }
 
   /** 进程内的日志就是全部真相，所以条件写与批量写都是原子的（本来也没有别的进程）。 */
-  capabilities() {
+  override capabilities(): PersistenceCapabilities {
     return { conditionalAppend: 'in-process', batchAppend: 'in-process' };
   }
 
-  async loadSnapshot(id) {
+  override async loadSnapshot(id: string): Promise<unknown> {
     return this.snapshots.get(String(id));
   }
 
-  async saveSnapshot(id, state) {
+  override async saveSnapshot(id: string, state: unknown): Promise<void> {
     this.snapshots.set(String(id), state);
   }
 
-  async deleteSnapshot(id) {
-    return this.snapshots.delete(String(id));
+  override async deleteSnapshot(id: string): Promise<void> {
+    this.snapshots.delete(String(id));
   }
 
-  async appendEvent(id, event, options = {}) {
+  override async appendEvent(id: string, event: unknown, options: AppendOptions = {}): Promise<void> {
     const key = String(id);
     const expected = readExpectedVersion(options);
-    if (!this.events.has(key)) this.events.set(key, []);
-    const log = this.events.get(key);
+    let log = this.events.get(key);
+    if (log === undefined) {
+      log = [];
+      this.events.set(key, log);
+    }
     if (expected !== null && log.length !== expected) throw appendConflict(key, expected, log.length);
     log.push(event);
   }
 
-  async appendEvents(id, events, options = {}) {
+  override async appendEvents(id: string, events: unknown[], options: AppendOptions = {}): Promise<number> {
     const key = String(id);
     const expected = readExpectedVersion(options);
-    if (!this.events.has(key)) this.events.set(key, []);
-    const log = this.events.get(key);
+    let log = this.events.get(key);
+    if (log === undefined) {
+      log = [];
+      this.events.set(key, log);
+    }
     if (expected !== null && log.length !== expected) throw appendConflict(key, expected, log.length);
     log.push(...events); // 检查通过之后一次性推入：不会被看到"写了一半"
     return events.length;
   }
 
-  async loadEvents(id) {
-    return [...(this.events.get(String(id)) || [])];
+  override async loadEvents(id: string): Promise<unknown[]> {
+    return [...(this.events.get(String(id)) ?? [])];
   }
 
-  async deleteEvents(id) {
-    return this.events.delete(String(id));
+  override async deleteEvents(id: string): Promise<void> {
+    this.events.delete(String(id));
   }
 }
 
@@ -158,10 +186,29 @@ class MemoryPersistence extends PersistenceAdapter {
  *   <baseDir>/snapshots/<actor>.json   atomic tmp+rename
  *   <baseDir>/events/<actor>.jsonl     append-only, torn tail tolerated
  */
+interface FilePersistenceOptions {
+  baseDir?: string;
+  /** 缺省不碰文件系统，首次使用时才建目录。 */
+  deferDirs?: boolean;
+}
+
+/** 日志版本的进程内缓存（size 用来发现"别人追加过"）。 */
+interface LogCount {
+  size: number;
+  count: number;
+}
+
 class FilePersistence extends PersistenceAdapter {
-  constructor(options = {}) {
+  readonly baseDir: string;
+  readonly snapshotDir: string;
+  readonly eventDir: string;
+  readonly deferDirs: boolean;
+  /** 路径 -> 已写入记录条数（进程内缓存）。 */
+  readonly _counts: Map<string, LogCount>;
+
+  constructor(options: FilePersistenceOptions = {}) {
     super();
-    this.baseDir = options.baseDir || path.join(process.cwd(), '.actors');
+    this.baseDir = options.baseDir ?? path.join(process.cwd(), '.actors');
     this.snapshotDir = path.join(this.baseDir, 'snapshots');
     this.eventDir = path.join(this.baseDir, 'events');
     this.deferDirs = options.deferDirs !== false; // do not touch the fs until first use
@@ -174,21 +221,21 @@ class FilePersistence extends PersistenceAdapter {
     if (!this.deferDirs) this._ensureDirs();
   }
 
-  capabilities() {
+  override capabilities(): PersistenceCapabilities {
     // 批量写：版本检查之后**一次** appendFile ⇒ 对检查而言是原子的；
     // 但文件没有事务，崩溃仍可能只落下一部分（读取端的撕裂尾巴规则会把不完整的行截断，
     // 于是最坏情况是"看到批次的前缀"——真要严格原子请用支持事务的后端）
     return { conditionalAppend: 'in-process', batchAppend: 'in-process' };
   }
 
-  _ensureDirs() {
+  _ensureDirs(): void {
     fs.mkdirSync(this.snapshotDir, { recursive: true });
     fs.mkdirSync(this.eventDir, { recursive: true });
   }
 
   /** 解析 jsonl：遇到第一条读不通的行就停（崩溃留下的撕裂尾巴，与 loadEvents 同规则）。 */
-  _parseLog(raw) {
-    const records = [];
+  _parseLog(raw: string): unknown[] {
+    const records: unknown[] = [];
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -201,12 +248,12 @@ class FilePersistence extends PersistenceAdapter {
     return records;
   }
 
-  async _logSize(key) {
+  async _logSize(key: string): Promise<number> {
     try {
       return (await fsp.stat(this._eventPath(key))).size;
     } catch (err) {
-      if (err.code === 'ENOENT') return 0;
-      throw new PersistenceError(`cannot stat events for ${key}: ${err.message}`);
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw new PersistenceError(`cannot stat events for ${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -218,11 +265,11 @@ class FilePersistence extends PersistenceAdapter {
    * 既不重复解析整段日志，也不会被本地缓存骗过。
    * 跨进程仍然不保证（见 `capabilities()`）；要真正的原子条件写，请换支持 CAS 的后端。
    */
-  async _countFor(key) {
+  async _countFor(key: string): Promise<LogCount> {
     const size = await this._logSize(key);
     const cached = this._counts.get(key);
-    if (cached && cached.size === size) return cached;
-    if (cached && size > cached.size) {
+    if (cached !== undefined && cached.size === size) return cached;
+    if (cached !== undefined && size > cached.size) {
       const handle = await fsp.open(this._eventPath(key), 'r');
       try {
         const length = size - cached.size;
@@ -241,35 +288,35 @@ class FilePersistence extends PersistenceAdapter {
     try {
       count = this._parseLog(await fsp.readFile(this._eventPath(key), 'utf8')).length;
     } catch (err) {
-      if (err.code !== 'ENOENT') throw new PersistenceError(`cannot count events for ${key}: ${err.message}`);
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new PersistenceError(`cannot count events for ${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
     const entry = { size, count };
     this._counts.set(key, entry);
     return entry;
   }
 
-  _snapshotPath(id) {
+  _snapshotPath(id: string): string {
     return path.join(this.snapshotDir, fileName(String(id), '.json'));
   }
 
-  _eventPath(id) {
+  _eventPath(id: string): string {
     return path.join(this.eventDir, fileName(String(id), '.jsonl'));
   }
 
-  async loadSnapshot(id) {
+  override async loadSnapshot(id: string): Promise<unknown> {
     try {
       const raw = await fsp.readFile(this._snapshotPath(id), 'utf8');
       return JSON.parse(raw);
     } catch (err) {
-      if (err.code === 'ENOENT') return undefined;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       if (err instanceof SyntaxError) {
         throw new PersistenceError(`snapshot for ${id} is corrupt: ${err.message}`, { actorId: String(id) });
       }
-      throw new PersistenceError(`cannot read snapshot for ${id}: ${err.message}`, { actorId: String(id) });
+      throw new PersistenceError(`cannot read snapshot for ${id}: ${err instanceof Error ? err.message : String(err)}`, { actorId: String(id) });
     }
   }
 
-  async saveSnapshot(id, state) {
+  override async saveSnapshot(id: string, state: unknown): Promise<void> {
     const target = this._snapshotPath(id);
     try {
       this._ensureDirs();
@@ -277,21 +324,20 @@ class FilePersistence extends PersistenceAdapter {
       await fsp.writeFile(tmp, `${JSON.stringify(state)}\n`);
       await fsp.rename(tmp, target);
     } catch (err) {
-      throw new PersistenceError(`cannot save snapshot for ${id}: ${err.message}`, { actorId: String(id) });
+      throw new PersistenceError(`cannot save snapshot for ${id}: ${err instanceof Error ? err.message : String(err)}`, { actorId: String(id) });
     }
   }
 
-  async deleteSnapshot(id) {
+  override async deleteSnapshot(id: string): Promise<void> {
     try {
       await fsp.unlink(this._snapshotPath(id));
-      return true;
     } catch (err) {
-      if (err.code === 'ENOENT') return false;
-      throw new PersistenceError(`cannot delete snapshot for ${id}: ${err.message}`);
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // 已经没有了：幂等
+      throw new PersistenceError(`cannot delete snapshot for ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  async appendEvent(id, event, options = {}) {
+  override async appendEvent(id: string, event: unknown, options: AppendOptions = {}): Promise<void> {
     const key = String(id);
     const expected = readExpectedVersion(options);
     const { count: actual, size } = await this._countFor(key);
@@ -302,11 +348,11 @@ class FilePersistence extends PersistenceAdapter {
       await fsp.appendFile(this._eventPath(key), line);
       this._counts.set(key, { size: size + Buffer.byteLength(line), count: actual + 1 });
     } catch (err) {
-      throw new PersistenceError(`cannot append event for ${key}: ${err.message}`, { actorId: key });
+      throw new PersistenceError(`cannot append event for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
     }
   }
 
-  async appendEvents(id, events, options = {}) {
+  override async appendEvents(id: string, events: unknown[], options: AppendOptions = {}): Promise<number> {
     const key = String(id);
     const expected = readExpectedVersion(options);
     const { count: actual, size } = await this._countFor(key);
@@ -318,40 +364,39 @@ class FilePersistence extends PersistenceAdapter {
       this._counts.set(key, { size: size + Buffer.byteLength(lines), count: actual + events.length });
       return events.length;
     } catch (err) {
-      throw new PersistenceError(`cannot append events for ${key}: ${err.message}`, { actorId: key });
+      throw new PersistenceError(`cannot append events for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
     }
   }
 
-  async loadEvents(id) {
+  override async loadEvents(id: string): Promise<unknown[]> {
     const key = String(id);
     let raw;
     try {
       raw = await fsp.readFile(this._eventPath(key), 'utf8');
     } catch (err) {
-      if (err.code === 'ENOENT') {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         this._counts.set(key, { size: 0, count: 0 }); // 明确知道是空的（spawn 时就会走到这里，正好喂上缓存）
         return [];
       }
-      throw new PersistenceError(`cannot read events for ${key}: ${err.message}`);
+      throw new PersistenceError(`cannot read events for ${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
     const events = this._parseLog(raw);
     this._counts.set(key, { size: Buffer.byteLength(raw), count: events.length });
     return events;
   }
 
-  async deleteEvents(id) {
+  override async deleteEvents(id: string): Promise<void> {
     this._counts.delete(String(id));
     try {
       await fsp.unlink(this._eventPath(id));
-      return true;
     } catch (err) {
-      if (err.code === 'ENOENT') return false;
-      throw new PersistenceError(`cannot delete events for ${id}: ${err.message}`);
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // 幂等
+      throw new PersistenceError(`cannot delete events for ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  async stats() {
-    const count = async (dir) => {
+  async stats(): Promise<Record<string, unknown>> {
+    const count = async (dir: string): Promise<number> => {
       try {
         return (await fsp.readdir(dir)).length;
       } catch {
@@ -371,9 +416,10 @@ class FilePersistence extends PersistenceAdapter {
  * Resolve a persistence strategy.
  * @param {string|object|undefined} spec 'none' | 'snapshot' | 'events' | 'mailbox' | {mode, store, ...}
  */
-function resolvePersistence(spec, fallbackStore) {
-  const normalized = typeof spec === 'string' ? { mode: spec } : { ...(spec || {}) };
-  const mode = normalized.mode || 'none';
+function resolvePersistence(spec: unknown, fallbackStore?: unknown): Record<string, unknown> {
+  const normalized: Record<string, unknown> =
+    typeof spec === 'string' ? { mode: spec } : { ...((spec ?? {}) as Record<string, unknown>) };
+  const mode = typeof normalized.mode === 'string' ? normalized.mode : 'none';
   if (!['none', 'snapshot', 'events', 'mailbox'].includes(mode)) {
     throw new PersistenceError(`unknown persistence mode "${mode}" (expected none|snapshot|events|mailbox)`);
   }
@@ -396,13 +442,14 @@ function resolvePersistence(spec, fallbackStore) {
 }
 
 /** 只有 `events` 模式才有"快照缓存"这回事；其它模式传了就明确报错（不静默忽略）。 */
-function resolveEventsSnapshot(mode, snapshot) {
+function resolveEventsSnapshot(mode: string, snapshot: unknown): { every: number } | null {
   if (snapshot === undefined || snapshot === null || snapshot === false) return null;
   if (mode !== 'events') {
     throw new PersistenceError(`persistence.snapshot.every 只在 mode: 'events' 下有意义（当前 mode: '${mode}'）`);
   }
   if (snapshot === true) return { every: 0 };
-  const every = snapshot.every === undefined ? 0 : snapshot.every;
+  const rawEvery: unknown = (snapshot as { every?: unknown }).every;
+  const every = rawEvery === undefined ? 0 : Number(rawEvery);
   if (!Number.isInteger(every) || every < 0) {
     throw new PersistenceError(`persistence.snapshot.every 必须是 >= 0 的整数（当前 ${String(every)}）`);
   }
@@ -424,19 +471,20 @@ function resolveEventsSnapshot(mode, snapshot) {
  * stored as an opaque object, which is a silent data corruption, so it is
  * rejected loudly instead.
  */
-function resolveEvolution(evolution) {
+function resolveEvolution(evolution: unknown): Record<string, (...args: unknown[]) => unknown> | null {
   if (evolution === undefined || evolution === null) return null;
   if (typeof evolution !== 'object') {
     throw new PersistenceError('persistence.evolution must be an object with optional upcast/readLog/decodeSnapshot/encodeSnapshot');
   }
-  const resolved = {};
+  const source = evolution as Record<string, unknown>;
+  const resolved: Record<string, (...args: unknown[]) => unknown> = {};
   for (const key of ['upcast', 'readLog', 'decodeSnapshot', 'encodeSnapshot']) {
-    const hook = evolution[key];
+    const hook = source[key];
     if (hook === undefined) continue;
     if (typeof hook !== 'function') {
       throw new PersistenceError(`persistence.evolution.${key} must be a function`);
     }
-    resolved[key] = hook;
+    resolved[key] = hook as (...args: unknown[]) => unknown;
   }
   return Object.keys(resolved).length > 0 ? resolved : null;
 }
@@ -448,9 +496,9 @@ function resolveEvolution(evolution) {
  * naturally but invites passing an argument *array* as the value — which silently
  * calls the hook with one array instead of two arguments.
  */
-function callEvolution(hook, label, ...args) {
+function callEvolution(hook: (...args: unknown[]) => unknown, label: string, ...args: unknown[]): unknown {
   const result = hook(...args);
-  if (result && typeof result.then === 'function') {
+  if (result !== null && result !== undefined && typeof (result as { then?: unknown }).then === 'function') {
     throw new PersistenceError(`persistence.evolution.${label} must be synchronous (returned a Promise)`);
   }
   return result;
