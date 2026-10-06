@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -15,12 +14,43 @@ const config = require('../config.ts');
  * busy actor from starving the rest while staying allocation-light.
  */
 
+/** 调度器需要从 cell 上看到的字段（ActorCell 满足这个结构）。 */
+interface SchedulableCell {
+  readonly path?: string;
+  stopped: boolean;
+  running: boolean;
+  _runTurn(messagesPerTurn: number): Promise<void>;
+}
+
+interface SchedulerOptions {
+  messagesPerTurn?: number;
+  cellsPerTurn?: number;
+  onError?: ((err: Error, cell: SchedulableCell) => void) | null;
+}
+
+/**
+ * 公平调度器。
+ *
+ * 注意 `drain(timeoutMs)` 的超时**刻意用真实时间**（`Date.now()` + `setTimeout`），不走可注入时钟：
+ * 它是"停机不能永远挂着"的安全边界，必须在没人推进虚拟时钟时也能触发。这与"网络 I/O 用真实时间"
+ * 是同一条边界（见 docs/design/m5-cli-and-testkit.md §6）。
+ */
 class InlineScheduler {
-  constructor(options = {}) {
-    this.messagesPerTurn = options.messagesPerTurn || 16;
-    this.cellsPerTurn = options.cellsPerTurn || 64;
-    this.onError = options.onError || null;
-    /** @type {Set<object>} ready cells, insertion ordered */
+  readonly messagesPerTurn: number;
+  readonly cellsPerTurn: number;
+  readonly onError: ((err: Error, cell: SchedulableCell) => void) | null;
+  /** 就绪的 cell（按加入顺序）。 */
+  readonly ready: Set<SchedulableCell>;
+  _scheduled: boolean;
+  _inflight: Promise<unknown>;
+  _stopped: boolean;
+  ticks: number;
+  turns: number;
+
+  constructor(options: SchedulerOptions = {}) {
+    this.messagesPerTurn = options.messagesPerTurn ?? 16;
+    this.cellsPerTurn = options.cellsPerTurn ?? 64;
+    this.onError = options.onError ?? null;
     this.ready = new Set();
     this._scheduled = false;
     this._inflight = Promise.resolve();
@@ -29,11 +59,11 @@ class InlineScheduler {
     this.turns = 0;
   }
 
-  get pending() {
+  get pending(): number {
     return this.ready.size;
   }
 
-  schedule(cell) {
+  schedule(cell: SchedulableCell): void {
     if (this._stopped || !cell || cell.stopped) return;
     // A cell that is mid-turn will re-schedule itself when it finishes; queuing
     // it here would start a second, concurrent turn on the same actor.
@@ -43,29 +73,29 @@ class InlineScheduler {
     this._schedule();
   }
 
-  _schedule() {
+  _schedule(): void {
     if (this._scheduled) return;
     this._scheduled = true;
     setImmediate(() => this._tick());
   }
 
-  _tick() {
+  _tick(): void {
     this._scheduled = false;
     if (this._stopped) return;
     this.ticks += 1;
 
-    const batch = [];
+    const batch: SchedulableCell[] = [];
     for (const cell of this.ready) {
       batch.push(cell);
       if (batch.length >= this.cellsPerTurn) break;
     }
-    const running = [];
+    const running: Promise<void>[] = [];
     for (const cell of batch) {
       this.ready.delete(cell);
       if (cell.stopped) continue;
       this.turns += 1;
       running.push(
-        cell._runTurn(this.messagesPerTurn).catch((err) => {
+        cell._runTurn(this.messagesPerTurn).catch((err: Error) => {
           if (this.onError) this.onError(err, cell);
         }),
       );
@@ -82,11 +112,11 @@ class InlineScheduler {
    * resolves (a hung I/O call, an endless loop with awaits) would otherwise
    * make `system.stop()` — and therefore process shutdown — hang forever.
    *
-   * @returns {Promise<{drained:boolean, timedOut:boolean}>}
+   * @returns 是否排空；`timedOut` 为 true 表示有 Actor 卡在处理里（超时后放弃等待）。
    */
-  async drain(timeoutMs = 0) {
+  async drain(timeoutMs = 0): Promise<{ drained: boolean; timedOut: boolean }> {
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
-    const bounded = async (promise) => {
+    const bounded = async (promise: Promise<unknown>): Promise<unknown> => {
       if (deadline === 0) return promise;
       const remaining = deadline - Date.now();
       if (remaining <= 0) return 'timeout';
