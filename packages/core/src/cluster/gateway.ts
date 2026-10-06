@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -40,31 +39,139 @@ const framing = createFraming({
   protoDecode: proto.decodeGatewayFrame,
 });
 
-function encodeFrame(obj, codec = CODEC.PROTOBUF) {
+/** 网关帧（两种编码都接受；字段由 proto/JSON 编解码负责）。 */
+interface GatewayFrame {
+  /** 帧类型（hello/ping/tell/deliver/stop/result/pong…）。 */
+  kind: string;
+  id?: string | undefined;
+  nodeId?: string | undefined;
+  targetActorId?: string | undefined;
+  payload?: unknown;
+  senderPath?: string | null | undefined;
+  trace?: unknown;
+  shardEpoch?: number | null | undefined;
+  shardCount?: number | undefined;
+  caps?: string[] | undefined;
+  codec?: number | string | undefined;
+  ts?: number | undefined;
+  ok?: boolean | undefined;
+  data?: unknown;
+  error?: string | undefined;
+  [key: string]: unknown;
+}
+
+/** 池化的出站连接。 */
+interface OutboundConnection {
+  readonly host: string;
+  readonly port: number;
+  /** 建立前为 null；`_connection()` 里赋值。 */
+  socket: import('node:net').Socket | null;
+  readonly decoder: InstanceType<typeof FrameDecoder>;
+  readonly pending: Map<string, { resolve(value: unknown): void; reject(err: Error): void; timer: NodeJS.Timeout }>;
+  helloOk: boolean;
+  /** hello 之后记录的对端身份与能力（出站侧的 ownership 判定要用）。 */
+  peerNodeId?: string | null;
+  peerCaps?: string[];
+  /** 握手完成的信号（`once(readyEvent)`）。 */
+  ready: Promise<void> | null;
+}
+
+/** 入站连接的状态（hello 是否完成）。 */
+interface InboundState {
+  helloOk: boolean;
+  /** hello 之后记录的对端身份与能力（用于入站 ownership 判定）。 */
+  peerNodeId?: string | null;
+  peerCaps?: string[];
+}
+
+interface GatewayOptions {
+  host?: string;
+  port?: number;
+  nodeId?: string;
+  codec?: string | number;
+  tls?: Record<string, unknown>;
+  maxFrameBytes?: number;
+  connectTimeoutMs?: number;
+  onDeliver?: (
+    targetActorId: string,
+    payload: unknown,
+    timeoutMs: number,
+    sender: { senderPath: string | null; senderHost: string | null; senderPort: number | null; trace: unknown },
+  ) => Promise<unknown>;
+  onTell?: ((
+    targetActorId: string,
+    payload: unknown,
+    sender: { senderPath: string | null; senderHost: string | null; senderPort: number | null; trace: unknown },
+  ) => void) | null;
+  onStop?: ((targetActorId: string) => Promise<void> | void) | null;
+  caps?: string[];
+  shardCount?: number | null;
+  requireFencing?: boolean;
+  /** 所有权判定钩子：收一个 info 对象（见 _checkOwnership），返回是否放行。 */
+  verifyOwnership?: ((info: {
+    kind: string;
+    targetActorId: string | null | undefined;
+    shardEpoch: number | null | undefined;
+    peerNodeId: string | null | undefined;
+    peerSupportsFencing: boolean;
+  }) => { ok: boolean; reason?: string } | null | undefined) | null;
+  epochFor?: ((target: string) => number | null) | null;
+}
+
+function encodeFrame(obj: GatewayFrame, codec: number = CODEC.PROTOBUF): Buffer {
   return framing.encode(obj, codec);
 }
 
-function decodeFrame(codec, body) {
+function decodeFrame(codec: number, body: Buffer): GatewayFrame {
   return framing.decode(codec, body);
 }
 
 const FrameDecoder = framing.FrameDecoder;
 
+/** 入站帧必须带 targetActorId；缺失是协议违规（明确抛错，而不是把 undefined 传下去）。 */
+function requireTarget(frame: GatewayFrame): string {
+  if (typeof frame.targetActorId !== 'string' || frame.targetActorId === '') {
+    throw new Error(`frame "${frame.kind}" is missing targetActorId`);
+  }
+  return frame.targetActorId;
+}
+
 class Gateway extends EventEmitter {
-  /**
-   * @param {{host?:string, port?:number, nodeId?:string, codec?:string|number,
-   *          tls?:object, maxFrameBytes?:number, connectTimeoutMs?:number,
-   *          onDeliver?: (targetActorId:string, payload:object, timeoutMs:number,
-   *                       senderPath?:string, trace?:object) => Promise<any>}} options
-   */
-  constructor(options = {}) {
+  readonly host: string;
+  port: number;
+  readonly nodeId: string;
+  readonly onDeliver: GatewayOptions['onDeliver'];
+  readonly onTell: GatewayOptions['onTell'];
+  readonly onStop: GatewayOptions['onStop'];
+  readonly maxFrameBytes: number;
+  readonly connectTimeoutMs: number;
+  readonly codec: number;
+  readonly tls: Record<string, unknown>;
+  readonly requireHello: boolean;
+  readonly caps: string[];
+  readonly shardCount: number | null;
+  readonly requireFencing: boolean;
+  verifyOwnership: GatewayOptions['verifyOwnership'];
+  readonly epochFor: GatewayOptions['epochFor'];
+  _inflight: number;
+  server: import('node:net').Server | import('node:tls').Server | null;
+  boundPort: number | null;
+  /** "host:port" -> 池化连接。 */
+  readonly pool: Map<string, OutboundConnection>;
+  readonly inbound: Set<import('node:net').Socket>;
+  readonly inboundState: WeakMap<import('node:net').Socket, InboundState>;
+  closed: boolean;
+
+  constructor(options: GatewayOptions = {}) {
     super();
     this.host = options.host || config.gateway.host;
     this.port = options.port === undefined ? config.gateway.port : options.port;
     this.nodeId = options.nodeId || config.nodeId;
-    this.onDeliver = options.onDeliver || (async () => {
-      throw new Error('no deliver handler registered');
-    });
+    this.onDeliver =
+      options.onDeliver ??
+      (async () => {
+        throw new Error('no deliver handler registered');
+      });
     /** Fire-and-forget delivery; the result is intentionally not reported. */
     this.onTell = options.onTell || null;
     /** Stop an actor on this node. */
@@ -90,9 +197,9 @@ class Gateway extends EventEmitter {
     this.shardCount = options.shardCount === undefined ? null : options.shardCount;
     this.requireFencing = options.requireFencing === true;
     /** 所有权判定钩子：网关不认识守卫，只把 (kind, target, epoch, peer) 交给它。 */
-    this.verifyOwnership = options.verifyOwnership || null;
+    this.verifyOwnership = options.verifyOwnership ?? null;
     /** 出站时"本节点认为目标 shard 是第几代"（没装守卫时返回 null，即不带字段）。 */
-    this.epochFor = options.epochFor || null;
+    this.epochFor = options.epochFor ?? null;
     /** 正在处理的入站请求数（离场排空时要用；不做按 shard 细分——那是保守但诚实的简化）。 */
     this._inflight = 0;
 
@@ -107,24 +214,26 @@ class Gateway extends EventEmitter {
     this.closed = false;
   }
 
-  get codecName() {
+  get codecName(): string | undefined {
     return CODEC_NAME[this.codec];
   }
 
-  listen() {
-    return new Promise((resolve, reject) => {
-      const server = tlsUtil.createServer(this.tls, (socket) => this._handleInbound(socket));
+  listen(): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
+      const server = tlsUtil.createServer(this.tls, (socket: import('node:net').Socket) => this._handleInbound(socket));
       this.server = server;
-      server.on('error', (err) => {
+      server.on('error', (err: Error) => {
         this.emit('error', err);
         reject(err);
       });
       server.listen(this.port, this.host, () => {
-        this.boundPort = server.address().port;
-        this.port = this.boundPort;
+        const address = server.address();
+        const port = address !== null && typeof address === 'object' ? address.port : this.port;
+        this.boundPort = port;
+        this.port = port;
         this._startTlsReloader();
-        this.emit('listening', this.boundPort);
-        resolve(this.boundPort);
+        this.emit('listening', port);
+        resolve(port);
       });
     });
   }
@@ -133,26 +242,27 @@ class Gateway extends EventEmitter {
    * Refresh the listener's secure context when certificates are rotated.
    * Established connections keep their session; new ones use the new material.
    */
-  _startTlsReloader() {
-    if (typeof this.server.setSecureContext !== 'function') return;
+  _startTlsReloader(): void {
+    const server = this.server as { setSecureContext?(options: import('node:tls').SecureContextOptions): void } | null;
+    if (server === null || typeof server.setSecureContext !== 'function') return;
     this.reloader = tlsUtil.createReloader(this.tls, {
-      onReload: (options) => {
-        this.server.setSecureContext(options);
+      onReload: (options: import('node:tls').SecureContextOptions) => {
+        server.setSecureContext?.(options);
         this.emit('tls_reloaded');
       },
-      onError: (err) => this.emit('tls_reload_error', err),
+      onError: (err: Error) => this.emit('tls_reload_error', err),
     });
   }
 
-  _handleInbound(socket) {
+  _handleInbound(socket: import('node:net').Socket): void {
     socket.setNoDelay(true);
     this.inbound.add(socket);
     this.inboundState.set(socket, { helloOk: false });
     socket.on('close', () => this.inbound.delete(socket));
     const decoder = new FrameDecoder(this.maxFrameBytes);
     socket.on('error', () => {});
-    socket.on('data', (chunk) => {
-      let frames;
+    socket.on('data', (chunk: Buffer) => {
+      let frames: GatewayFrame[];
       try {
         frames = decoder.push(chunk);
       } catch (err) {
@@ -165,18 +275,19 @@ class Gateway extends EventEmitter {
   }
 
   /** 在途入站请求数（drain 用它判断"排空了没有"）。 */
-  inflight() {
+  inflight(): number {
     return this._inflight;
   }
 
   /** 出站帧上的 fencing 字段：拿不到 epoch 就**不写这个字段**（老节点会忽略它）。 */
-  epochField(targetActorId) {
+  epochField(targetActorId: string): { shardEpoch?: number } {
     if (typeof this.epochFor !== 'function') return {};
     const epoch = this.epochFor(targetActorId);
-    return Number.isInteger(epoch) && epoch >= 1 ? { shardEpoch: epoch } : {};
+    if (typeof epoch !== 'number' || !Number.isInteger(epoch) || epoch < 1) return {};
+    return { shardEpoch: epoch };
   }
 
-  _send(socket, obj) {
+  _send(socket: import('node:net').Socket, obj: GatewayFrame): void {
     if (socket.destroyed) return;
     try {
       socket.write(encodeFrame(obj, this.codec));
@@ -191,7 +302,7 @@ class Gateway extends EventEmitter {
    *   - D5：`requireFencing` 时对端必须声明支持 fencing，否则拒绝握手。
    * 返回 `null` = 通过；返回字符串 = 拒绝原因。
    */
-  _checkHandshake(frame) {
+  _checkHandshake(frame: GatewayFrame): string | null {
     const peerShardCount = Number.isInteger(frame.shardCount) ? frame.shardCount : null;
     if (peerShardCount !== null && this.shardCount !== null && peerShardCount !== this.shardCount) {
       return (
@@ -212,7 +323,7 @@ class Gateway extends EventEmitter {
    *   - 对端不支持 fencing 且没带 epoch → 放行，但发 `fencing_skipped` 事件（**降级必须可见**）；
    *   - 带了 epoch → 交给 `verifyOwnership` 钩子判（旧 epoch 会被它拒掉）。
    */
-  _checkOwnership(frame, state) {
+  _checkOwnership(frame: GatewayFrame, state: InboundState): string | null {
     const epoch = Number.isInteger(frame.shardEpoch) ? frame.shardEpoch : null;
     const peerSupportsFencing = Array.isArray(state.peerCaps) && state.peerCaps.includes('fence');
     const info = {
@@ -232,7 +343,7 @@ class Gateway extends EventEmitter {
       }
       return null;
     }
-    const verdict = this.verifyOwnership(info);
+    const verdict = this.verifyOwnership?.(info);
     if (verdict && verdict.ok === false) return verdict.reason || '所有权判定拒绝';
     if (epoch === null && !peerSupportsFencing) {
       // 软升级：老节点照常工作，但**降级必须可见**
@@ -241,7 +352,7 @@ class Gateway extends EventEmitter {
     return null;
   }
 
-  async _handleFrame(frame, socket) {
+  async _handleFrame(frame: GatewayFrame, socket: import('node:net').Socket): Promise<void> {
     if (!frame || typeof frame !== 'object') return;
     const state = this.inboundState.get(socket) || { helloOk: false };
 
@@ -259,14 +370,14 @@ class Gateway extends EventEmitter {
         return;
       }
       state.helloOk = true;
-      state.peerNodeId = frame.nodeId || null;
+      state.peerNodeId = frame.nodeId ?? null;
       state.peerCaps = Array.isArray(frame.caps) ? frame.caps : [];
       this.inboundState.set(socket, state);
       this._send(socket, {
         kind: 'hello',
         id: frame.id,
         nodeId: this.nodeId,
-        codec: this.codecName,
+        codec: this.codecName ?? String(this.codec),
         caps: this.caps,
         ...(this.shardCount === null ? {} : { shardCount: this.shardCount }),
       });
@@ -309,11 +420,12 @@ class Gateway extends EventEmitter {
       }
       this._inflight += 1;
       try {
-        await this.onTell(frame.targetActorId, frame.payload, {
-          senderPath: frame.senderPath || null,
-          senderHost: frame.senderHost || null,
-          senderPort: frame.senderPort || null,
-          trace: frame.trace || null,
+        const target = requireTarget(frame);
+        await this.onTell(target, frame.payload, {
+          senderPath: frame.senderPath ?? null,
+          senderHost: (frame.senderHost as string | null | undefined) ?? null,
+          senderPort: (frame.senderPort as number | null | undefined) ?? null,
+          trace: frame.trace ?? null,
         });
       } catch (err) {
         // There is no reply channel: surface it locally instead of silently.
@@ -328,14 +440,14 @@ class Gateway extends EventEmitter {
       this._inflight += 1;
       try {
         if (!this.onStop) throw new Error('remote stop is not supported by this node');
-        await this.onStop(frame.targetActorId);
+        await this.onStop(requireTarget(frame));
         this._send(socket, { kind: 'result', id: frame.id, ok: true, data: null });
       } catch (err) {
         this._send(socket, {
           kind: 'result',
           id: frame.id,
           ok: false,
-          error: err && err.message ? err.message : String(err),
+          error: err instanceof Error ? err.message : String(err),
         });
       } finally {
         this._inflight -= 1;
@@ -346,19 +458,28 @@ class Gateway extends EventEmitter {
     if (frame.kind === 'deliver') {
       this._inflight += 1;
       try {
-        const data = await this.onDeliver(frame.targetActorId, frame.payload, frame.timeoutMs, {
-          senderPath: frame.senderPath || null,
-          senderHost: frame.senderHost || null,
-          senderPort: frame.senderPort || null,
-          trace: frame.trace || null,
-        });
+        const target = requireTarget(frame);
+        const sender = {
+          senderPath: frame.senderPath ?? null,
+          senderHost: (frame.senderHost as string | null | undefined) ?? null,
+          senderPort: (frame.senderPort as number | null | undefined) ?? null,
+          trace: frame.trace ?? null,
+        };
+        const deliver = this.onDeliver;
+        if (deliver === undefined) throw new Error('no deliver handler registered');
+        const data = await deliver(
+          target,
+          frame.payload,
+          Number(frame.timeoutMs ?? config.actor.requestTimeoutMs),
+          sender,
+        );
         this._send(socket, { kind: 'result', id: frame.id, ok: true, data: data === undefined ? null : data });
       } catch (err) {
         this._send(socket, {
           kind: 'result',
           id: frame.id,
           ok: false,
-          error: err && err.message ? err.message : String(err),
+          error: err instanceof Error ? err.message : String(err),
         });
       } finally {
         this._inflight -= 1;
@@ -369,12 +490,12 @@ class Gateway extends EventEmitter {
     this._send(socket, { kind: 'error', id: frame.id, error: `unknown frame kind: ${frame.kind}` });
   }
 
-  _connection(host, port) {
+  _connection(host: string, port: number): OutboundConnection {
     const addr = `${host}:${port}`;
     const existing = this.pool.get(addr);
-    if (existing && !existing.socket.destroyed) return existing;
+    if (existing !== undefined && existing.socket !== null && !existing.socket.destroyed) return existing;
 
-    const conn = {
+    const conn: OutboundConnection = {
       host,
       port,
       socket: null,
@@ -387,10 +508,10 @@ class Gateway extends EventEmitter {
     const { socket, readyEvent } = tlsUtil.connect(this.tls, { host, port });
     conn.socket = socket;
     socket.setNoDelay(true);
-    socket.on('error', (err) => this._failConnection(conn, err));
+    socket.on('error', (err: Error) => this._failConnection(conn, err));
     socket.on('close', () => this._failConnection(conn, new Error('connection closed')));
 
-    conn.ready = new Promise((resolve, reject) => {
+    conn.ready = new Promise<void>((resolve, reject) => {
       socket.once(readyEvent, () => {
         this.emit('connected', addr);
         // Announce ourselves first: the peer rejects data before hello.
@@ -400,7 +521,7 @@ class Gateway extends EventEmitter {
               {
                 kind: 'hello',
                 nodeId: this.nodeId,
-                codec: this.codecName,
+                codec: this.codecName ?? String(this.codec),
                 caps: this.caps,
                 ...(this.shardCount === null ? {} : { shardCount: this.shardCount }),
               },
@@ -416,8 +537,8 @@ class Gateway extends EventEmitter {
       socket.once('error', reject);
     });
 
-    socket.on('data', (chunk) => {
-      let frames;
+    socket.on('data', (chunk: Buffer) => {
+      let frames: GatewayFrame[];
       try {
         frames = conn.decoder.push(chunk);
       } catch {
@@ -431,37 +552,43 @@ class Gateway extends EventEmitter {
     return conn;
   }
 
-  _handleClientFrame(conn, frame) {
+  _handleClientFrame(conn: OutboundConnection, frame: GatewayFrame): void {
+    const socket = conn.socket;
+    if (socket === null) return; // 到不了：能收到帧就说明连接已建立（挡住而不是假设）
     if (frame && frame.kind === 'hello') {
-      const check = tlsUtil.verifyPeerNodeId(conn.socket, frame.nodeId, this.tls);
+      const socket = conn.socket;
+      if (socket === null) return;
+      const check = tlsUtil.verifyPeerNodeId(socket as import('node:tls').TLSSocket, frame.nodeId, this.tls);
       if (!check.ok) {
         this.emit('auth_error', check.reason);
-        conn.socket.destroy();
+        socket.destroy();
         return;
       }
       // 发起方**也要**检查对端：shardCount 不一致（D6）与 requireFencing（D5）是双向规则，
       // 否则"我拒绝别人"却"被别人的不一致配置牵着走"。
       const refuse = this._checkHandshake(frame);
       if (refuse !== null) {
-        this.emit('handshake_rejected', refuse, { nodeId: frame.nodeId || null, direction: 'outbound' });
-        conn.socket.destroy();
+        this.emit('handshake_rejected', refuse, { nodeId: frame.nodeId ?? null, direction: 'outbound' });
+        socket.destroy();
         return;
       }
       conn.helloOk = true;
-      conn.peerNodeId = frame.nodeId || null;
+      conn.peerNodeId = frame.nodeId ?? null;
       conn.peerCaps = Array.isArray(frame.caps) ? frame.caps : [];
       this.emit('hello', conn.host, conn.port, frame.nodeId);
       return;
     }
     if (frame && frame.id && conn.pending.has(frame.id)) {
       const entry = conn.pending.get(frame.id);
-      conn.pending.delete(frame.id);
-      clearTimeout(entry.timer);
-      entry.resolve(frame);
+      if (entry !== undefined) {
+        conn.pending.delete(frame.id);
+        clearTimeout(entry.timer);
+        entry.resolve(frame);
+      }
     }
   }
 
-  _failConnection(conn, err) {
+  _failConnection(conn: OutboundConnection, err: Error): void {
     for (const [, entry] of conn.pending) {
       clearTimeout(entry.timer);
       entry.reject(err);
@@ -474,20 +601,27 @@ class Gateway extends EventEmitter {
    * Write a frame without waiting for (or tracking) a response.
    * Used for remote `tell`, where the actor model does not want a reply.
    */
-  send(host, port, frame) {
+  /** 发一帧、不等回复（远端 tell 用）。返回是否已交给传输层。 */
+  send(host: string, port: number, frame: GatewayFrame): boolean {
     if (this.closed) return false;
     const conn = this._connection(host, port);
     conn.ready
-      .then(() => {
-        if (conn.socket.destroyed) return;
-        conn.socket.write(encodeFrame(frame, this.codec), () => {});
+      ?.then(() => {
+        const socket = conn.socket;
+        if (socket === null || socket.destroyed) return;
+        socket.write(encodeFrame(frame, this.codec), () => {});
       })
-      .catch((err) => this.emit('protocol_error', err));
+      .catch((err: Error) => this.emit('protocol_error', err));
     return true;
   }
 
   /** Send one request frame and await its response. */
-  request(host, port, frame, timeoutMs = config.actor.requestTimeoutMs) {
+  request(
+    host: string,
+    port: number,
+    frame: GatewayFrame,
+    timeoutMs: number = config.actor.requestTimeoutMs as number,
+  ): Promise<GatewayFrame> {
     return new Promise((resolve, reject) => {
       if (this.closed) return reject(new Error('gateway closed'));
       const conn = this._connection(host, port);
@@ -505,9 +639,10 @@ class Gateway extends EventEmitter {
       // Always write after the connection is ready, so our hello (written by
       // the ready handler) can never be reordered behind a request.
       conn.ready
-        .then(() => {
-          if (conn.socket.destroyed) throw new Error('connection closed');
-          conn.socket.write(encodeFrame(payload, this.codec), (err) => {
+        ?.then(() => {
+          const socket = conn.socket;
+          if (socket === null || socket.destroyed) throw new Error('connection closed');
+          socket.write(encodeFrame(payload, this.codec), (err?: Error | null) => {
             if (err) {
               conn.pending.delete(id);
               clearTimeout(timer);
@@ -524,7 +659,14 @@ class Gateway extends EventEmitter {
   }
 
   /** Convenience: deliver a payload to a remote actor and unwrap the result. */
-  async deliver(host, port, targetActorId, payload, timeoutMs = config.actor.requestTimeoutMs, sender = {}) {
+  async deliver(
+    host: string,
+    port: number,
+    targetActorId: string,
+    payload: unknown,
+    timeoutMs: number = config.actor.requestTimeoutMs as number,
+    sender: { path?: string | null; host?: string | null; port?: number | null; trace?: unknown } = {},
+  ): Promise<unknown> {
     const res = await this.request(
       host,
       port,
@@ -533,25 +675,25 @@ class Gateway extends EventEmitter {
         targetActorId,
         payload,
         timeoutMs,
-        senderPath: sender.path || null,
-        senderHost: sender.host || null,
-        senderPort: sender.port || null,
-        trace: sender.trace || null,
+        senderPath: sender.path ?? null,
+        senderHost: sender.host ?? null,
+        senderPort: sender.port ?? null,
+        trace: sender.trace ?? null,
         ...this.epochField(targetActorId),
       },
       timeoutMs + 500,
     );
-    if (!res || res.kind !== 'result') throw new Error(`unexpected gateway response: ${JSON.stringify(res)}`);
-    if (!res.ok) throw new Error(res.error || 'remote delivery failed');
+    if (res.kind !== 'result') throw new Error(`unexpected gateway response: ${JSON.stringify(res)}`);
+    if (res.ok !== true) throw new Error(res.error ?? 'remote delivery failed');
     return res.data;
   }
 
-  async ping(host, port, timeoutMs = config.gateway.connectTimeoutMs) {
+  async ping(host: string, port: number, timeoutMs: number = config.gateway.connectTimeoutMs as number): Promise<boolean> {
     const res = await this.request(host, port, { kind: 'ping' }, timeoutMs);
-    return res && res.kind === 'pong';
+    return res.kind === 'pong';
   }
 
-  async close() {
+  async close(): Promise<void> {
     this.closed = true;
     if (this.reloader) {
       this.reloader.stop();
@@ -559,7 +701,7 @@ class Gateway extends EventEmitter {
     }
     for (const conn of this.pool.values()) {
       this._failConnection(conn, new Error('gateway closing'));
-      conn.socket.destroy();
+      conn.socket?.destroy();
     }
     this.pool.clear();
     // Inbound sockets must be destroyed too: server.close() only stops
@@ -567,8 +709,9 @@ class Gateway extends EventEmitter {
     // gateways shutting each other down.
     for (const socket of this.inbound) socket.destroy();
     this.inbound.clear();
-    if (this.server) {
-      await new Promise((resolve) => this.server.close(() => resolve()));
+    const server = this.server;
+    if (server !== null) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       this.server = null;
     }
   }
