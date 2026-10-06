@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -17,12 +16,40 @@ const config = require('../config.ts');
  * Writes are fire-and-forget but tracked, so tests and shutdown can await
  * `logger.flush()`. A failing write never throws into the actor loop.
  */
+interface LoggerOptions {
+  logDir?: string;
+  sampleRate?: number;
+  maxFieldChars?: number;
+  enabled?: boolean;
+}
+
+/** 一条日志记录（写进 actor.log 的一行 JSON）。 */
+interface LogRecord {
+  ts: number;
+  op: string;
+  type: 'FULL' | 'SHORT' | 'SYSTEM';
+  actorId?: string;
+  trace?: string | undefined;
+  msg?: Record<string, unknown>;
+  msgType?: unknown;
+  msgId?: unknown;
+  extra?: unknown;
+}
+
 class Logger {
-  constructor(options = {}) {
+  readonly logDir: string;
+  readonly logPath: string;
+  readonly sampleRate: number;
+  readonly maxFieldChars: number;
+  readonly enabled: boolean;
+  /** 在途写入（flush 等它们）。 */
+  readonly _pending: Set<Promise<unknown>>;
+
+  constructor(options: LoggerOptions = {}) {
     this.logDir = options.logDir || config.logDir;
     this.logPath = path.join(this.logDir, 'actor.log');
-    this.sampleRate = typeof options.sampleRate === 'number' ? options.sampleRate : config.log.sampleRate;
-    this.maxFieldChars = options.maxFieldChars || config.log.maxFieldChars;
+    this.sampleRate = typeof options.sampleRate === 'number' ? options.sampleRate : (config.log.sampleRate as number);
+    this.maxFieldChars = options.maxFieldChars ?? (config.log.maxFieldChars as number);
     this.enabled = options.enabled !== false;
     this._pending = new Set();
     try {
@@ -32,7 +59,7 @@ class Logger {
     }
   }
 
-  _write(rec) {
+  _write(rec: LogRecord): void {
     if (!this.enabled) return;
     let line;
     try {
@@ -40,20 +67,20 @@ class Logger {
     } catch {
       return; // circular payload: drop rather than crash the actor
     }
-    const p = fsp.appendFile(this.logPath, line).catch(() => {});
+    const p: Promise<unknown> = fsp.appendFile(this.logPath, line).catch(() => undefined);
     this._pending.add(p);
     p.finally(() => this._pending.delete(p));
   }
 
-  _truncate(value) {
+  _truncate(value: unknown): unknown {
     if (typeof value !== 'string') return value;
     if (value.length <= this.maxFieldChars) return value;
     return `${value.slice(0, this.maxFieldChars)}…(${value.length} chars)`;
   }
 
-  _safeMessage(msg) {
-    if (!msg || typeof msg !== 'object') return { value: this._truncate(String(msg)) };
-    const copy = {};
+  _safeMessage(msg: unknown): Record<string, unknown> {
+    if (msg === null || typeof msg !== 'object') return { value: this._truncate(String(msg)) };
+    const copy: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(msg)) {
       copy[k] = typeof v === 'string' ? this._truncate(v) : v;
     }
@@ -61,9 +88,10 @@ class Logger {
   }
 
   /** Sampled business/message log. */
-  logMessage(op, actorId, msg) {
+  logMessage(op: string, actorId: string, msg: unknown): void {
     const ts = Date.now();
-    const trace = msg && msg.trace ? msg.trace.traceId : undefined;
+    const traced = msg as { trace?: { traceId?: string }; type?: unknown; __msgId?: unknown } | null;
+    const trace = traced !== null && traced !== undefined && traced.trace ? traced.trace.traceId : undefined;
     if (Math.random() < this.sampleRate) {
       this._write({ ts, op, actorId, type: 'FULL', trace, msg: this._safeMessage(msg) });
     } else {
@@ -73,19 +101,19 @@ class Logger {
         actorId,
         type: 'SHORT',
         trace,
-        msgType: msg ? msg.type : undefined,
-        msgId: msg ? msg.__msgId : undefined,
+        msgType: traced ? traced.type : undefined,
+        msgId: traced ? traced.__msgId : undefined,
       });
     }
   }
 
   /** System events are never sampled. */
-  logSystem(op, extra) {
+  logSystem(op: string, extra?: unknown): void {
     this._write({ ts: Date.now(), op, type: 'SYSTEM', extra: extra === undefined ? null : this._safeMessage(extra) });
   }
 
   /** Await all in-flight writes (tests, graceful shutdown). */
-  async flush() {
+  async flush(): Promise<void> {
     while (this._pending.size > 0) {
       await Promise.allSettled([...this._pending]);
     }

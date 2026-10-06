@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -18,15 +17,39 @@
 const { parentPort } = require('worker_threads');
 const { defineActor } = require('../actor/actor.ts');
 
-let instance = null;
-let currentSender: { id?: string; path: string; isLocal: boolean } | null = null;
-const pendingCalls = new Map();
+/** 主线程侧发来的调用（spawn/tell/ask/…）的等待表。 */
+interface PendingCall {
+  resolve(value: unknown): void;
+  reject(err: Error): void;
+  timer: NodeJS.Timeout;
+}
+
+/** worker 里跑着的 Actor 实例（形态由定义决定，这里只约束框架用到的部分）。 */
+interface WorkerInstance {
+  postStop?(ctx: unknown): void | Promise<void>;
+  id?: string;
+  path?: string;
+  state?: unknown;
+  receive(msg: unknown, ctx: unknown): unknown;
+  preStart?(ctx: unknown): void | Promise<void>;
+  postRecover?(ctx: unknown): void | Promise<void>;
+  [key: string]: unknown;
+}
+
+interface WorkerMessage {
+  kind: string;
+  [key: string]: unknown;
+}
+
+let instance: WorkerInstance | null = null;
+let currentSender: { id: string | undefined; path: string; isLocal: boolean } | null = null;
+const pendingCalls = new Map<number, PendingCall>();
 let callSeq = 0;
 
-const send = (msg) => parentPort.postMessage(msg);
-const errorMessage = (err) => (err && err.message ? err.message : String(err));
+const send = (msg: WorkerMessage): void => parentPort.postMessage(msg);
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
-function callMain(op, args, timeoutMs = 60000) {
+function callMain(op: string, args: unknown, timeoutMs = 60000): Promise<unknown> {
   const id = ++callSeq;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -39,15 +62,15 @@ function callMain(op, args, timeoutMs = 60000) {
 }
 
 /** Accept an ActorRef-like object, a path string, or a bare id. */
-function toSpec(target) {
+function toSpec(target: unknown): string | null {
   if (target === null || target === undefined) return null;
   if (typeof target === 'string') return target;
-  if (typeof target.path === 'string') return target.path;
+  if (typeof (target as { path?: unknown }).path === 'string') return (target as { path: string }).path;
   return String(target);
 }
 
 /** Post a message that may fail structured cloning, without killing the actor. */
-function safeSend(msg, onCloneFailure) {
+function safeSend(msg: WorkerMessage, onCloneFailure?: (err: unknown) => void): boolean {
   try {
     send(msg);
     return true;
@@ -60,90 +83,90 @@ function safeSend(msg, onCloneFailure) {
 const ctx = {
   restored: false,
   /** Trace context of the message being handled (tracing plugin). */
-  trace: null,
+  trace: null as unknown,
 
-  get self() {
-    return { id: instance ? instance.id : null, path: instance ? instance.path : null, isLocal: true };
+  get self(): { id: string | null; path: string | null; isLocal: boolean } {
+    return { id: instance?.id ?? null, path: instance?.path ?? null, isLocal: true };
   },
 
-  get sender() {
+  get sender(): { id: string | undefined; path: string; isLocal: boolean } | null {
     return currentSender;
   },
 
-  get id() {
-    return instance ? instance.id : null;
+  get id(): string | null {
+    return instance?.id ?? null;
   },
 
-  get path() {
-    return instance ? instance.path : null;
+  get path(): string | null {
+    return instance?.path ?? null;
   },
 
-  get handling() {
+  get handling(): boolean {
     return currentSender !== undefined;
   },
 
-  get children() {
+  get children(): never[] {
     return []; // children live on the main thread (supervised by the owner)
   },
 
-  spawn(definition, options) {
+  spawn(definition: unknown, options?: unknown): Promise<unknown> {
     return callMain('spawn', { definition: toSpec(definition), options });
   },
 
-  tell(target, msg) {
+  tell(target: unknown, msg: unknown): Promise<unknown> {
     return callMain('tell', { target: toSpec(target), msg, trace: ctx.trace });
   },
 
-  ask(target, msg, timeoutMs) {
+  ask(target: unknown, msg: unknown, timeoutMs?: number): Promise<unknown> {
     return callMain('ask', { target: toSpec(target), msg, timeoutMs, trace: ctx.trace });
   },
 
-  span() {
+  span(): Promise<unknown> {
     return callMain('span', { trace: ctx.trace });
   },
 
-  stop(target) {
+  stop(target?: unknown): Promise<unknown> {
     return callMain('stop', { target: target === undefined ? null : toSpec(target) });
   },
 
-  stopSelf() {
+  stopSelf(): Promise<unknown> {
     return callMain('stop', { target: null });
   },
 
-  saveSnapshot() {
+  saveSnapshot(): Promise<unknown> {
     return callMain('saveSnapshot', {});
   },
 
-  persist() {
+  persist(): never {
     throw new Error("persistence mode 'events' is not supported together with isolation: 'worker'");
   },
 
-  log(message, meta) {
+  log(message: string, meta?: Record<string, unknown>): void {
     safeSend({ kind: 'log', event: 'actor', meta: { path: ctx.path, message, ...(meta || {}) } });
   },
 };
 
-async function handleStart(msg) {
+async function handleStart(msg: WorkerMessage): Promise<void> {
   try {
     // eslint-disable-next-line global-require, import/no-dynamic-require
-    const mod = require(msg.modulePath);
+    const mod = require(String(msg.modulePath));
     const candidate = msg.exportName && msg.exportName !== 'default'
-      ? mod[msg.exportName]
+      ? mod[msg.exportName as string]
       : (mod.default !== undefined ? mod.default : mod);
     if (candidate === undefined) {
-      throw new Error(`module ${msg.modulePath} does not export "${msg.exportName || 'default'}"`);
+      throw new Error(`module ${String(msg.modulePath)} does not export "${String(msg.exportName ?? 'default')}"`);
     }
     const definition = defineActor(candidate);
-    instance = definition.create();
+    instance = (definition as { create(): WorkerInstance }).create();
     if (!instance || typeof instance.receive !== 'function') {
-      throw new Error(`module ${msg.modulePath} does not define an actor with receive()`);
+      throw new Error(`module ${String(msg.modulePath)} does not define an actor with receive()`);
     }
-    instance.id = msg.id;
-    instance.path = msg.path;
+    instance.id = String(msg.id);
+    instance.path = String(msg.path);
 
     // Same ordering as inline actors: preStart establishes initial state, then
     // the snapshot is applied on top of it.
-    await instance.preStart(ctx);
+    if (typeof instance.preStart === 'function') await instance.preStart.call(instance, ctx);
 
     if (msg.snapshot !== undefined && msg.snapshot !== null) {
       instance.state = msg.snapshot;
@@ -152,7 +175,8 @@ async function handleStart(msg) {
       ctx.restored = false;
     }
 
-    if (typeof instance.postRecover === 'function') await instance.postRecover(ctx);
+    const postRecover = instance.postRecover;
+    if (typeof postRecover === 'function') await postRecover.call(instance, ctx);
 
     send({ kind: 'started', path: msg.path, pid: process.pid });
   } catch (err) {
@@ -160,11 +184,13 @@ async function handleStart(msg) {
   }
 }
 
-async function handleInvoke(msg) {
-  currentSender = msg.senderPath ? { id: msg.senderPath.split('/').pop(), path: msg.senderPath, isLocal: true } : null;
+async function handleInvoke(msg: WorkerMessage): Promise<void> {
+  currentSender = msg.senderPath
+    ? { id: String(msg.senderPath).split('/').pop(), path: String(msg.senderPath), isLocal: true }
+    : null;
   ctx.trace = msg.trace || null;
   try {
-    const data = await instance.receive(msg.payload, ctx);
+    const data = await (instance as WorkerInstance).receive(msg.payload, ctx);
     const ok = safeSend(
       { kind: 'result', seq: msg.seq, ok: true, data },
       (err) => send({ kind: 'result', seq: msg.seq, ok: false, error: `reply cannot be cloned: ${errorMessage(err)}` }),
@@ -178,7 +204,7 @@ async function handleInvoke(msg) {
   }
 }
 
-function handleSnapshot(msg) {
+function handleSnapshot(msg: WorkerMessage): void {
   try {
     safeSend(
       { kind: 'snapshot_data', seq: msg.seq, state: instance ? instance.state : undefined },
@@ -189,28 +215,29 @@ function handleSnapshot(msg) {
   }
 }
 
-async function handleStop(msg) {
+async function handleStop(msg: WorkerMessage): Promise<void> {
   try {
-    if (instance && typeof instance.postStop === 'function') await instance.postStop(ctx);
+    const postStop = instance?.postStop;
+    if (instance !== null && typeof postStop === 'function') await postStop.call(instance, ctx);
   } catch (err) {
     send({ kind: 'log', event: 'actor_hook_error', meta: { hook: 'postStop', err: errorMessage(err) } });
   } finally {
     instance = null;
-    send({ kind: 'stopped', seq: msg && msg.seq });
+    send({ kind: 'stopped', seq: msg.seq });
   }
 }
 
-function handleCtxResult(msg) {
-  const entry = pendingCalls.get(msg.callId);
-  if (!entry) return;
-  pendingCalls.delete(msg.callId);
+function handleCtxResult(msg: WorkerMessage): void {
+  const entry = pendingCalls.get(Number(msg.callId));
+  if (entry === undefined) return;
+  pendingCalls.delete(Number(msg.callId));
   clearTimeout(entry.timer);
   if (msg.ok) entry.resolve(msg.data);
-  else entry.reject(new Error(msg.error || 'context call failed'));
+  else entry.reject(new Error(typeof msg.error === 'string' ? msg.error : 'context call failed'));
 }
 
-parentPort.on('message', (msg) => {
-  if (!msg || typeof msg !== 'object') return;
+parentPort.on('message', (msg: WorkerMessage) => {
+  if (msg === null || typeof msg !== 'object') return;
   switch (msg.kind) {
     case 'start':
       handleStart(msg);
