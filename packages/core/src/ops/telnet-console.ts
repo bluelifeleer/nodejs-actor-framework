@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -13,7 +12,7 @@ const { resolveActorModule } = require('../worker/worker-delegate.ts');
 const ACTOR_PATH_RE = /^[A-Za-z0-9._:-]+(\/[A-Za-z0-9._:-]+)*$/;
 const ACTOR_ID_RE = ACTOR_PATH_RE;
 
-function isSafePath(value) {
+function isSafePath(value: unknown): boolean {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) return false;
   if (!ACTOR_PATH_RE.test(value)) return false;
   return value.split('/').every((segment) => segment !== '.' && segment !== '..');
@@ -28,19 +27,29 @@ const BANNER = [
   'cluster info | cluster lookup [path] | peer ping [host] [port] | exit',
 ].join('\n');
 
-function tokenEquals(a, b) {
+function tokenEquals(a: unknown, b: unknown): boolean {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
-function parseJson(raw, what) {
+/** 按日志器的**实际形状**调用：函数直接调，对象走 `logSystem`（保留 `this`）。 */
+function logEvent(logger: ConsoleLogger | undefined, event: string, meta?: Record<string, unknown>): void {
+  if (logger === undefined || logger === null) return;
+  if (typeof logger === 'function') {
+    logger(event, meta);
+    return;
+  }
+  if (typeof logger.logSystem === 'function') logger.logSystem(event, meta);
+}
+
+function parseJson(raw: string | undefined, what: string): unknown {
   if (raw === undefined || raw === '') throw new Error(`${what} must be JSON`);
   try {
     return JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${what} must be valid JSON: ${err.message}`);
+    throw new Error(`${what} must be valid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -55,30 +64,122 @@ function parseJson(raw, what) {
  * (required on non-loopback binds), input validation, bounded line length and
  * connection count, and an empty line re-prompting instead of closing.
  */
+/** 控制台依赖的系统视图（只列它用到的，框架的公开面）。 */
+interface ConsoleSystem {
+  resolve(target: string): {
+    readonly path?: string;
+    tell(msg: unknown): boolean;
+    ask(msg: unknown, timeoutMs?: number): Promise<unknown>;
+    stop(): Promise<void>;
+    state?(): unknown;
+    inspect?(): Record<string, unknown>;
+  } | null;
+  spawn(definition: unknown, options?: Record<string, unknown>): Promise<{ path?: string; id?: string }>;
+  stats(): Record<string, unknown>;
+  readDeadLetters(): Promise<unknown[]>;
+  clearDeadLetters(): Promise<number>;
+  listActors(): string[];
+  inspect(target: string): Record<string, unknown>;
+  stop(target?: unknown): Promise<void>;
+  cluster?: {
+    readonly port?: number;
+    gossip?: { nodeId: string };
+    nodes?(): string[];
+    peers?(): { host: string; port: number; lastSeen: number; failures: number }[];
+    remoteActors?(): string[];
+    info?(): unknown;
+    lookup?(path: string): unknown;
+    waitFor?(path: string, timeoutMs?: number): Promise<unknown>;
+    [key: string]: unknown;
+  } | null;
+  connect(options: { host: string; port: number; timeoutMs?: number }): Promise<{ ping?(): Promise<boolean> }>;
+  pubsub?: {
+    topics(): string[];
+    subscribers(topic: string): string[];
+    subscribe(topic: string, target: string): boolean;
+    unsubscribe(topic: string, target: string): boolean;
+    publish(topic: string, msg: Record<string, unknown>): Promise<unknown>;
+  } | null;
+  metrics?: { dump(options?: Record<string, unknown>): unknown } | null;
+  [key: string]: unknown;
+}
+
+/**
+ * 控制台可用的日志器：**两种形状都支持** —— 内核的 `(event, meta)` 函数，
+ * 或 `obs/logger.ts` 的 Logger 实例（对象，带 `logSystem`）。
+ *
+ * 两种必须分别调用：把对象当函数调用会丢掉 `this`（Logger 内部要用 `this._write`），
+ * 于是认证失败本该写的那条日志直接抛错，连给客户端的 `ERR:` 都发不出去（被测试抓到过）。
+ */
+type ConsoleLogger =
+  | ((event: string, meta?: Record<string, unknown>) => void)
+  | { logSystem?(event: string, meta?: Record<string, unknown>): void };
+
+/** 嵌入方可以替换的服务与配置（缺省从 system 上取）。 */
+interface ConsoleContext {
+  system?: ConsoleSystem;
+  logger?: ConsoleLogger;
+  cluster?: ConsoleSystem['cluster'];
+  pubsub?: ConsoleSystem['pubsub'];
+  metrics?: ConsoleSystem['metrics'];
+  config?: typeof config;
+  /** `spawn` 命令没给模块路径时用的默认 Actor 定义。 */
+  defaultActorDefinition?: unknown;
+}
+
+interface TelnetConsoleOptions {
+  host?: string;
+  port?: number;
+  token?: string | null;
+  maxLineBytes?: number;
+  maxConnections?: number;
+  context?: ConsoleContext;
+  logger?: ConsoleLogger;
+}
+
+/** 一条连接的会话状态。 */
+interface ConsoleSession {
+  authed: boolean;
+  buffer: string;
+}
+
 class TelnetConsole {
-  constructor(options = {}) {
-    this.host = options.host || config.telnet.host;
-    this.port = options.port === undefined ? config.telnet.port : options.port;
-    this.token = options.token ?? config.telnet.token;
-    this.maxLineBytes = options.maxLineBytes || config.telnet.maxLineBytes;
-    this.maxConnections = options.maxConnections || config.telnet.maxConnections;
-    this.ctx = options.context || {};
-    this.logger = options.logger || this.ctx.logger;
+  readonly host: string;
+  port: number;
+  readonly token: string | null;
+  readonly maxLineBytes: number;
+  readonly maxConnections: number;
+  readonly ctx: ConsoleContext;
+  readonly logger: ConsoleLogger | undefined;
+  server: import('node:net').Server | null;
+  /** 实际监听端口（`port: 0` 时由系统分配）。 */
+  boundPort: number | null;
+  readonly sockets: Set<import('node:net').Socket>;
+
+  constructor(options: TelnetConsoleOptions = {}) {
+    this.host = options.host ?? (config.telnet.host as string);
+    this.port = options.port === undefined ? (config.telnet.port as number) : options.port;
+    this.token = options.token ?? (config.telnet.token as string | null);
+    this.maxLineBytes = options.maxLineBytes ?? (config.telnet.maxLineBytes as number);
+    this.maxConnections = options.maxConnections ?? (config.telnet.maxConnections as number);
+    this.ctx = options.context ?? {};
+    this.logger = options.logger ?? this.ctx.logger;
     this.server = null;
     this.boundPort = null;
     this.sockets = new Set();
   }
 
-  get requiresAuth() {
+  get requiresAuth(): boolean {
     return Boolean(this.token);
   }
 
-  get system() {
+  get system(): ConsoleSystem {
     if (!this.ctx.system) throw new Error('console has no actor system attached');
     return this.ctx.system;
   }
 
-  assertSafeBinding() {
+  /** 非回环地址必须配 token（控制台能 spawn/stop Actor）。 */
+  assertSafeBinding(): void {
     const isLoopback = this.host === '127.0.0.1' || this.host === '::1' || this.host === 'localhost';
     if (!isLoopback && !this.token) {
       throw new Error(
@@ -88,24 +189,26 @@ class TelnetConsole {
     }
   }
 
-  listen() {
-    return new Promise((resolve, reject) => {
+  listen(): Promise<number> {
+    return new Promise<number>((resolve, reject) => {
       this.assertSafeBinding();
-      const server = net.createServer((socket) => this._onConnection(socket));
+      const server = net.createServer((socket: import('node:net').Socket) => this._onConnection(socket));
       this.server = server;
-      server.on('error', (err) => reject(err));
+      server.on('error', (err: Error) => reject(err));
       server.maxConnections = this.maxConnections;
       server.listen(this.port, this.host, () => {
-        this.boundPort = server.address().port;
-        this.port = this.boundPort;
-        resolve(this.boundPort);
+        const address = server.address();
+        const port = address !== null && typeof address === 'object' ? address.port : this.port;
+        this.boundPort = port;
+        this.port = port;
+        resolve(port);
       });
     });
   }
 
-  _onConnection(socket) {
+  _onConnection(socket: import('node:net').Socket): void {
     this.sockets.add(socket);
-    const session = { authed: !this.requiresAuth, buffer: '' };
+    const session: ConsoleSession = { authed: !this.requiresAuth, buffer: '' };
 
     socket.setNoDelay(true);
     socket.on('error', () => {});
@@ -130,7 +233,7 @@ class TelnetConsole {
     });
   }
 
-  async _handleLine(line, socket, session) {
+  async _handleLine(line: string, socket: import('node:net').Socket, session: ConsoleSession): Promise<void> {
     const trimmed = line.trim();
     if (trimmed === '') {
       socket.write('> ');
@@ -144,7 +247,7 @@ class TelnetConsole {
     if (!session.authed) {
       const [cmd, ...rest] = trimmed.split(/\s+/);
       if (cmd !== 'auth' || !tokenEquals(rest.join(' ').trim(), this.token)) {
-        this.logger?.logSystem('telnet_auth_failed', {});
+        logEvent(this.logger, 'telnet_auth_failed');
         socket.end('ERR: authentication required (auth <token>)\n');
         return;
       }
@@ -157,7 +260,7 @@ class TelnetConsole {
     try {
       out = await this._dispatch(trimmed);
     } catch (err) {
-      out = `ERR:${err.message}`;
+      out = `ERR:${err instanceof Error ? err.message : String(err)}`;
     }
     if (out === undefined || out === null) out = 'ok';
     socket.write(`${out}\n> `);
@@ -165,7 +268,7 @@ class TelnetConsole {
 
   // --- command dispatch ----------------------------------------------------
 
-  async _dispatch(line) {
+  async _dispatch(line: string): Promise<unknown> {
     const parts = line.split(/\s+/);
     const cmd = parts[0];
     const system = this.system;
@@ -193,20 +296,23 @@ class TelnetConsole {
 
       case 'state': {
         const ref = this._ref(parts[1]);
+        if (typeof ref.state !== 'function') throw new Error('state() is local-only');
         return `state:${JSON.stringify(await ref.state())}`;
       }
 
       case 'tell': {
-        const ref = this._ref(parts[1]);
-        const payload = parseJson(line.slice(line.indexOf(parts[1]) + parts[1].length).trim(), 'payload');
+        const target = parts[1] ?? '';
+        const ref = this._ref(target);
+        const payload = parseJson(line.slice(line.indexOf(target) + target.length).trim(), 'payload');
         const accepted = ref.tell(payload);
         return `tell ${ref.path} -> ${accepted ? 'accepted' : 'rejected (mailbox full or stopped)'}`;
       }
 
       case 'ask':
       case 'send': {
-        const ref = this._ref(parts[1]);
-        const payload = parseJson(line.slice(line.indexOf(parts[1]) + parts[1].length).trim(), 'payload');
+        const target = parts[1] ?? '';
+        const ref = this._ref(target);
+        const payload = parseJson(line.slice(line.indexOf(target) + target.length).trim(), 'payload');
         return `reply:${JSON.stringify(await ref.ask(payload, timeoutMs))}`;
       }
 
@@ -280,7 +386,7 @@ class TelnetConsole {
           await ref.ask({ type: 'debug:crash' }, timeoutMs);
           return `crash ${ref.path}: the actor returned instead of crashing`;
         } catch (err) {
-          return `crash ${ref.path} -> ${err.message} (the supervisor will restart it)`;
+          return `crash ${ref.path} -> ${err instanceof Error ? err.message : String(err)} (the supervisor will restart it)`;
         }
       }
 
@@ -289,13 +395,18 @@ class TelnetConsole {
         const stats = system.stats();
         const actors = system.listActors().map((path) => {
           const info = system.inspect(path);
+          const supervision = (info.supervision ?? {}) as {
+            strategy?: unknown;
+            restartsInWindow?: unknown;
+            escalations?: unknown;
+          };
           return {
             path,
             restarts: info.restarts,
             children: info.children,
-            strategy: info.supervision.strategy,
-            restartsInWindow: info.supervision.restartsInWindow,
-            escalations: info.supervision.escalations,
+            strategy: supervision.strategy,
+            restartsInWindow: supervision.restartsInWindow,
+            escalations: supervision.escalations,
           };
         });
         return `sup:${JSON.stringify({ root: stats.rootSupervisor, actors })}`;
@@ -328,20 +439,20 @@ class TelnetConsole {
       case 'pub': {
         if (!pubsub) throw new Error('pubsub plugin is not installed');
         if (parts[1] === 'sub') {
-          pubsub.subscribe(parts[2], this._path(parts[3]));
+          pubsub.subscribe(parts[2] ?? '', this._path(parts[3]));
           return `subscribe ${parts[2]} -> ${parts[3]}`;
         }
         if (parts[1] === 'unsub') {
-          pubsub.unsubscribe(parts[2], this._path(parts[3]));
+          pubsub.unsubscribe(parts[2] ?? '', this._path(parts[3]));
           return `unsub ${parts[2]} -> ${parts[3]}`;
         }
         if (parts[1] === 'topics') return `topics:${JSON.stringify(pubsub.topics())}`;
-        if (parts[1] === 'subs') return `subscribers:${JSON.stringify(pubsub.subscribers(parts[2]))}`;
+        if (parts[1] === 'subs') return `subscribers:${JSON.stringify(pubsub.subscribers(parts[2] ?? ''))}`;
         if (parts[1] === 'pub') {
           const topic = parts[2];
           if (!topic) throw new Error('usage: pub pub [topic] json');
           const payload = parseJson(line.slice(line.indexOf(topic) + topic.length).trim(), 'payload');
-          return `publish result:${JSON.stringify(await pubsub.publish(topic, payload))}`;
+          return `publish result:${JSON.stringify(await pubsub.publish(topic, payload as Record<string, unknown>))}`;
         }
         throw new Error('usage: pub sub|unsub|pub|topics|subs');
       }
@@ -350,22 +461,23 @@ class TelnetConsole {
         if (!cluster) throw new Error('cluster plugin is not installed (set ACTOR_GOSSIP_ENABLED=1)');
         if (parts[1] === 'info') {
           return `cluster:${JSON.stringify({
-            nodeId: cluster.gossip.nodeId,
+            nodeId: cluster.gossip?.nodeId,
             port: cluster.port,
-            nodes: cluster.nodes(),
-            peers: cluster.peers().map((peer) => ({
+            nodes: cluster.nodes?.() ?? [],
+            peers: (cluster.peers?.() ?? []).map((peer) => ({
               address: `${peer.host}:${peer.port}`,
               live: peer.lastSeen > 0,
               failures: peer.failures,
             })),
-            remoteActors: cluster.remoteActors(),
+            remoteActors: cluster.remoteActors?.() ?? [],
           })}`;
         }
         if (parts[1] === 'lookup') {
-          const remote = cluster.lookup(this._path(parts[2]));
+          const remote = typeof cluster.lookup === 'function' ? cluster.lookup(this._path(parts[2])) : null;
           return `lookup:${JSON.stringify(remote || null)}`;
         }
         if (parts[1] === 'wait') {
+          if (typeof cluster.waitFor !== 'function') throw new Error('cluster.waitFor is unavailable');
           const meta = await cluster.waitFor(this._path(parts[2]), timeoutMs * 3);
           return `discovered:${JSON.stringify(meta)}`;
         }
@@ -378,7 +490,7 @@ class TelnetConsole {
         const port = Number(parts[3] || this.ctx.config?.gateway?.port || config.gateway.port);
         if (!Number.isFinite(port)) throw new Error(`port must be a number, got "${parts[3]}"`);
         const peer = await system.connect({ host, port, timeoutMs });
-        const ok = await peer.ping();
+        const ok = typeof peer.ping === 'function' ? await peer.ping() : false;
         return `${host}:${port} -> ${ok ? 'pong' : 'no response'}`;
       }
 
@@ -388,24 +500,27 @@ class TelnetConsole {
   }
 
   /** Validate an actor path (also used for ids inside a path). */
-  _path(value) {
-    if (!value) throw new Error('actor path is required');
+  /** 校验并规范化路径（非法就抛，而不是把可疑字符串送下去）。 */
+  _path(value: unknown): string {
+    if (value === undefined || value === null || value === '') throw new Error('actor path is required');
     if (!isSafePath(value)) throw new Error('actor path must match segment(/segment)* with [A-Za-z0-9._:-]');
-    return value;
+    return value as string;
   }
 
-  _ref(value) {
+  /** 把一个路径解析成 ref（解析不到就抛明确错误）。 */
+  _ref(value: unknown): NonNullable<ReturnType<ConsoleSystem['resolve']>> {
     const path = this._path(value);
     const ref = this.system.resolve(path);
     if (!ref) throw new Error(`actor ${path} not found (local or discovered)`);
     return ref;
   }
 
-  async close() {
+  async close(): Promise<void> {
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
-    if (this.server) {
-      await new Promise((resolve) => this.server.close(() => resolve()));
+    const server = this.server;
+    if (server !== null) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       this.server = null;
     }
   }
