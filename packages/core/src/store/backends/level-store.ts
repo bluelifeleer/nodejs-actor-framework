@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -34,66 +33,96 @@ const { fileName } = require('./naming.ts');
 const SEQ_WIDTH = 20;
 const KEY_PREFIX = 'm!';
 
-let classicLevel = null;
-let loadError = null;
+/**
+ * classic-level 是**可选依赖**、本仓库并未安装（所以拿不到官方类型）。
+ * 这里只声明我们用到的形状；上游 API 若变化，会在运行时明确报错，而不是被类型伪装成安全。
+ */
+interface ClassicLevelModule {
+  ClassicLevel: new (location: string, options?: Record<string, unknown>) => ClassicLevelDb;
+}
 
-function loadClassicLevel() {
-  if (classicLevel) return classicLevel;
-  if (loadError) throw loadError;
+interface ClassicLevelDb {
+  open(): Promise<void>;
+  close(): Promise<void>;
+  get(key: string): Promise<string | undefined>;
+  put(key: string, value: string): Promise<void>;
+  del(key: string): Promise<void>;
+  batch(ops: unknown[]): Promise<void>;
+  iterator(options?: Record<string, unknown>): AsyncIterable<[string, string]>;
+  /** 有些版本才有：用于手动触发范围压缩。 */
+  compactRange?(start: string, end: string): Promise<void>;
+}
+
+let classicLevel: ClassicLevelModule | null = null;
+let loadError: Error | null = null;
+
+function loadClassicLevel(): ClassicLevelModule {
+  if (classicLevel !== null) return classicLevel;
+  if (loadError !== null) throw loadError;
   try {
     // eslint-disable-next-line global-require, import/no-extraneous-dependencies
-    classicLevel = require('classic-level');
+    classicLevel = require('classic-level') as ClassicLevelModule;
     return classicLevel;
   } catch (err) {
     loadError = new Error(
       'the "level" store backend needs the optional dependency "classic-level": ' +
-        `run "npm install classic-level" (or use ACTOR_STORE=file). Original error: ${err.message}`,
+        `run "npm install classic-level" (or use ACTOR_STORE=file). Original error: ${err instanceof Error ? err.message : String(err)}`,
     );
     throw loadError;
   }
 }
 
-function isAvailable() {
+function isAvailable(): { available: boolean; reason?: string } {
   try {
     loadClassicLevel();
     return { available: true };
   } catch (err) {
-    return { available: false, reason: err.message };
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }
 
+interface LevelStoreOptions {
+  root?: string;
+  levelPath?: string;
+}
+
 class LevelStore {
-  constructor(options = {}) {
-    this.root = options.root || options.levelPath || config.store.levelPath
-      || path.join(config.dataDir, 'level');
+  readonly root: string;
+  /** actorId -> LevelDB 句柄。 */
+  readonly dbs: Map<string, ClassicLevelDb>;
+  /** actorId -> msgId -> key。 */
+  readonly keys: Map<string, Map<string, string>>;
+  /** actorId -> 下一个序号。 */
+  readonly seq: Map<string, bigint>;
+  /** actorId -> 写串行化。 */
+  readonly chain: Map<string, Promise<unknown>>;
+
+  constructor(options: LevelStoreOptions = {}) {
+    this.root = options.root ?? options.levelPath ?? (config.store.levelPath as string) ?? path.join(config.dataDir, 'level');
     fs.mkdirSync(this.root, { recursive: true });
-    /** @type {Map<string, object>} actorId -> ClassicLevel */
     this.dbs = new Map();
-    /** @type {Map<string, Map<string, string>>} actorId -> msgId -> key */
     this.keys = new Map();
-    /** @type {Map<string, bigint>} actorId -> next sequence */
     this.seq = new Map();
-    /** @type {Map<string, Promise<any>>} per-actor serialisation */
     this.chain = new Map();
   }
 
-  get backendName() {
+  get backendName(): string {
     return 'level';
   }
 
-  pathFor(actorId) {
+  pathFor(actorId: string): string {
     return path.join(this.root, fileName(actorId, ''));
   }
 
-  _withLock(actorId, fn) {
+  _withLock<T>(actorId: string, fn: () => Promise<T> | T): Promise<T> {
     const key = String(actorId);
-    const prev = this.chain.get(key) || Promise.resolve();
-    const next = prev.then(fn, fn);
-    this.chain.set(key, next.catch(() => {}));
+    const prev = this.chain.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn) as Promise<T>;
+    this.chain.set(key, next.catch(() => undefined));
     return next;
   }
 
-  async _db(actorId) {
+  async _db(actorId: string): Promise<ClassicLevelDb> {
     const key = String(actorId);
     let db = this.dbs.get(key);
     if (db) return db;
@@ -104,28 +133,32 @@ class LevelStore {
     return db;
   }
 
-  _keyMap(actorId) {
+  _keyMap(actorId: string): Map<string, string> {
     const key = String(actorId);
-    if (!this.keys.has(key)) this.keys.set(key, new Map());
-    return this.keys.get(key);
+    let map = this.keys.get(key);
+    if (map === undefined) {
+      map = new Map<string, string>();
+      this.keys.set(key, map);
+    }
+    return map;
   }
 
-  _key(seq, msgId) {
+  _key(seq: bigint, msgId: string): string {
     return `${KEY_PREFIX}${String(seq).padStart(SEQ_WIDTH, '0')}!${msgId}`;
   }
 
   /** Seed the sequence counter from the highest existing key. */
-  async _nextSeq(actorId) {
+  async _nextSeq(actorId: string): Promise<bigint> {
     const key = String(actorId);
-    if (this.seq.has(key)) {
-      const next = this.seq.get(key);
-      this.seq.set(key, next + 1n);
-      return next;
+    const current = this.seq.get(key);
+    if (current !== undefined) {
+      this.seq.set(key, current + 1n);
+      return current;
     }
     const db = await this._db(actorId);
     let highest = 0n;
     for await (const [k] of db.iterator({ gte: KEY_PREFIX, lt: `${KEY_PREFIX}~`, reverse: true, limit: 1 })) {
-      const seqPart = String(k).slice(KEY_PREFIX.length).split('!')[0];
+      const seqPart = String(k).slice(KEY_PREFIX.length).split('!')[0] ?? '';
       try {
         highest = BigInt(seqPart);
       } catch {
@@ -136,20 +169,21 @@ class LevelStore {
     return highest + 1n;
   }
 
-  async append(actorId, msg) {
-    const record = msg && typeof msg === 'object' ? msg : { type: 'raw', value: msg };
-    if (!record.__msgId) record.__msgId = crypto.randomUUID();
+  async append(actorId: string, msg: unknown): Promise<Record<string, unknown>> {
+    const record: Record<string, unknown> = msg !== null && typeof msg === 'object' ? (msg as Record<string, unknown>) : { type: 'raw', value: msg };
+    const msgId = typeof record.__msgId === 'string' ? record.__msgId : crypto.randomUUID();
+    record.__msgId = msgId;
     return this._withLock(actorId, async () => {
       const db = await this._db(actorId);
       const seq = await this._nextSeq(actorId);
-      const key = this._key(seq, record.__msgId);
+      const key = this._key(seq, msgId);
       await db.put(key, JSON.stringify(record));
-      this._keyMap(actorId).set(record.__msgId, key);
+      this._keyMap(actorId).set(msgId, key);
       return record;
     });
   }
 
-  async ack(actorId, msgIds) {
+  async ack(actorId: string, msgIds: string | string[]): Promise<number> {
     const ids = Array.isArray(msgIds) ? msgIds : [msgIds];
     return this._withLock(actorId, async () => {
       if (ids.length === 0) return 0;
@@ -169,19 +203,19 @@ class LevelStore {
     });
   }
 
-  async load(actorId) {
+  async load(actorId: string): Promise<Record<string, unknown>[]> {
     return this._withLock(actorId, async () => this._loadLocked(actorId));
   }
 
   /** Caller must hold the per-actor lock. */
-  async _loadLocked(actorId) {
+  async _loadLocked(actorId: string): Promise<Record<string, unknown>[]> {
     const db = await this._db(actorId);
     const map = this._keyMap(actorId);
     map.clear();
     const messages = [];
     let highest = 0n;
     for await (const [key, value] of db.iterator({ gte: KEY_PREFIX, lt: `${KEY_PREFIX}~` })) {
-      const seqPart = String(key).slice(KEY_PREFIX.length).split('!')[0];
+      const seqPart = String(key).slice(KEY_PREFIX.length).split('!')[0] ?? '';
       try {
         const seq = BigInt(seqPart);
         if (seq > highest) highest = seq;
@@ -201,7 +235,7 @@ class LevelStore {
     return messages;
   }
 
-  async clear(actorId) {
+  async clear(actorId: string): Promise<void> {
     return this._withLock(actorId, async () => {
       const db = await this._db(actorId);
       const keys = [];
@@ -212,7 +246,7 @@ class LevelStore {
     });
   }
 
-  async pendingCount(actorId) {
+  async pendingCount(actorId: string): Promise<number> {
     return this._withLock(actorId, async () => {
       const db = await this._db(actorId);
       let count = 0;
@@ -222,17 +256,22 @@ class LevelStore {
   }
 
   /** LevelDB compacts itself; nothing to do, but keep the interface uniform. */
-  async compact(actorId) {
+  async compact(actorId?: string): Promise<unknown> {
+    if (actorId === undefined) {
+      const results: unknown[] = [];
+      for (const key of [...this.dbs.keys()]) results.push(await this.compact(key));
+      return results;
+    }
     const db = await this._db(actorId);
     if (typeof db.compactRange === 'function') await db.compactRange(KEY_PREFIX, `${KEY_PREFIX}~`);
     return { before: null, after: null, records: await this.pendingCount(actorId) };
   }
 
-  async stats() {
+  async stats(): Promise<Record<string, unknown>> {
     return { backend: 'level', actors: this.dbs.size, bytes: null, root: this.root };
   }
 
-  async close() {
+  async close(): Promise<void> {
     for (const db of this.dbs.values()) {
       try {
         await db.close();
