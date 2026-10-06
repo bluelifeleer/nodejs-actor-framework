@@ -1,0 +1,32 @@
+# CI 门禁：跑的是**开发者本地同一条命令** `npm run ci`（typecheck + 全量测试 + 文档站构建）。
+# 单一事实来源的好处：不会出现"CI 绿、本地红"（或反过来）——两者执行的东西不一样。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支上新的推送取消旧的运行（省额度，也避免排队等很久）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 与 package.json 的 engines 一致：源码直接跑 TypeScript 且用了 node:sqlite，
+          # Node 20/22 起不来（详见 README 的"环境要求"）。
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: typecheck + 全量测试 + 文档站（含断链门禁）
+        run: npm run ci

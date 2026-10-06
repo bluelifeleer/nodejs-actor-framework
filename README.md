@@ -923,3 +923,31 @@ npm run docs:serve     # 构建 + 起本地预览（默认 4321，可用 DOCS_PO
 
 > 注意：它渲染的是仓库现有的**工程文档**（设计/决策/实现日志）与 API 参考，不是一份面向使用者的官网
 > 叙事——"快速开始/概念/指南"那类内容仍需要写（见 `docs/design/06-roadmap-and-nongoals.md` 的 M5）。
+
+## CI 与文档站部署
+
+```bash
+npm run ci     # CI 跑的就是这一条：typecheck + 全量测试 + 文档站构建（含断链门禁）
+```
+
+**单一事实来源**：`.github/workflows/ci.yml` 里只写 `npm run ci`，不把步骤再抄一遍——
+否则迟早会出现"CI 绿、本地红"（或反过来）。有一条测试专门盯着这件事
+（`test/unit-ci-workflows.test.js`）：脚本改名后工作流里的死引用、action 被改成 `@main`、
+Pages 上传目录与构建产物不一致、权限少一项……这些都在测试里挡掉。
+
+| 工作流 | 触发 | 做什么 |
+|---|---|---|
+| `ci.yml` | push 到 main、所有 PR | `npm ci` + `npm run ci`（Node 24，与 `engines` 一致） |
+| `pages.yml` | push 到 main、手动 | 构建文档站 → 发布到 GitHub Pages |
+
+**发布到 Pages 需要你在仓库设置里做一次**：Settings → Pages → Build and deployment → Source 选
+**GitHub Actions**（`site/` 是构建产物、不入库，所以每次部署都现场构建；构建时断链会让这一步失败，
+而不是发布一个点进去 404 的站点）。
+
+> 环境要求：**Node ≥ 24**（源码直接跑 TypeScript，且 SQL 适配器用 `node:sqlite`）。
+> 可选后端 `level` 需要可选依赖 `classic-level`（原生模块）；装不上时相关测试会**显式跳过**
+> 并说明原因，不影响核心路径。
+>
+> 诚实说明：这两条工作流还没有在 GitHub 上跑过（仓库此前没有任何 CI），本地验证的是**它们执行的
+> 那条命令**（`npm run ci` 全绿）与工作流文件的结构约束；实际的 runner 行为、Pages 首次部署需要
+> 推到远端后才能确认。

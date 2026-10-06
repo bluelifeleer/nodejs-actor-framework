@@ -1,0 +1,49 @@
+# 把文档站发布到 GitHub Pages。
+#
+# 前置（仓库设置里做一次）：Settings → Pages → Build and deployment → Source 选 **GitHub Actions**。
+# 站点是构建产物（`site/` 不入库），所以这里每次部署都现场构建。
+name: Docs site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: 构建文档站（断链会让这一步失败，而不是发布一个 404 站点）
+        run: npm run docs:build
+      - name: GitHub Pages 默认走 Jekyll；静态产物加 .nojekyll 跳过它
+        run: touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
