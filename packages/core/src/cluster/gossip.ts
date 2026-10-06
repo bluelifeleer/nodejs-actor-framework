@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -41,37 +40,68 @@ const framing = createFraming({
   protoDecode: proto.decodeGossipEnvelope,
 });
 
+/** 一条 registry 记录（LWW + nodeId 平局判定；删除用墓碑）。 */
+interface RegistryEntry {
+  key: string;
+  value: unknown;
+  ts: number;
+  nodeId: string;
+  deleted?: boolean;
+}
+
+/** 一个 peer 的地址与健康状态。 */
+interface PeerInfo {
+  host: string;
+  port: number;
+  lastSeen: number;
+  failures: number;
+}
+
+/** gossip 配置（也可直接传 seeds 数组，兼容旧用法）。 */
+interface GossipOptions {
+  seeds?: (string | { host: string; port: number })[];
+  host?: string;
+  advertiseHost?: string;
+  intervalMs?: number;
+  peerTimeoutMs?: number;
+  maxPayloadBytes?: number;
+  maxFrameBytes?: number;
+  tls?: unknown;
+  codec?: number | string;
+}
+
 class Gossip extends EventEmitter {
   /**
-   * @param {string} nodeId
-   * @param {number} port
-   * @param {Array|object} options seed array (legacy) or options object
+   * @param nodeId 本节点 id
+   * @param port 监听端口
+   * @param options seed 数组（旧用法）或配置对象
    */
-  constructor(nodeId, port, options = {}) {
+  constructor(nodeId: string, port?: number, options: GossipOptions | (string | { host: string; port: number })[] = {}) {
     super();
-    if (Array.isArray(options)) options = { seeds: options };
+    const opts: GossipOptions = Array.isArray(options) ? { seeds: options } : options;
+    options = opts;
     this.nodeId = nodeId || config.gossip.nodeId;
     this.port = port === undefined ? config.gossip.port : port;
-    this.host = options.host || config.gossip.host;
-    this.advertiseHost = options.advertiseHost || this.host;
-    this.intervalMs = options.intervalMs || config.gossip.intervalMs;
-    this.peerTimeoutMs = options.peerTimeoutMs || config.gossip.peerTimeoutMs;
-    this.maxPayloadBytes = options.maxPayloadBytes || config.gossip.maxPayloadBytes;
-    this.tls = options.tls || config.tls;
+    this.host = opts.host || config.gossip.host;
+    this.advertiseHost = opts.advertiseHost || this.host;
+    this.intervalMs = opts.intervalMs || config.gossip.intervalMs;
+    this.peerTimeoutMs = opts.peerTimeoutMs || config.gossip.peerTimeoutMs;
+    this.maxPayloadBytes = opts.maxPayloadBytes || config.gossip.maxPayloadBytes;
+    this.tls = opts.tls || config.tls;
     // Accept either the numeric constant or its name ('proto'/'json'); a raw
     // string used to be written into the frame header as a corrupt codec byte.
-    this.codec = typeof options.codec === 'number'
-      ? options.codec
-      : codecFromName(options.codec || config.gossip.codec);
+    this.codec = typeof opts.codec === 'number'
+      ? opts.codec
+      : codecFromName(opts.codec || config.gossip.codec);
     // The registry map is trimmed to maxPayloadBytes, so allow for envelope framing overhead.
-    this.maxFrameBytes = options.maxFrameBytes || this.maxPayloadBytes + 64 * 1024;
+    this.maxFrameBytes = opts.maxFrameBytes || this.maxPayloadBytes + 64 * 1024;
 
-    /** @type {Map<string, object>} key -> {key,value,ts,nodeId,deleted} */
-    this.localRegistry = new Map();
-    /** @type {Map<string, {host:string,port:number,lastSeen:number,failures:number}>} */
-    this.peers = new Map();
-    /** @type {Map<string, number>} nodeId -> last time we heard from it */
-    this.nodeLastSeen = new Map([[this.nodeId, Date.now()]]);
+    /** key -> 记录（含墓碑）。 */
+    this.localRegistry = new Map<string, RegistryEntry>();
+    /** nodeId -> peer 地址与健康状态。 */
+    this.peers = new Map<string, PeerInfo>();
+    /** nodeId -> 最后一次听到它的时间。 */
+    this.nodeLastSeen = new Map<string, number>([[this.nodeId, Date.now()]]);
 
     this.server = null;
     this.boundPort = null;
@@ -79,10 +109,10 @@ class Gossip extends EventEmitter {
     this._sockets = new Set();
     this.stopped = false;
 
-    for (const seed of options.seeds || config.gossip.seeds) this.addSeed(seed);
+    for (const seed of opts.seeds || config.gossip.seeds) this.addSeed(seed);
   }
 
-  addSeed(seed) {
+  addSeed(seed: string | { host: string; port: number }): boolean {
     if (!seed) return false;
     let host;
     let port;
@@ -106,17 +136,17 @@ class Gossip extends EventEmitter {
 
   // --- registry API -------------------------------------------------------
 
-  setLocal(key, value) {
+  setLocal(key: string, value: unknown): void {
     this.localRegistry.set(key, { key, value, ts: Date.now(), nodeId: this.nodeId, deleted: false });
   }
 
-  delLocal(key) {
+  delLocal(key: string): void {
     this.localRegistry.set(key, { key, value: null, ts: Date.now(), nodeId: this.nodeId, deleted: true });
   }
 
   /** Local view (tombstones included) as a plain object. */
-  exportState() {
-    const out = {};
+  exportState(): Record<string, RegistryEntry> {
+    const out: Record<string, RegistryEntry> = {};
     let bytes = 2;
     // newest first, so trimming drops the least useful entries
     const entries = [...this.localRegistry.values()].sort((a, b) => b.ts - a.ts);
@@ -132,7 +162,7 @@ class Gossip extends EventEmitter {
     return out;
   }
 
-  _isNewer(incoming, current) {
+  _isNewer(incoming: RegistryEntry, current: RegistryEntry): boolean {
     if (!current) return true;
     if (incoming.ts > current.ts) return true;
     if (incoming.ts < current.ts) return false;
@@ -140,13 +170,13 @@ class Gossip extends EventEmitter {
   }
 
   /** Last-write-wins merge. Emits registry_update / registry_delete. */
-  mergeState(remoteEntries, senderNodeId) {
-    const applied = [];
-    if (!remoteEntries || typeof remoteEntries !== 'object') return applied;
+  mergeState(remoteEntries: Record<string, RegistryEntry> | null | undefined, senderNodeId?: string): string[] {
+    const applied: string[] = [];
+    if (remoteEntries === null || remoteEntries === undefined || typeof remoteEntries !== 'object') return applied;
     for (const [key, incoming] of Object.entries(remoteEntries)) {
-      if (!incoming || typeof incoming !== 'object' || incoming.key !== key) continue;
+      if (incoming === null || typeof incoming !== 'object' || incoming.key !== key) continue;
       const current = this.localRegistry.get(key);
-      if (!this._isNewer(incoming, current)) continue;
+      if (current !== undefined && !this._isNewer(incoming, current)) continue;
       this.localRegistry.set(key, incoming);
       applied.push(key);
       if (incoming.deleted) this.emit('registry_delete', key, incoming);
@@ -158,11 +188,11 @@ class Gossip extends EventEmitter {
 
   // --- networking ---------------------------------------------------------
 
-  start() {
+  start(): Promise<{ port: number }> {
     return new Promise((resolve, reject) => {
-      const server = tlsUtil.createServer(this.tls, (socket) => this._handleInbound(socket));
+      const server = tlsUtil.createServer(this.tls, (socket: import('node:net').Socket) => this._handleInbound(socket));
       this.server = server;
-      server.on('error', (err) => {
+      server.on('error', (err: Error) => {
         // Never let a busy/forbidden port take down the whole process.
         this.emit('error', err);
         reject(err);
@@ -189,18 +219,18 @@ class Gossip extends EventEmitter {
   }
 
   /** Refresh the secure context in place when certificates are rotated. */
-  _startTlsReloader() {
+  _startTlsReloader(): void {
     if (typeof this.server.setSecureContext !== 'function') return;
     this.reloader = tlsUtil.createReloader(this.tls, {
-      onReload: (options) => {
+      onReload: (options: import('node:tls').SecureContextOptions) => {
         this.server.setSecureContext(options);
         this.emit('tls_reloaded');
       },
-      onError: (err) => this.emit('tls_reload_error', err),
+      onError: (err: Error) => this.emit('tls_reload_error', err),
     });
   }
 
-  _handleInbound(socket) {
+  _handleInbound(socket: import('node:net').Socket): void {
     this._sockets.add(socket);
     socket.on('error', () => {});
     socket.on('close', () => this._sockets.delete(socket));
@@ -218,7 +248,7 @@ class Gossip extends EventEmitter {
     });
   }
 
-  _write(socket, payload) {
+  _write(socket: import('node:net').Socket, payload: Record<string, unknown>): void {
     if (socket.destroyed) return;
     try {
       socket.write(framing.encode(payload, this.codec), () => {});
@@ -231,7 +261,7 @@ class Gossip extends EventEmitter {
    * When TLS is on, the declared sender must match the peer certificate CN,
    * so a valid certificate cannot be used to impersonate another node id.
    */
-  _verifySender(socket, senderNodeId) {
+  _verifySender(socket: import('node:net').Socket, senderNodeId: unknown): boolean {
     const check = tlsUtil.verifyPeerNodeId(socket, senderNodeId, this.tls);
     if (!check.ok) {
       this.emit('auth_error', check.reason);
@@ -241,24 +271,29 @@ class Gossip extends EventEmitter {
     return true;
   }
 
-  _onGossipPayload(payload, socket) {
+  _onGossipPayload(payload: Record<string, unknown>, socket: import('node:net').Socket): void {
+    const sender = typeof payload.sender === 'string' ? payload.sender : '';
+    const advertiseHost = typeof payload.advertiseHost === 'string' ? payload.advertiseHost : '';
+    const senderPort = Number(payload.port);
+    const data = (payload.data ?? null) as Record<string, RegistryEntry> | null;
+    const propagatedPeers = Array.isArray(payload.peers) ? (payload.peers as { host?: unknown; port?: unknown }[]) : null;
     if (!payload || payload.type !== 'gossip') return;
-    if (payload.sender === this.nodeId) return;
-    if (!this._verifySender(socket, payload.sender)) return;
+    if (sender === this.nodeId) return;
+    if (!this._verifySender(socket, sender)) return;
     if (socket.remoteAddress) {
-      this.nodeLastSeen.set(payload.sender, Date.now());
+      this.nodeLastSeen.set(sender, Date.now());
       // Learn the sender as a dialable peer.
-      this.addSeed({ host: payload.advertiseHost || socket.remoteAddress.replace(/^::ffff:/, ''), port: payload.port });
+      this.addSeed({ host: advertiseHost || socket.remoteAddress.replace(/^::ffff:/, ''), port: senderPort });
     }
     // 以及"发送方认识的其它节点"：没有这一步，N>=3 时成员视图永远不收敛
-    if (Array.isArray(payload.peers)) {
-      for (const peer of payload.peers.slice(0, MAX_PROPAGATED_PEERS)) {
-        if (!peer || typeof peer.host !== 'string') continue;
+    if (propagatedPeers !== null) {
+      for (const peer of propagatedPeers.slice(0, MAX_PROPAGATED_PEERS)) {
+        if (peer === null || typeof peer !== 'object' || typeof peer.host !== 'string') continue;
         this.addSeed({ host: peer.host, port: Number(peer.port) });
       }
     }
-    this.mergeState(payload.data, payload.sender);
-    this.emit('round', payload.sender);
+    this.mergeState(data, sender);
+    this.emit('round', sender);
     // Answer with our own state so the dialer converges too.
     this._write(socket, this._payload());
   }
@@ -270,7 +305,7 @@ class Gossip extends EventEmitter {
    * 会永远只认识种子（各自看到不同的成员集合）——一致性哈希算出的 owner 就各不相同。
    * 列表有上限，避免集群很大时把消息撑爆（gossip 是 O(N) 消息量的小集群方案）。
    */
-  _payload() {
+  _payload(): Record<string, unknown> {
     return {
       type: 'gossip',
       sender: this.nodeId,
@@ -284,18 +319,19 @@ class Gossip extends EventEmitter {
     };
   }
 
-  /** One anti-entropy round against a random peer. */
-  gossipRound() {
+  /** One anti-entropy round against a random peer（返回是否真的送达）。 */
+  gossipRound(): Promise<boolean> {
     const peers = [...this.peers.values()];
     if (peers.length === 0) return Promise.resolve(false);
     const peer = peers[Math.floor(Math.random() * peers.length)];
     return this.pushTo(peer);
   }
 
-  pushTo(peer) {
-    return new Promise((resolve) => {
+  /** 推一轮状态给某个 peer；`false` = 连不上/超时（会累加 failures）。 */
+  pushTo(peer: PeerInfo): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
       let settled = false;
-      const finish = (ok) => {
+      const finish = (ok: boolean): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -324,7 +360,7 @@ class Gossip extends EventEmitter {
           finish(false);
         }
       });
-      socket.on('data', (chunk) => {
+      socket.on('data', (chunk: Buffer) => {
         let frames;
         try {
           frames = decoder.push(chunk);
@@ -342,7 +378,7 @@ class Gossip extends EventEmitter {
   }
 
   /** Detect nodes that stopped gossiping and drop their registry entries. */
-  pruneStaleNodes(now = Date.now()) {
+  pruneStaleNodes(now = Date.now()): string[] {
     const removed = [];
     for (const [nodeId, seen] of this.nodeLastSeen) {
       if (nodeId === this.nodeId) continue;
@@ -367,13 +403,13 @@ class Gossip extends EventEmitter {
     return removed;
   }
 
-  _gcTombstones(now) {
+  _gcTombstones(now: number): void {
     for (const [key, entry] of [...this.localRegistry]) {
       if (entry.deleted && now - entry.ts > TOMBSTONE_TTL_MS) this.localRegistry.delete(key);
     }
   }
 
-  info() {
+  info(): Record<string, unknown> {
     return {
       nodeId: this.nodeId,
       port: this.boundPort || this.port,
@@ -383,7 +419,7 @@ class Gossip extends EventEmitter {
     };
   }
 
-  async stop() {
+  async stop(): Promise<void> {
     this.stopped = true;
     if (this.reloader) {
       this.reloader.stop();
@@ -394,7 +430,7 @@ class Gossip extends EventEmitter {
     for (const socket of this._sockets) socket.destroy();
     this._sockets.clear();
     if (this.server) {
-      await new Promise((resolve) => this.server.close(() => resolve()));
+      await new Promise<void>((resolve) => this.server.close(() => resolve()));
       this.server = null;
     }
   }

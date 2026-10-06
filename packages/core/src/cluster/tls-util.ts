@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -26,8 +25,22 @@ const crypto = require('crypto');
  *    and without dropping established connections.
  */
 
+/** 配置里的证书材料（来自 env/config，字段都可选）。 */
+interface TlsConfig {
+  enabled?: boolean;
+  key?: string | string[];
+  cert?: string | string[];
+  ca?: string | string[];
+  crl?: string | string[];
+  servername?: string;
+  rejectUnauthorized?: boolean;
+  denyNodes?: string | string[];
+  verifyNodeId?: boolean;
+  [key: string]: unknown;
+}
+
 /** Accept a single path, a comma-separated string, or an array. */
-function toList(value) {
+function toList(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   const raw = Array.isArray(value) ? value : String(value).split(',');
   return raw.map((item) => String(item).trim()).filter(Boolean);
@@ -37,8 +50,8 @@ function toList(value) {
  * Read a file, keyed by size+mtime so a rotated file is re-read instead of
  * being served from a stale cache.
  */
-const fileCache = new Map();
-function readFileCached(filePath) {
+const fileCache = new Map<string, Buffer>();
+function readFileCached(filePath: string): Buffer {
   let stamp = 'missing';
   try {
     const stat = fs.statSync(filePath);
@@ -47,7 +60,8 @@ function readFileCached(filePath) {
     /* fall through: the read below reports the real error */
   }
   const key = `${filePath}:${stamp}`;
-  if (fileCache.has(key)) return fileCache.get(key);
+  const cached = fileCache.get(key);
+  if (cached !== undefined) return cached;
   const data = fs.readFileSync(filePath);
   // Keep the cache small: only the newest stamp per path matters.
   for (const existing of fileCache.keys()) {
@@ -57,7 +71,7 @@ function readFileCached(filePath) {
   return data;
 }
 
-function isEnabled(tlsConfig) {
+function isEnabled(tlsConfig: TlsConfig | null | undefined): boolean {
   return Boolean(tlsConfig && tlsConfig.enabled);
 }
 
@@ -72,7 +86,7 @@ const PEM_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
  * setSecureContext() and silently break every new connection; instead the
  * reload fails and the previous context keeps serving.
  */
-function validatePem(data, label, filePath, kind) {
+function validatePem(data: Buffer | string, label: string, filePath: string, kind: string): void {
   const text = data.toString('utf8');
   if (kind === 'key') {
     if (!PEM_KEY.test(text)) throw new Error(`${label} (${filePath}) contains no private key`);
@@ -89,34 +103,46 @@ function validatePem(data, label, filePath, kind) {
       // eslint-disable-next-line no-new
       new crypto.X509Certificate(block);
     } catch (err) {
-      throw new Error(`${label} (${filePath}) contains a malformed certificate: ${err.message}`);
+      throw new Error(`${label} (${filePath}) contains a malformed certificate: ${(err instanceof Error ? err.message : String(err))}`);
     }
   }
 }
 
-function readBundle(paths, label, kind) {
+/** 读一批 PEM 文件；多个文件会被拼成一个 Buffer（Node 接受单 Buffer 里放多张证书）。 */
+function readBundle(paths: string[], label: string, kind: string): Buffer | null {
   if (paths.length === 0) return null;
-  const parts = [];
+  const parts: Buffer[] = [];
   for (const filePath of paths) {
-    let data;
+    let data: Buffer;
     try {
       data = readFileCached(filePath);
     } catch (err) {
-      throw new Error(`cannot read ${label} (${filePath}): ${err.message}`);
+      throw new Error(`cannot read ${label} (${filePath}): ${(err instanceof Error ? err.message : String(err))}`);
     }
     validatePem(data, label, filePath, kind);
     parts.push(data);
   }
   // Node accepts a single PEM buffer containing several certificates/CRLs.
-  return parts.length === 1 ? parts[0] : Buffer.concat(parts.map((p) => Buffer.concat([p, Buffer.from('\n')])));
+  const first = parts[0];
+  if (parts.length === 1 && first !== undefined) return first;
+  return Buffer.concat(parts.map((p) => Buffer.concat([p, Buffer.from('\n')])));
+}
+
+interface TlsMaterial {
+  key: Buffer | null;
+  cert: Buffer | null;
+  ca: Buffer | null;
+  crl?: Buffer | null;
+  passphrase?: string;
 }
 
 /** Validate + load the configured key material, failing loudly. */
-function loadMaterial(tlsConfig) {
-  const keyPaths = toList(tlsConfig.key);
-  const certPaths = toList(tlsConfig.cert);
-  const caPaths = toList(tlsConfig.ca);
-  const crlPaths = toList(tlsConfig.crl);
+function loadMaterial(tlsConfig: TlsConfig | null | undefined): TlsMaterial {
+  const cfg: TlsConfig = tlsConfig ?? {};
+  const keyPaths = toList(cfg.key);
+  const certPaths = toList(cfg.cert);
+  const caPaths = toList(cfg.ca);
+  const crlPaths = toList(cfg.crl);
 
   const missing = [];
   if (keyPaths.length === 0) missing.push('ACTOR_TLS_KEY');
@@ -126,34 +152,36 @@ function loadMaterial(tlsConfig) {
     throw new Error(`TLS is enabled but ${missing.join(', ')} is not set`);
   }
 
-  const material = {
+  const material: TlsMaterial = {
     key: readBundle(keyPaths, 'ACTOR_TLS_KEY', 'key'),
     cert: readBundle(certPaths, 'ACTOR_TLS_CERT', 'cert'),
     ca: readBundle(caPaths, 'ACTOR_TLS_CA', 'ca'),
   };
   if (crlPaths.length > 0) material.crl = readBundle(crlPaths, 'ACTOR_TLS_CRL', 'crl');
-  if (tlsConfig.passphrase) material.passphrase = tlsConfig.passphrase;
+  if (typeof cfg.passphrase === 'string') material.passphrase = cfg.passphrase;
   return material;
 }
 
-function commonOptions(tlsConfig) {
-  const material = loadMaterial(tlsConfig);
-  const options = {
+function commonOptions(tlsConfig: TlsConfig | null | undefined): Record<string, unknown> {
+  const cfg: TlsConfig = tlsConfig ?? {};
+  const material: TlsMaterial = loadMaterial(cfg);
+  const options: Record<string, unknown> = {
     key: material.key,
     cert: material.cert,
     ca: material.ca,
-    minVersion: tlsConfig.minVersion || 'TLSv1.2',
+    minVersion: typeof cfg.minVersion === 'string' ? cfg.minVersion : 'TLSv1.2',
   };
   if (material.crl) options.crl = material.crl;
   if (material.passphrase) options.passphrase = material.passphrase;
   return options;
 }
 
-function serverOptions(tlsConfig) {
+function serverOptions(tlsConfig: TlsConfig | null | undefined): Record<string, unknown> {
+  const cfg: TlsConfig = tlsConfig ?? {};
   const options = {
-    ...commonOptions(tlsConfig),
-    requestCert: tlsConfig.requestCert !== false,
-    rejectUnauthorized: tlsConfig.rejectUnauthorized !== false,
+    ...commonOptions(cfg),
+    requestCert: cfg.requestCert !== false,
+    rejectUnauthorized: cfg.rejectUnauthorized !== false,
   };
   // Validate the material as a *set* (the key must match the certificate).
   // Only done for servers, i.e. at startup and on rotation, never per client
@@ -163,30 +191,34 @@ function serverOptions(tlsConfig) {
 }
 
 /** Options for a listening server. Identical to serverOptions, kept symmetric. */
-function secureContextOptions(tlsConfig) {
+function secureContextOptions(tlsConfig: TlsConfig): import('node:tls').SecureContextOptions {
   return serverOptions(tlsConfig);
 }
 
-function clientOptions(tlsConfig, host) {
-  const options = {
-    ...commonOptions(tlsConfig),
-    rejectUnauthorized: tlsConfig.rejectUnauthorized !== false,
+function clientOptions(tlsConfig: TlsConfig | null | undefined, host: string): Record<string, unknown> {
+  const cfg: TlsConfig = tlsConfig ?? {};
+  const options: Record<string, unknown> = {
+    ...commonOptions(cfg),
+    rejectUnauthorized: cfg.rejectUnauthorized !== false,
   };
   // SNI only makes sense for names, not for bare IP addresses.
-  if (tlsConfig.serverName) options.servername = tlsConfig.serverName;
+  if (typeof cfg.serverName === 'string') options.servername = cfg.serverName;
   else if (host && net.isIP(host) === 0) options.servername = host;
   return options;
 }
 
 /** Create a listening server (TLS or plain TCP) with one uniform signature. */
-function createServer(tlsConfig, onConnection) {
+function createServer(tlsConfig: TlsConfig | null | undefined, onConnection: (socket: import('node:net').Socket) => void): import('node:net').Server | import('node:tls').Server {
   if (!isEnabled(tlsConfig)) return net.createServer(onConnection);
   const options = serverOptions(tlsConfig);
-  return tls.createServer(options, (socket) => onConnection(socket));
+  return tls.createServer(options as import('node:tls').TlsOptions, (socket: import('node:tls').TLSSocket) => onConnection(socket));
 }
 
 /** Open a client connection (TLS or plain TCP) plus the event that means "ready". */
-function connect(tlsConfig, { host, port }) {
+function connect(
+  tlsConfig: TlsConfig | null | undefined,
+  { host, port }: { host: string; port: number },
+): { socket: import('node:net').Socket; readyEvent: string; secure: boolean } {
   if (!isEnabled(tlsConfig)) {
     return { socket: net.createConnection({ host, port }), readyEvent: 'connect', secure: false };
   }
@@ -195,7 +227,7 @@ function connect(tlsConfig, { host, port }) {
 }
 
 /** The CN of the peer certificate, or null when there is none. */
-function peerCommonName(socket) {
+function peerCommonName(socket: import('node:tls').TLSSocket): string | null {
   if (!socket || typeof socket.getPeerCertificate !== 'function') return null;
   let cert;
   try {
@@ -212,7 +244,7 @@ function peerCommonName(socket) {
  * that the identity is not on the denylist.
  * @returns {{ok:boolean, cn?:string|null, reason?:string, skipped?:boolean}}
  */
-function verifyPeerNodeId(socket, declaredNodeId, tlsConfig) {
+function verifyPeerNodeId(socket: import('node:tls').TLSSocket, declaredNodeId: unknown, tlsConfig: TlsConfig): { ok: boolean; reason?: string; cn?: string | null; skipped?: boolean } {
   if (!isEnabled(tlsConfig)) return { ok: true, skipped: true };
 
   // The denylist is a hard block: it must apply even when the CN binding is
@@ -241,12 +273,13 @@ function verifyPeerNodeId(socket, declaredNodeId, tlsConfig) {
 }
 
 /** A stamp of every key-material file, used to detect rotation. */
-function fileStamp(tlsConfig) {
+function fileStamp(tlsConfig: TlsConfig | null | undefined): string {
+  const cfg: TlsConfig = tlsConfig ?? {};
   const paths = [
-    ...toList(tlsConfig.key),
-    ...toList(tlsConfig.cert),
-    ...toList(tlsConfig.ca),
-    ...toList(tlsConfig.crl),
+    ...toList(cfg.key),
+    ...toList(cfg.cert),
+    ...toList(cfg.ca),
+    ...toList(cfg.crl),
   ];
   return paths
     .map((filePath) => {
@@ -266,24 +299,37 @@ function fileStamp(tlsConfig) {
  * A failed reload keeps the previous context serving (a half-written file must
  * not take the cluster down) and retries on the next tick.
  *
- * @param {object} tlsConfig
+ * @param {object} cfg
  * @param {{onReload:(options:object)=>void, onError?:(err:Error)=>void, intervalMs?:number}} handlers
  */
-function createReloader(tlsConfig, handlers = {}) {
-  if (!isEnabled(tlsConfig)) return null;
-  const intervalMs = handlers.intervalMs === undefined ? tlsConfig.reloadMs : handlers.intervalMs;
-  if (!intervalMs || intervalMs <= 0) return null;
+/** 证书热更新的句柄。 */
+interface TlsReloader {
+  /** 已加载的那份材料的指纹（测试用来断言"真的重读了"）。 */
+  readonly stamp: string;
+  /** 立刻重读（测试，或运维发 SIGHUP）。 */
+  reloadNow(): import('node:tls').SecureContextOptions;
+  stop(): void;
+}
 
-  let last = fileStamp(tlsConfig);
+function createReloader(
+  tlsConfig: TlsConfig | null | undefined,
+  handlers: { onReload?: (options: import('node:tls').SecureContextOptions) => void; onError?: (err: Error) => void; intervalMs?: number } = {},
+): TlsReloader | null {
+  if (!isEnabled(tlsConfig)) return null;
+  const cfg: TlsConfig = tlsConfig ?? {};
+  const intervalMs = handlers.intervalMs === undefined ? cfg.reloadMs : handlers.intervalMs;
+  if (typeof intervalMs !== 'number' || intervalMs <= 0) return null;
+
+  let last = fileStamp(cfg);
   const timer = setInterval(() => {
-    const current = fileStamp(tlsConfig);
+    const current = fileStamp(cfg);
     if (current === last) return;
     try {
-      const options = secureContextOptions(tlsConfig);
+      const options = secureContextOptions(cfg);
       last = current; // only advance once the new material loaded cleanly
-      handlers.onReload(options);
+      if (handlers.onReload) handlers.onReload(options);
     } catch (err) {
-      if (handlers.onError) handlers.onError(err);
+      if (handlers.onError) handlers.onError(err instanceof Error ? err : new Error(String(err)));
     }
   }, intervalMs);
   if (typeof timer.unref === 'function') timer.unref();
@@ -292,11 +338,10 @@ function createReloader(tlsConfig, handlers = {}) {
     get stamp() {
       return last;
     },
-    /** Force a reload now (tests, or an operator-triggered SIGHUP). */
     reloadNow() {
-      const options = secureContextOptions(tlsConfig);
-      last = fileStamp(tlsConfig);
-      handlers.onReload(options);
+      const options = secureContextOptions(cfg);
+      last = fileStamp(cfg);
+      if (handlers.onReload) handlers.onReload(options);
       return options;
     },
     stop() {
@@ -306,7 +351,7 @@ function createReloader(tlsConfig, handlers = {}) {
 }
 
 /** Test helper: forget cached certificate files. */
-function clearCache() {
+function clearCache(): void {
   fileCache.clear();
 }
 

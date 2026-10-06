@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -40,51 +39,82 @@ const { Manifest } = require('./manifest.ts');
 
 const HEADER_BYTES = 8;
 
+interface FileStoreOptions {
+  baseDir?: string;
+  compactionThresholdBytes?: number;
+  maxFileBytes?: number;
+  manifest?: InstanceType<typeof Manifest>;
+}
+
+/** 一条待确认的消息（含它占用的字节数，用于判断何时压缩）。 */
+interface StoredMessage {
+  msg: Record<string, unknown>;
+  bytes: number;
+}
+
+/** 单个 actor 的内存索引。 */
+interface ActorState {
+  records: Map<string, StoredMessage>;
+  liveBytes: number;
+  fileBytes: number;
+  loaded: boolean;
+}
+
 class FileStore {
-  constructor(options = {}) {
-    this.baseDir = options.baseDir || path.join(config.dataDir, 'msg_store');
-    this.compactionThresholdBytes = options.compactionThresholdBytes
-      || config.store.compactionThresholdBytes;
-    this.maxFileBytes = options.maxFileBytes || config.store.maxFileBytes;
+  readonly baseDir: string;
+  readonly compactionThresholdBytes: number;
+  readonly maxFileBytes: number;
+  /** actor id -> 磁盘文件索引（运维用它枚举 actor）。 */
+  readonly manifest: InstanceType<typeof Manifest>;
+  /** actor id -> 内存索引。 */
+  readonly index: Map<string, ActorState>;
+  /** actor id -> 写入串行化（同一 actor 的写不并发）。 */
+  readonly chain: Map<string, Promise<unknown>>;
+  /** 恢复时跳过的损坏记录数（诊断用：损坏必须可见，而不是静默丢数据）。 */
+  skippedRecords: number;
+  /** 从旧格式迁移过来的 actor 数。 */
+  migrated: number;
+
+  constructor(options: FileStoreOptions = {}) {
+    this.baseDir = options.baseDir ?? path.join(config.dataDir, 'msg_store');
+    this.compactionThresholdBytes = options.compactionThresholdBytes ?? (config.store.compactionThresholdBytes as number);
+    this.maxFileBytes = options.maxFileBytes ?? (config.store.maxFileBytes as number);
     fs.mkdirSync(this.baseDir, { recursive: true });
-    /** Actor id -> on-disk file index, so tooling can enumerate actors. */
-    this.manifest = options.manifest || new Manifest(this.baseDir);
-    /**
-     * @type {Map<string, {records: Map<string, {msg: object, bytes: number}>,
-     *                     liveBytes: number, fileBytes: number, loaded: boolean}>}
-     */
+    this.manifest = options.manifest ?? new Manifest(this.baseDir);
     this.index = new Map();
-    /** @type {Map<string, Promise<any>>} per-actor write serialisation */
     this.chain = new Map();
+    this.skippedRecords = 0;
+    this.migrated = 0;
   }
 
-  get backendName() {
+  get backendName(): string {
     return 'file';
   }
 
-  pathFor(actorId) {
+  pathFor(actorId: string): string {
     return path.join(this.baseDir, fileName(actorId));
   }
 
-  _state(actorId) {
+  _state(actorId: string): ActorState {
     const key = String(actorId);
     let state = this.index.get(key);
-    if (!state) {
+    if (state === undefined) {
       state = { records: new Map(), liveBytes: 0, fileBytes: 0, loaded: false };
       this.index.set(key, state);
     }
     return state;
   }
 
-  _withLock(actorId, fn) {
+  /** 同一 actor 的写操作串行化（读和写都排队，避免交叉）。 */
+  _withLock<T>(actorId: string, fn: () => Promise<T> | T): Promise<T> {
     const key = String(actorId);
-    const prev = this.chain.get(key) || Promise.resolve();
-    const next = prev.then(fn, fn);
-    this.chain.set(key, next.catch(() => {}));
+    const prev = this.chain.get(key) ?? Promise.resolve();
+    const next: Promise<T> = prev.then(fn, fn) as Promise<T>;
+    this.chain.set(key, next.catch(() => undefined));
     return next;
   }
 
-  _frame(payload) {
+  _frame(payload: Record<string, unknown>): Buffer {
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const head = Buffer.allocUnsafe(HEADER_BYTES);
     head.writeUInt32BE(body.length, 0);
@@ -93,20 +123,21 @@ class FileStore {
   }
 
   /** Queue a message durably. Assigns a `__msgId` when missing. */
-  async append(actorId, msg) {
-    const record = msg && typeof msg === 'object' ? msg : { type: 'raw', value: msg };
-    if (!record.__msgId) record.__msgId = crypto.randomUUID();
+  async append(actorId: string, msg: unknown): Promise<Record<string, unknown>> {
+    const record: Record<string, unknown> = msg !== null && typeof msg === 'object' ? (msg as Record<string, unknown>) : { type: 'raw', value: msg };
+    const msgId = typeof record.__msgId === 'string' ? record.__msgId : crypto.randomUUID();
+    record.__msgId = msgId;
     return this._withLock(actorId, async () => {
       const state = this._state(actorId);
       if (!state.loaded) await this._loadInto(actorId, state);
 
-      const frame = this._frame({ t: 'm', id: record.__msgId, msg: record });
+      const frame = this._frame({ t: 'm', id: msgId, msg: record });
       await fsp.appendFile(this.pathFor(actorId), frame);
       await this.manifest.record(actorId, fileName(actorId));
 
-      const previous = state.records.get(record.__msgId);
-      if (previous) state.liveBytes -= previous.bytes;
-      state.records.set(record.__msgId, { msg: record, bytes: frame.length });
+      const previous = state.records.get(msgId);
+      if (previous !== undefined) state.liveBytes -= previous.bytes;
+      state.records.set(msgId, { msg: record, bytes: frame.length });
       state.liveBytes += frame.length;
       state.fileBytes += frame.length;
 
@@ -119,7 +150,7 @@ class FileStore {
    * Acknowledge one or more messages. The ack is appended to the log, so it
    * survives a crash without rewriting the file.
    */
-  async ack(actorId, msgIds) {
+  async ack(actorId: string, msgIds: string | string[]): Promise<number> {
     const ids = Array.isArray(msgIds) ? msgIds : [msgIds];
     if (ids.length === 0) return 0;
     return this._withLock(actorId, async () => {
@@ -135,6 +166,7 @@ class FileStore {
 
       for (const id of present) {
         const entry = state.records.get(id);
+        if (entry === undefined) continue;
         state.liveBytes -= entry.bytes;
         state.records.delete(id);
       }
@@ -144,7 +176,7 @@ class FileStore {
     });
   }
 
-  async _maybeCompact(actorId, state) {
+  async _maybeCompact(actorId: string, state: ActorState): Promise<void> {
     const dead = state.fileBytes - state.liveBytes;
     const threshold = Math.max(this.compactionThresholdBytes, state.liveBytes);
     if (dead < threshold) return;
@@ -152,11 +184,11 @@ class FileStore {
   }
 
   /** Rewrite the log with only live messages (caller must hold the lock). */
-  async _compactLocked(actorId, state) {
+  async _compactLocked(actorId: string, state: ActorState): Promise<{ before: number; after: number; records: number }> {
     const before = state.fileBytes;
     const target = this.pathFor(actorId);
     const tmp = `${target}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    const parts = [];
+    const parts: Buffer[] = [];
     for (const { msg } of state.records.values()) parts.push(this._frame({ t: 'm', id: msg.__msgId, msg }));
     await fsp.writeFile(tmp, Buffer.concat(parts));
     await fsp.rename(tmp, target);
@@ -166,7 +198,13 @@ class FileStore {
   }
 
   /** Public compaction entry point (takes the lock itself). */
-  async compact(actorId) {
+  async compact(actorId?: string): Promise<unknown> {
+    if (actorId === undefined) {
+      // 不指定 actor 就压缩全部（运维入口）
+      const results: unknown[] = [];
+      for (const key of [...this.index.keys()]) results.push(await this.compact(key));
+      return results;
+    }
     return this._withLock(actorId, async () => {
       const state = this._state(actorId);
       if (!state.loaded) await this._loadInto(actorId, state);
@@ -175,18 +213,18 @@ class FileStore {
   }
 
   /** Replay the log into the in-memory index. Caller must hold the lock. */
-  async _loadInto(actorId, state) {
+  async _loadInto(actorId: string, state: ActorState): Promise<void> {
     await this._migrateLegacy(actorId);
     let buf;
     try {
       buf = await fsp.readFile(this.pathFor(actorId));
     } catch (err) {
-      if (err.code === 'ENOENT') {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         state.records = new Map();
         state.liveBytes = 0;
         state.fileBytes = 0;
         state.loaded = true;
-        return state;
+        return;
       }
       throw err;
     }
@@ -252,12 +290,11 @@ class FileStore {
     // compaction and must not inflate the dead-byte accounting.
     state.fileBytes = offset;
     state.loaded = true;
-    this.skippedRecords = (this.skippedRecords || 0) + skipped;
-    return state;
+    this.skippedRecords += skipped;
   }
 
   /** Read durable messages in enqueue order, skipping corrupt records. */
-  async load(actorId) {
+  async load(actorId: string): Promise<Record<string, unknown>[]> {
     return this._withLock(actorId, async () => {
       const state = this._state(actorId);
       await this._loadInto(actorId, state);
@@ -265,7 +302,7 @@ class FileStore {
     });
   }
 
-  async clear(actorId) {
+  async clear(actorId: string): Promise<void> {
     return this._withLock(actorId, async () => {
       const state = this._state(actorId);
       state.records = new Map();
@@ -276,7 +313,7 @@ class FileStore {
     });
   }
 
-  async pendingCount(actorId) {
+  async pendingCount(actorId: string): Promise<number> {
     return this._withLock(actorId, async () => {
       const state = this._state(actorId);
       if (!state.loaded) await this._loadInto(actorId, state);
@@ -288,7 +325,7 @@ class FileStore {
    * Upgrade a pre-1.1 `.jsonl` line-delimited file to the framed log.
    * The legacy file is renamed rather than deleted, so nothing is destroyed.
    */
-  async _migrateLegacy(actorId) {
+  async _migrateLegacy(actorId: string): Promise<boolean> {
     const target = this.pathFor(actorId);
     if (fs.existsSync(target)) return false;
     const legacy = path.join(this.baseDir, legacyFileName(actorId));
@@ -317,16 +354,16 @@ class FileStore {
     await fsp.writeFile(target, Buffer.concat(parts));
     await fsp.rename(legacy, `${legacy}.migrated`);
     await this.manifest.record(actorId, fileName(actorId));
-    this.migrated = (this.migrated || 0) + 1;
+    this.migrated += 1;
     return true;
   }
 
   /** Actor ids this store knows about (from the manifest). */
-  async listActors() {
+  async listActors(): Promise<{ actorId: string; file: string; updatedAt: number }[]> {
     return this.manifest.list();
   }
 
-  async stats() {
+  async stats(): Promise<Record<string, unknown>> {
     let files = [];
     try {
       files = await fsp.readdir(this.baseDir);
@@ -347,7 +384,7 @@ class FileStore {
     return { backend: 'file', actors, bytes };
   }
 
-  async close() {
+  async close(): Promise<void> {
     /* writes are not streamed, so there is nothing to flush */
   }
 }

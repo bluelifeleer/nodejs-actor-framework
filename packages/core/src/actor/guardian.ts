@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -17,31 +16,57 @@ const RestartStrategy = require('./restart-strategy.ts');
  * up: it returns `escalate`, and the owning actor fails, so *its* supervisor
  * decides. That is how OTP avoids hiding a permanent failure.
  */
+/** 监督策略（与 RestartStrategy 常量同值）。 */
+type Strategy = 'one_for_one' | 'rest_for_one' | 'one_for_all';
+
+interface SupervisorOptions {
+  id?: string;
+  strategy?: string;
+  maxRestarts?: number;
+  withinSeconds?: number;
+}
+
+/** `decide()` 的三种结论：重启（列出目标）/ 上报（让上级决定）/ 什么都不做。 */
+type SupervisionDecision =
+  | { action: 'restart'; targets: string[] }
+  | { action: 'escalate'; reason: string }
+  | { action: 'none'; reason: string };
+
 class ChildSupervisor {
-  constructor(options = {}) {
-    this.id = options.id || 'supervisor';
-    this.strategy = Object.values(RestartStrategy).includes(options.strategy)
+  readonly id: string;
+  readonly strategy: Strategy;
+  readonly maxRestarts: number;
+  readonly withinSeconds: number;
+  /** 子 Actor（按创建顺序）。 */
+  order: string[];
+  /** 重启时间戳（滑动窗口内）。 */
+  restartHistory: number[];
+  escalations: number;
+
+  constructor(options: SupervisorOptions = {}) {
+    this.id = options.id ?? 'supervisor';
+    const strategies = Object.values(RestartStrategy) as string[];
+    this.strategy = (options.strategy !== undefined && strategies.includes(options.strategy)
       ? options.strategy
-      : RestartStrategy.ONE_FOR_ONE;
-    this.maxRestarts = Number.isFinite(options.maxRestarts) ? options.maxRestarts : 3;
-    this.withinSeconds = Number.isFinite(options.withinSeconds) ? options.withinSeconds : 5;
-    /** @type {string[]} children in spawn order */
+      : RestartStrategy.ONE_FOR_ONE) as Strategy;
+    this.maxRestarts = Number.isFinite(options.maxRestarts) ? (options.maxRestarts as number) : 3;
+    this.withinSeconds = Number.isFinite(options.withinSeconds) ? (options.withinSeconds as number) : 5;
     this.order = [];
     this.restartHistory = [];
     this.escalations = 0;
   }
 
-  get size() {
+  get size(): number {
     return this.order.length;
   }
 
-  add(childId) {
+  add(childId: string): string {
     const id = String(childId);
     if (!this.order.includes(id)) this.order.push(id);
     return id;
   }
 
-  remove(childId) {
+  remove(childId: string): boolean {
     const id = String(childId);
     const index = this.order.indexOf(id);
     if (index < 0) return false;
@@ -49,22 +74,22 @@ class ChildSupervisor {
     return true;
   }
 
-  has(childId) {
+  has(childId: string): boolean {
     return this.order.includes(String(childId));
   }
 
-  checkQuota(now = Date.now()) {
+  /** 强度窗口内还有重启额度吗（会顺手清掉窗口外的时间戳）。 */
+  checkQuota(now = Date.now()): boolean {
     const cutoff = now - this.withinSeconds * 1000;
     this.restartHistory = this.restartHistory.filter((ts) => ts >= cutoff);
     return this.restartHistory.length < this.maxRestarts;
   }
 
   /**
-   * @returns {{action:'restart', targets:string[]} |
-   *           {action:'escalate', reason:string} |
-   *           {action:'none', reason:string}}
+   * 纯决策：不启动也不停止任何东西（异步重启由 ActorCell 做）。
+   * 超出强度窗口时**不静默放弃**，而是 `escalate` —— 让上级监督者决定（OTP 的语义）。
    */
-  decide(crashedId, now = Date.now()) {
+  decide(crashedId: string, now = Date.now()): SupervisionDecision {
     const id = String(crashedId);
     if (!this.has(id)) return { action: 'none', reason: 'unknown_child' };
     if (!this.checkQuota(now)) {
@@ -82,7 +107,7 @@ class ChildSupervisor {
     return { action: 'restart', targets: [id] };
   }
 
-  info() {
+  info(): Record<string, unknown> {
     return {
       id: this.id,
       strategy: this.strategy,
