@@ -571,6 +571,8 @@ actor-framework/                     # monorepo（根为私有工作区根，不
 ├── test/                            # 仓库级测试：app 与跨包集成（会启动 examples）
 ├── docs/design/                     # 设计文档（含 M0 施工设计）
 ├── tools/docs-site.mjs              # 文档站生成器（零依赖：md → 静态站点 + API 参考）
+├── tools/release-check.mjs          # 发布前检查（打包内容 / 版本 / engines / 测试矩阵）
+├── CHANGELOG.md                     # 版本与弃用策略 + 变更记录
 ├── tools/  scripts/                 # 迁移工具、测试证书生成
 ├── tsconfig.base.json  tsconfig.json
 └── package.json                     # private workspace root
@@ -990,3 +992,14 @@ await timedOut;
 超时、限流、`ctx.sleep`、outbox/投影的轮询都由**你推进的时间**驱动，顺序确定。
 三条规则：**advance 之前先 `drain()`**、**停系统之前先推进**、**网络 I/O 仍需要真实时间**
 （时钟只管纯逻辑定时）。见 [测试指南](docs/guide/06-testing.md)。
+
+## 发布前检查与版本策略
+
+```bash
+npm run release:check          # = npm run ci（typecheck + 全量测试 + 文档站）+ 打包/一致性检查
+npm run release:check -- --skip-ci   # 只跑打包与一致性检查（本地快速自检）
+```
+
+它检查的是"**发了会不会出事**"：工作区测试矩阵（有测试的包都要进根 `npm test`）、`npm pack` 内容
+（测试/凭据/数据目录不能进 tarball）、CHANGELOG 与版本一致（**没切版本就不许发**）、各包 `engines` 一致、
+工作区干净。版本与弃用策略见 [CHANGELOG.md](CHANGELOG.md) 开头那一节（含当前真实的发布状态）。

@@ -23,7 +23,7 @@
 | 2 | `actor migrate status\|up\|down`（对接数据层迁移框架）+ `actor doctor`（Node/依赖/配置/数据目录/迁移/端口） | 迁移态与"有未应用迁移就拒绝启动"一致；doctor 每项失败都给下一步；`status` 有待处理时退出码 2 | ✅ §5 |
 | 3 | **内核可注入时钟**（M0.2 的定时器原语）+ `@actor/testkit`：虚拟时钟 | 用虚拟时钟测"等 1 小时"的定时逻辑，**测试瞬时完成**；outbox/投影的轮询换成可注入定时器 | ✅ 3a（§6）；探针/故障注入待做 |
 | 4 | HTTP 测试客户端 + **span 生命周期 + OTLP/HTTP 真实导出** + 日志适配 | 起真收集器断言 OTLP 形状；导出失败可见（计数 + 日志）；对象日志器可桥接 | ✅ §7 |
-| 5 | CHANGELOG + 版本策略落地（`CHANGELOG.md` + 发布检查清单脚本） | `npm run release:check` 一条命令跑完发布前检查 | — |
+| 5 | CHANGELOG + 版本策略落地（`CHANGELOG.md` + 发布检查脚本） | `npm run release:check` 一条命令跑完发布前检查 | ✅ §8 |
 
 ## 3. 第 1 步设计：CLI 与脚手架
 
@@ -211,3 +211,46 @@ pino/winston/console 这类对象日志器桥接过来（级别默认按事件�
    （"坏日志器不能影响 Actor"这条保护生效了）→ 断言日志改用 `system.on('log')`，并顺势做出日志适配器。
 2. **span 是在"处理结束"后才交给 sink 的**：失败的 `ask` 会**先拒绝**、再走完 `finally`，
    所以断言前要让事件循环走一格——否则会看到"只导出了一个 span"。
+
+## 8. 第 5 步：CHANGELOG 与发布检查（已实现）
+
+### 8.1 版本策略（写进 `CHANGELOG.md` 的开头，先读那一节）
+
+- **当前发布状态如实写**：只有 `nodejs-actor-framework`（内核，1.0.0）是可发布的；`@actor/app|web|data`
+  是 0.1.0 **未标 private 但从未发布**（按 0.x 实验包对待）；`@actor/cli|testkit` 是 `private: true`。
+  是否把 `@actor/*` 公开到 npm 是开放问题 **Q7**，在这条决定之前 **CHANGELOG 只对内核承诺兼容性**。
+- 什么改动对应什么版本（新增可选能力 → minor；改默认值/签名/错误类型 → major；用户自己的消息契约不受约束）；
+- 弃用流程三步（标 `@deprecated` → 升级警告 → 下个 major 移除并给迁移指南）；
+- 新能力头两个 minor 标 `experimental`。
+
+### 8.2 `npm run release:check`
+
+一条命令：`npm run ci`（typecheck + 全量测试 + 文档站）+ 五项"发了会不会出事"的检查：
+
+| 检查 | 拦什么 |
+|---|---|
+| 工作区测试矩阵 | 有 `test/` 的包必须出现在根 `npm test` 的 glob 里（**踩过**：新包忘了进矩阵，CI 根本没跑它） |
+| `npm pack` 内容 | tarball 里**不能**有测试、fixtures、数据目录、凭据（`*.pem/key/crt`） |
+| CHANGELOG 版本一致 | 要发布的版本（内核）必须在 CHANGELOG 里有条目——**没切版本就不许发** |
+| `engines` 一致 | 所有包的 Node 下限与根一致（Node 下限只能有一个来源） |
+| 工作区干净 | 发布从干净树出发（`--allow-dirty` 可显式跳过） |
+
+每条检查都是**纯函数 + 可注入输入**，测试因此能验证"该拦会拦"（用注入的假数据），而不是只验证
+"在好数据上通过"——**门禁自己不失败就没有意义**。
+
+### 8.3 它立刻找出的两处真实不一致
+
+1. **`engines` 不一致**：`core/app/web/data` 四个包都写 `>=20`，而根与 CLI/testkit 是 `>=24`
+   ——源码直接跑 TS 且用 `node:sqlite`，`>=20` 是错的（和之前修根 `engines` 是同一类问题，
+   只是这次是四个包各写了一遍）。已统一为 `>=24`。
+2. **CHANGELOG 与真实发布状态不符**：我在 CHANGELOG 里写"`@actor/*` 都是 `private: true`"，
+   实际 `app/web/data` **没有** private 标记（技术上可发布）。已按真实状态改写，并把
+   "只对内核承诺兼容性"写成明确规则。
+
+另外：`npm pack --dry-run` 会往 `$HOME/.npm` 写日志/缓存，在受限环境里不可写——检查里把 npm 的
+日志与缓存目录指到工作区内的 `.tmp-npm/`，于是这条检查不依赖"家目录可写"这种无关前提。
+
+### 8.4 与 CI 的关系
+
+`release:check` **不进 CI**：它在"还没切版本"时会故意失败（这正是发布检查该拦的状态），
+放进每次 PR 只会制造噪音。CI 跑的是 `npm run ci`（质量门禁），发布检查是**发布时**的那道门。

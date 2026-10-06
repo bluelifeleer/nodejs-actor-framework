@@ -18,7 +18,8 @@
     "typecheck:strict": "tsc -p tsconfig.json",
     "typecheck:migration": "tsc -p tsconfig.migration.json || true",
     "docs:build": "node tools/docs-site.mjs build",
-    "docs:serve": "node tools/docs-site.mjs serve"
+    "docs:serve": "node tools/docs-site.mjs serve",
+    "release:check": "node tools/release-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

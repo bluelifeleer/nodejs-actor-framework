@@ -8,7 +8,7 @@
   "main": "src/index.ts",
   "types": "src/index.d.ts",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
     "@actor/app": "*",

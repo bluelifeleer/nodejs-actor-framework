@@ -27,3 +27,5 @@ packages/core/test/fixtures/tls/*-db/
 
 # 测试/脚手架生成的临时目录（正常会被清理，进程被杀时可能残留）
 .tmp-*/
+# 发布检查用的 npm 日志/缓存（指到工作区内，避免依赖家目录可写）
+.tmp-npm/

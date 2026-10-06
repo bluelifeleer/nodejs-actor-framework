@@ -17,7 +17,7 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "optionalDependencies": {
     "classic-level": "^3.0.0"
