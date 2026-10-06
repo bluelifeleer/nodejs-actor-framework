@@ -15,6 +15,13 @@ const { resolveClock } = require('../obs/clock.ts');
 const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
+const { randomBytes } = require('node:crypto');
+
+/** 生成 span/trace id（十六进制；OTLP 要的就是这种形式）。 */
+function randomHex(bytes) {
+  return randomBytes(Math.ceil(bytes / 2)).toString('hex').slice(0, bytes);
+}
+
 const DEFAULT_ACTOR_OPTIONS = {
   mailbox: { maxSize: 1000, overflow: 'reject' },
   supervision: { strategy: RestartStrategy.ONE_FOR_ONE, maxRestarts: 3, withinSeconds: 5 },
@@ -42,6 +49,8 @@ class ActorSystem extends EventEmitter {
     this.name = options.name || 'actor-system';
     // 可注入时钟：默认真实时钟；测试注入虚拟时钟后，超时/限流/轮询全部可以"瞬时"推进
     this.clock = resolveClock(options.clock);
+    /** span 出口（结构型）：插件或用户接上；没接就没有 span 开销。 */
+    this.spanSink = options.spanSink || null;
     this.startedAt = this.clock.now();
     this.stopped = false;
 
@@ -141,6 +150,43 @@ class ActorSystem extends EventEmitter {
    * @param {{id?:string}} [options]
    * @returns {Promise<import('./actor-ref').ActorRef>}
    */
+  /**
+   * 开始一个 span（M5 第 4 步）。没有 sink 时返回 `null`（热路径零开销）。
+   *
+   * `system.spanSink` 是**结构型**接缝：任何 `{ onSpan(span) }` 都能接（内核不依赖 OTel SDK）。
+   * 内置的 `plugins.otlp()` 就是一个 sink；想接官方 SDK 就自己实现 onSpan。
+   */
+  _startSpan(input) {
+    if (!this.spanSink) return null;
+    const parent = input.trace && typeof input.trace === 'object' ? input.trace : null;
+    return {
+      name: String(input.name),
+      traceId: parent && typeof parent.traceId === 'string' ? parent.traceId : randomHex(32),
+      spanId: randomHex(16),
+      parentSpanId: parent && typeof parent.spanId === 'string' ? parent.spanId : null,
+      sampled: parent === null ? true : parent.sampled !== false,
+      startTimeMs: this.clock.now(),
+      attributes: { ...(input.attributes || {}) },
+    };
+  }
+
+  /** 结束 span 并交给 sink；sink 抛错不能影响 Actor（只记日志）。 */
+  _endSpan(span, outcome) {
+    if (!span || !this.spanSink) return;
+    span.status = outcome.status === 'error' ? 'error' : 'ok';
+    span.endTimeMs = typeof outcome.at === 'number' ? outcome.at : span.startTimeMs + (outcome.durationMs || 0);
+    span.durationMs = Number(outcome.durationMs) || 0;
+    if (outcome.error) {
+      span.attributes['error.type'] = outcome.error.name || 'Error';
+      span.attributes['error.message'] = String(outcome.error.message || outcome.error);
+    }
+    try {
+      this.spanSink.onSpan(span);
+    } catch (err) {
+      this._log('span_sink_failed', { err: err && err.message });
+    }
+  }
+
   async spawn(definition, options = {}) {
     if (this.stopped) throw new ActorStoppedError('actor system is stopped');
     await this.init();

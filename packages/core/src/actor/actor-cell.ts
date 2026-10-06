@@ -23,6 +23,12 @@ function unwrapEventsSnapshot(raw) {
   return { atSeq, snapshot: raw.snapshot };
 }
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
+
+/** 消息类型（`msg.type`）；非对象或没写 type 就是 'unknown'（span 名与属性都用它）。 */
+function messageTypeOf(payload) {
+  if (payload !== null && typeof payload === 'object' && typeof payload.type === 'string') return payload.type;
+  return 'unknown';
+}
 const RestartStrategy = require('./restart-strategy.ts');
 
 /**
@@ -472,6 +478,27 @@ class ActorCell {
     this.currentTrace = envelope.trace || null;
     this.handling = true;
     const startedAt = this.system.clock.now();
+    /**
+     * Span 生命周期（M5 第 4 步）。
+     *
+     * 之前框架只传播 traceId/spanId（上下文），**没有任何"span 开始/结束"** —— 于是"导出到 OTel"
+     * 无从谈起（没有东西可导）。这里在处理一条消息的边界上开一个 span：名字是 `path:type`，
+     * 属性带 actor 路径、消息类型与结果，结束时交给 `system.spanSink`（如果有）。
+     * 没装 sink 时开销只有两个函数调用，热路径不受影响。
+     */
+    const span =
+      typeof this.system._startSpan === 'function'
+        ? this.system._startSpan({
+            name: `${this.path}:${messageTypeOf(envelope.payload)}`,
+            trace: envelope.trace || null,
+            attributes: {
+              'actor.path': this.path,
+              'actor.message_type': messageTypeOf(envelope.payload),
+            },
+          })
+        : null;
+    let spanStatus = 'ok';
+    let spanError = null;
     try {
       const result = this.delegate
         ? await this.delegate.invoke(envelope.payload, envelope.sender ? envelope.sender.path : null, envelope.trace)
@@ -480,6 +507,8 @@ class ActorCell {
       await this._acknowledge(envelope);
       if (envelope.reply) envelope.reply.resolve(result);
     } catch (err) {
+      spanStatus = 'error';
+      spanError = err;
       await this._onFailure(err, envelope);
     } finally {
       const elapsed = this.system.clock.now() - startedAt;
@@ -488,6 +517,9 @@ class ActorCell {
       this.handling = false;
       this.currentSender = null;
       this.currentTrace = null;
+      if (span !== null) {
+        this.system._endSpan(span, { status: spanStatus, durationMs: elapsed, error: spanError, at: startedAt + elapsed });
+      }
     }
   }
 

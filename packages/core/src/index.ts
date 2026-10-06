@@ -32,6 +32,7 @@ const { ActorSystem, createSystem } = require('./actor/system.ts');
 const { RemoteRef, Peer } = require('./cluster/remote.ts');
 const ring = require('./cluster/ring.ts');
 const clock = require('./obs/clock.ts');
+const { createLogAdapter } = require('./obs/log-adapter.ts');
 const ownership = require('./cluster/ownership.ts');
 const { MemoryPersistence, FilePersistence } = require('./store/persistence.ts');
 const Mailbox = require('./actor/mailbox.ts');
@@ -43,6 +44,8 @@ const plugins = require('./plugins/index.ts');
 module.exports = {
   // 可注入时钟（虚拟时钟在 @actor/testkit）
   createRealClock: clock.createRealClock,
+  // 日志适配：把 pino/winston/console 这类对象日志器接到内核的 (event, meta) 函数接口
+  createLogAdapter,
   // 集群治理：一致性哈希环（纯函数；所有权 = ownerOfShard(ring, shard)）
   ring,
   // 集群治理：所有权守卫 + fencing token（createOwnershipGuard）

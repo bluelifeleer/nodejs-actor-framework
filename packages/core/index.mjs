@@ -13,6 +13,8 @@ export default cjs;
 export const {
   // 可注入时钟
   createRealClock,
+  // 日志适配
+  createLogAdapter,
   // 集群治理（一致性哈希环：所有权 = ownerOfShard(ring, shard)）
   ring,
   // 集群治理（所有权守卫 + fencing：createOwnershipGuard）

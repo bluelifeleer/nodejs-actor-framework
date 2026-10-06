@@ -22,7 +22,7 @@
 | **1** | **CLI 骨架 + `actor new app <dir>`**：零依赖参数解析、模板文件、拒绝覆盖非空目录 | 生成的项目**真的能跑**：自带 4 条端到端用例（CRUD 201/200/409/204、Actor、**重启后持久化**、400/404/405）全过 | ✅ §4 |
 | 2 | `actor migrate status\|up\|down`（对接数据层迁移框架）+ `actor doctor`（Node/依赖/配置/数据目录/迁移/端口） | 迁移态与"有未应用迁移就拒绝启动"一致；doctor 每项失败都给下一步；`status` 有待处理时退出码 2 | ✅ §5 |
 | 3 | **内核可注入时钟**（M0.2 的定时器原语）+ `@actor/testkit`：虚拟时钟 | 用虚拟时钟测"等 1 小时"的定时逻辑，**测试瞬时完成**；outbox/投影的轮询换成可注入定时器 | ✅ 3a（§6）；探针/故障注入待做 |
-| 4 | HTTP 测试工具（TestKit 的一部分）+ OTel 真实导出（可选依赖，缺失时明确降级） | 起真 HTTP 断言状态码/头/JSON；OTel 缺依赖时日志说清楚而不是静默 | — |
+| 4 | HTTP 测试客户端 + **span 生命周期 + OTLP/HTTP 真实导出** + 日志适配 | 起真收集器断言 OTLP 形状；导出失败可见（计数 + 日志）；对象日志器可桥接 | ✅ §7 |
 | 5 | CHANGELOG + 版本策略落地（`CHANGELOG.md` + 发布检查清单脚本） | `npm run release:check` 一条命令跑完发布前检查 | — |
 
 ## 3. 第 1 步设计：CLI 与脚手架
@@ -173,3 +173,41 @@ ctx.clock                 // Actor 里读"现在"；ctx.sleep(ms) 等待（都�
 `docs/guide/06-testing.md` 里原先那条"诚实说明：还没有虚拟时钟（M0.2 未实现）"已经换成"它可用"，
 并带一条**会被测试执行**的示例（`ask` 超时在 0 真实毫秒内触发 + 断言真实耗时 < 200ms）。
 数据层 M3 文档 §9.3 里"轮询只能用 `setInterval`"的记录也一并更新为"已解决"。
+
+## 7. 第 4 步：可观测性（已实现）
+
+### 7.1 span 生命周期（这是"导出"的前提）
+
+之前框架**只有 traceId/spanId 的上下文传播**，没有任何"span 开始/结束"——于是"导出到 OTel"无从谈起
+（没有东西可导）。现在在**处理一条消息**的边界上开 span：名字 `actorPath:messageType`，
+属性带 `actor.path` / `actor.message_type`，失败时 `status=error` + `error.type` / `error.message`，
+结束时交给 `system.spanSink`。**没装 sink 时不创建 span**（热路径零开销）。
+
+`system.spanSink` 是**结构型**接缝（任何 `{ onSpan(span) }`），所以想接官方 OTel SDK 不用改内核。
+
+### 7.2 为什么自己写 OTLP 导出而不引 `@opentelemetry/*`
+
+OTLP/HTTP+JSON 是**公开协议**：`POST <endpoint>/v1/traces`，body 是 `{ resourceSpans: [...] }`。
+自己发一个 JSON 请求就能接上任何收集器，而内核保持零依赖。测试是**协议级**的：起一个真的 HTTP
+收集器，断言收到的 body 形状（traceId 32 位十六进制、时间是纳秒字符串、status.code、属性…）——
+形状错了收集器就收不下，这种错误在 mock 里最容易被放过。
+
+失败**必须可见**：`otlp_export_failed` 日志 + `stats()` 的 `failed`/`dropped` 计数（不静默丢 span）。
+
+### 7.3 日志适配
+
+内核的日志接缝是**一个函数** `(event, meta) => void`（零依赖、零约定），`createLogAdapter()` 把
+pino/winston/console 这类对象日志器桥接过来（级别默认按事件名猜，可覆盖）。另外每条日志**同时以事件
+形式**发出（`system.on('log', …)`）——测试里断言日志用这个，不必假装成日志器。
+
+### 7.4 HTTP 测试客户端
+
+`createHttpClient(base)`：真请求、解析 JSON、`expect(status)` 失败时**把响应体带进错误**
+（否则排查只能靠猜）。刻意不做 mock：起真服务测的是跨层契约（路由、校验、错误映射、状态码）。
+
+### 7.5 这一步的两个"我以为对"的点
+
+1. **`logger` 是函数不是对象**：测试里我传了 `{ warn(event, meta) }`，内核调用时抛错并被静默吞掉
+   （"坏日志器不能影响 Actor"这条保护生效了）→ 断言日志改用 `system.on('log')`，并顺势做出日志适配器。
+2. **span 是在"处理结束"后才交给 sink 的**：失败的 `ask` 会**先拒绝**、再走完 `finally`，
+   所以断言前要让事件循环走一格——否则会看到"只导出了一个 span"。
