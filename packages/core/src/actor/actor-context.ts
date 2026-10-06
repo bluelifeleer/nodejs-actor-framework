@@ -101,6 +101,24 @@ class ActorContext {
     return this.cell.persistEvents(events);
   }
 
+  /**
+   * 系统的时钟：`ctx.clock.now()` 读"现在"（**别用 `Date.now()`**，否则注入虚拟时钟后
+   * 你的时间判断会和框架的定时器走在两条时间线上）。
+   */
+  get clock() {
+    return this.cell.system.clock;
+  }
+
+  /**
+   * 在当前 Actor 里等待一段时间（走系统的可注入时钟）。
+   *
+   * 语义：await 期间这个 Actor **不处理新消息**（邮箱继续排队），所以别用它做"让出执行权"。
+   * 测试里注入虚拟时钟后，`clock.advance(ms)` 能让它瞬间返回（这是它存在的理由）。
+   */
+  sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => this.cell.system.clock.setTimeout(resolve, Math.max(0, ms)));
+  }
+
   /** Store the current state (persistence: 'snapshot'). */
   saveSnapshot() {
     return this.cell.saveSnapshot();

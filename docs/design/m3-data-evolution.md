@@ -619,9 +619,10 @@ await system.spawn(dispatcher.asActor(), { id: 'outbox' });   // 或当 Actor �
 
 ### 9.3 如实记录的两处边界
 
-1. **轮询用的是 `setInterval`**：内核还没有可注入时钟/定时器（M0.2 的原语尚未实现，见
-   `docs/design/m0/02-primitives.md`），所以 dispatcher 自己用 `setInterval` + `postStop` 清理 +
-   `unref()`（不钉住进程）。内核定时器到位后，这里换成 `ctx.schedule(...)` 即可——接口不用变。
+1. ~~**轮询用的是 `setInterval`**：内核还没有可注入时钟/定时器（M0.2 的原语尚未实现）~~
+   **已在 M5 第 3 步解决**：内核有了可注入时钟（`createSystem({ clock })`），dispatcher 与投影都
+   接受 `clock`（默认真实定时器）。测试里注入 `@actor/testkit` 的虚拟时钟后，轮询可以被
+   `advance()` 瞬时推进——不再需要 `await sleep(1000)` 真等一轮。
 2. **死信与指标只给钩子**：数据层不依赖内核，所以 `onDeadLetter` / `stats()` 是回调与数字；
    接到内核的 `deadLettersPlugin` / `metricsPlugin` 是**应用层**的事（上面注释里的那一行）。
    跨节点投递同理：`publish` 由你用 pubsub/集群实现，本步不做。

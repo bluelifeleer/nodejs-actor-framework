@@ -14,6 +14,7 @@ import {
   type OutboxStats,
 } from './types.ts';
 import { RepositoryDuplicateError, type Repository } from '../repository/index.ts';
+import { createDataClock, type DataClock, type TimerHandle } from '../clock/index.ts';
 
 export interface OutboxDispatcherOptions {
   reader: OutboxLogReader;
@@ -28,6 +29,11 @@ export interface OutboxDispatcherOptions {
   onDeadLetter?(entry: OutboxEntry, error: unknown): void;
   /** 一批最多读多少条（默认 100）。 */
   batchSize?: number;
+  /**
+   * 可注入时钟（默认真实定时器）。测试里传 `@actor/testkit` 的虚拟时钟，
+   * `advance()` 就能把轮询瞬时推进，而不是 `await sleep(1000)` 真等一轮。
+   */
+  clock?: DataClock;
   log?(message: string, meta?: unknown): void;
 }
 
@@ -72,7 +78,8 @@ export function createOutboxDispatcher(options: OutboxDispatcherOptions): Outbox
   /** 进程内的失败计数（崩溃后重来：至少一次语义下这是可接受的）。 */
   const attempts = new Map<number, number>();
   const counters = { published: 0, failed: 0, deadLettered: 0 };
-  let timer: ReturnType<typeof setInterval> | null = null;
+  const clock: DataClock = options.clock ?? createDataClock();
+  let timer: TimerHandle | null = null;
   let inFlight: Promise<unknown> | null = null;
 
   /** 真实积压总量：按批一直读到尾（`stats()` 是诊断调用，不在投递热路径上）。 */
@@ -164,15 +171,15 @@ export function createOutboxDispatcher(options: OutboxDispatcherOptions): Outbox
     start(startOptions = {}) {
       if (timer !== null) return;
       const intervalMs = startOptions.intervalMs ?? 1000;
-      timer = setInterval(() => {
+      timer = clock.setInterval(() => {
         void runGuarded().catch((err) => log('outbox 轮询失败', { err: err instanceof Error ? err.message : String(err) }));
       }, intervalMs);
-      if (typeof timer.unref === 'function') timer.unref(); // 别把进程钉住
+      // unref 语义由时钟实现保留（真实时钟下不钉住进程；虚拟时钟下由 advance 驱动）
     },
 
     async stop() {
       if (timer !== null) {
-        clearInterval(timer);
+        clock.clearInterval(timer);
         timer = null;
       }
       if (inFlight) await inFlight.catch(() => undefined);

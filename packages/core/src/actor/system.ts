@@ -11,6 +11,7 @@ const ChildSupervisor = require('./guardian.ts');
 const { defineActor } = require('./actor.ts');
 const { FilePersistence, MemoryPersistence } = require('../store/persistence.ts');
 const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote.ts');
+const { resolveClock } = require('../obs/clock.ts');
 const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
@@ -39,7 +40,9 @@ class ActorSystem extends EventEmitter {
     else this.logger = options.logger || null;
 
     this.name = options.name || 'actor-system';
-    this.startedAt = Date.now();
+    // 可注入时钟：默认真实时钟；测试注入虚拟时钟后，超时/限流/轮询全部可以"瞬时"推进
+    this.clock = resolveClock(options.clock);
+    this.startedAt = this.clock.now();
     this.stopped = false;
 
     this.actorDefaults = {

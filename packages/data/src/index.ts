@@ -49,6 +49,8 @@ export {
   type PersistenceEvolution,
 } from './evolution.ts';
 
+export { createDataClock, type DataClock, type TimerHandle } from './clock/index.ts';
+
 export {
   clearRepository,
   createProjectionRunner,

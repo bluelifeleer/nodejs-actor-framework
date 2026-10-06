@@ -122,13 +122,65 @@ console.log('ok');
 3. **等异步收敛要"有上限的轮询"**（见 [集群指南](./05-cluster.md) 里的 `waitFor` 写法）。
    注意本项目测试工具的选项名是 `{ timeout, interval }`——写错名字会被**静默忽略**（真踩过）。
 
-## 诚实说明：还没有虚拟时钟
+## 虚拟时钟：把"等一小时"变成 0 真实毫秒
 
-内核的可注入时钟/定时器（M0.2 的原语）**尚未实现**，所以：
+`@actor/testkit` 提供虚拟时钟，注入 `createSystem({ clock })` 之后，超时/限流/`ctx.sleep`/轮询
+全部由**你推进的时间**驱动，顺序确定、不用 sleep 抢时序：
 
-- 测"经过一段时间"的逻辑要用真的 `setTimeout` 并接受测试变慢；
-- 涉及定时器的测试要么把间隔调小，要么用真实的 `waitFor` 轮询；
-- 虚拟时钟与故障注入属于 **M5（TestKit）** 的计划（见 [路线图](../design/06-roadmap-and-nongoals.md)）。
+```js verify
+import assert from 'node:assert';
+import { AskTimeoutError, createSystem } from 'nodejs-actor-framework';
+import { createVirtualClock } from '@actor/testkit';
 
-集群/HTTP 的端到端测试可以照 [`test/integration-example-app-data.test.js`](../../test/integration-example-app-data.test.js)
-的写法：**真子进程 + 真文件 + 真 HTTP**（适合验证"示例能不能跑起来"与错误语义这类跨层契约）。
+const vc = createVirtualClock();
+const system = createSystem({ logger: false, clock: vc.clock });
+try {
+  const ref = await system.spawn(
+    {
+      preStart() {
+        this.state = { done: 0 };
+      },
+      async receive(_msg, ctx) {
+        await ctx.sleep(10_000); // 虚拟的 10 秒；由 advance() 决定何时过去
+        this.state.done += 1;
+        return 'finally';
+      },
+    },
+    { id: 'sleeper' },
+  );
+
+  const realStart = Date.now();
+  const pending = ref.ask('hi', 1000); // 超时 1000ms
+  // 注意顺序：**先在 promise 上挂处理器，再推进时间**。超时是在 advance() 里触发的，
+  // 那一刻还没有处理器的话，Node 会把它当"未处理的拒绝"直接崩掉测试。
+  const timedOut = assert.rejects(
+    () => pending,
+    (err) => err instanceof AskTimeoutError,
+  );
+  await vc.drain(); // 让消息真正投递到 Actor（消息走真实调度器，定时器才是虚拟的）
+  await vc.advance(1000); // 1000ms 的虚拟时间：真实时间几乎没走
+  await timedOut;
+
+  assert.ok(Date.now() - realStart < 200, '真实耗时应当极小');
+  await vc.advance(9000); // 超时只是"调用方不等了"，Actor 的活还在虚拟时间里挂着
+  assert.strictEqual((await system.cells.get('sleeper').ref.state()).done, 1, 'Actor 最终完成了处理');
+} finally {
+  // 停系统之前，把还挂着的虚拟等待推完：否则 system.stop() 会一直等那一轮（虚拟时间里它不会自己醒）
+  await vc.advance(60_000);
+  await system.stop();
+}
+console.log('ok');
+```
+
+### 三条必须知道的规则
+
+| 规则 | 为什么 |
+|---|---|
+| **advance 之前先 `drain()`** | 虚拟时钟只接管定时器；**消息投递仍走内核真实的调度器**。不 drain 就 advance，会看到"什么都没发生"——Actor 还没开始处理，它内部的定时器自然还没排上 |
+| **停系统之前先推进** | 还在 `ctx.sleep` / 限流等待里的 Actor 不会自己醒；`system.stop()` 会等那一轮结束 |
+| **网络 I/O 仍然需要真实时间** | 真实 socket 的读写不受虚拟时钟影响，所以集群/网关里的连接超时、gossip 心跳保持真实时钟（`docs/design/m5-cli-and-testkit.md` §6 写明了这条边界） |
+
+事件、投递器、投影的**轮询**也接了时钟：`createOutboxDispatcher({ clock })` /
+`createProjectionRunner({ clock })` 注入虚拟时钟后，`advance(1000)` 就能触发一轮，不用 `await sleep(1000)`。
+
+> 还想要什么：探针（记录消息/回复）与故障注入（按次数失败/延迟/丢弃）在 M5 计划里（`@actor/testkit` 的下一步）。

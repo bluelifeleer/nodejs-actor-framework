@@ -25,7 +25,16 @@ function unwrapEventsSnapshot(raw) {
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * 等待：**走系统的可注入时钟**（`system.clock`）。
+ *
+ * 为什么不能直接用全局 `setTimeout`：注入了虚拟时钟之后，"等 100ms"必须能被 `clock.advance(100)`
+ * 推进；继续用真实定时器会让测试要么真的等、要么永远等不到（两者都不可接受）。
+ */
+const sleep = (clock, ms) =>
+  new Promise((resolve) => {
+    clock.setTimeout(resolve, Math.max(0, ms));
+  });
 
 /**
  * One actor instance plus its runtime.
@@ -126,7 +135,8 @@ class ActorCell {
 
     // Optional per-actor rate limit (rateLimit plugin / { rateLimit } option).
     const limit = this.options.rateLimit || system.rateLimitPolicy || null;
-    this.bucket = limit ? new TokenBucket(limit.capacity, limit.rate) : null;
+    // 时间来源只能有一个：桶的起点也来自系统时钟
+    this.bucket = limit ? new TokenBucket(limit.capacity, limit.rate, this.system.clock.now()) : null;
     /** Trace context of the message being handled (tracing plugin). */
     this.currentTrace = null;
     /**
@@ -276,14 +286,17 @@ class ActorCell {
   _awaitIncarnation(timeoutMs = this.system.shutdownTimeoutMs || 5000) {
     if (this._hasIncarnation || this.stopped) return Promise.resolve();
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        const idx = this._incarnationWaiters.indexOf(waiter);
-        if (idx >= 0) this._incarnationWaiters.splice(idx, 1);
-        resolve(); // 超时后由调用方按"当前确实没有状态"处理
-      }, timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref();
+      const timer = this.system.clock.setTimeout(
+        () => {
+          const idx = this._incarnationWaiters.indexOf(waiter);
+          if (idx >= 0) this._incarnationWaiters.splice(idx, 1);
+          resolve(); // 超时后由调用方按"当前确实没有状态"处理
+        },
+        timeoutMs,
+        { unref: true },
+      );
       const waiter = () => {
-        clearTimeout(timer);
+        this.system.clock.clearTimeout(timer);
         resolve();
       };
       this._incarnationWaiters.push(waiter);
@@ -351,7 +364,7 @@ class ActorCell {
     const trace = this.system.tracer && this.system.tracer.buildContext
       ? this.system.tracer.buildContext(parentTrace)
       : null;
-    return { payload, reply, sender, retryCount: 0, ts: Date.now(), trace };
+    return { payload, reply, sender, retryCount: 0, ts: this.system.clock.now(), trace };
   }
 
   /** Fire and forget. Returns false when the mailbox refused the message. */
@@ -372,19 +385,20 @@ class ActorCell {
       let timer = null;
       const reply = {
         resolve: (value) => {
-          if (timer) clearTimeout(timer);
+          if (timer) this.system.clock.clearTimeout(timer);
           resolve(value);
         },
         reject: (err) => {
-          if (timer) clearTimeout(timer);
+          if (timer) this.system.clock.clearTimeout(timer);
           reject(err);
         },
       };
       if (Number.isFinite(timeout) && timeout > 0) {
-        timer = setTimeout(() => {
+        // 超时定时器也走系统时钟：注入虚拟时钟后，`clock.advance(timeoutMs)` 就能确定性地触发超时
+        // （unref 的语义由时钟实现保留：真实时钟下它不钉住进程）
+        timer = this.system.clock.setTimeout(() => {
           reply.reject(new AskTimeoutError(`ask to ${this.path} timed out after ${timeout}ms`, { actorId: this.path }));
-        }, timeout);
-        if (typeof timer.unref === 'function') timer.unref();
+        }, timeout, { unref: true });
       }
       const envelope = this._envelope(payload, reply, sender, parentTrace);
       if (!this._enqueue(envelope)) {
@@ -427,13 +441,13 @@ class ActorCell {
         // Per-actor token bucket: wait for a token without reordering the
         // mailbox (the message stays at the head until it is admitted).
         if (this.bucket) {
-          const wait = this.bucket.msUntil(1);
+          const wait = this.bucket.msUntil(1, this.system.clock.now());
           if (wait > 0) {
             this.counters.throttled += 1;
-            await sleep(Math.min(wait, 100));
+            await sleep(this.system.clock, Math.min(wait, 100));
             continue;
           }
-          this.bucket.tryConsume(1);
+          this.bucket.tryConsume(1, this.system.clock.now()); // 与 msUntil 用同一个时间来源
         }
         const envelope = this.mailbox.shift();
         if (!envelope) break;
@@ -457,7 +471,7 @@ class ActorCell {
     this.currentSender = envelope.sender || null;
     this.currentTrace = envelope.trace || null;
     this.handling = true;
-    const startedAt = Date.now();
+    const startedAt = this.system.clock.now();
     try {
       const result = this.delegate
         ? await this.delegate.invoke(envelope.payload, envelope.sender ? envelope.sender.path : null, envelope.trace)
@@ -468,7 +482,7 @@ class ActorCell {
     } catch (err) {
       await this._onFailure(err, envelope);
     } finally {
-      const elapsed = Date.now() - startedAt;
+      const elapsed = this.system.clock.now() - startedAt;
       this.counters.totalLatencyMs += elapsed;
       if (elapsed > this.counters.maxLatencyMs) this.counters.maxLatencyMs = elapsed;
       this.handling = false;
@@ -503,7 +517,7 @@ class ActorCell {
       this.counters.retries += 1;
       const backoff = Math.min(retryBackoffMs * 2 ** (envelope.retryCount - 1), maxRetryBackoffMs);
       this.system._log('actor_message_retry', { path: this.path, attempt: envelope.retryCount, err: err.message });
-      if (backoff > 0) await sleep(backoff);
+      if (backoff > 0) await sleep(this.system.clock, backoff);
       this.mailbox.pushFront(envelope);
       return;
     }
@@ -600,7 +614,7 @@ class ActorCell {
     const bounded = Number(timeoutMs) > 0 ? Number(timeoutMs) : 0;
     if (bounded === 0) return this._stopPromise;
 
-    const timer = setTimeout(async () => {
+    const timer = this.system.clock.setTimeout(async () => {
       if (this.stopped) return;
       this.system._log('actor_stop_timeout', {
         path: this.path,
@@ -613,10 +627,9 @@ class ActorCell {
         this.system._log('actor_terminate_failed', { path: this.path, err: err.message });
       }
       resolveStop();
-    }, bounded);
-    if (typeof timer.unref === 'function') timer.unref();
+    }, bounded, { unref: true });
 
-    return this._stopPromise.finally(() => clearTimeout(timer));
+    return this._stopPromise.finally(() => this.system.clock.clearTimeout(timer));
   }
 
   /** Stop without running the graceful path (parent already gone, or forced). */

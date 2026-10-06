@@ -12,6 +12,7 @@ import {
   type OutboxEntry,
   type OutboxLogReader,
 } from '../outbox/index.ts';
+import { createDataClock, type DataClock, type TimerHandle } from '../clock/index.ts';
 import type { Repository } from '../repository/index.ts';
 import {
   ProjectionError,
@@ -38,6 +39,8 @@ export interface ProjectionRunnerOptions {
   idField?: string;
   /** 一批最多读多少条（默认 200）。 */
   batchSize?: number;
+  /** 可注入时钟（默认真实定时器）：虚拟时钟下轮询可被 `advance()` 瞬时推进。 */
+  clock?: DataClock;
   log?(message: string, meta?: unknown): void;
 }
 
@@ -114,7 +117,8 @@ export function createProjectionRunner(options: ProjectionRunnerOptions): Projec
   const subscriptions = options.projection.subscriptions;
   const counters = { processed: 0, duplicates: 0, skipped: 0 };
   const dedupe: DedupeSet = createDedupeSet({ repository: options.dedupeRepository });
-  let timer: ReturnType<typeof setInterval> | null = null;
+  const clock: DataClock = options.clock ?? createDataClock();
+  let timer: TimerHandle | null = null;
   let inFlight: Promise<unknown> | null = null;
 
   const subscribed = (entry: OutboxEntry): boolean => {
@@ -244,17 +248,17 @@ export function createProjectionRunner(options: ProjectionRunnerOptions): Projec
     start(startOptions = {}) {
       if (timer !== null) return;
       const intervalMs = startOptions.intervalMs ?? 1000;
-      timer = setInterval(() => {
+      timer = clock.setInterval(() => {
         void runGuarded().catch((err) =>
           log('投影轮询失败', { projection: options.projection.name, err: err instanceof Error ? err.message : String(err) }),
         );
       }, intervalMs);
-      if (typeof timer.unref === 'function') timer.unref();
+      // unref 语义由时钟实现保留
     },
 
     async stop() {
       if (timer !== null) {
-        clearInterval(timer);
+        clock.clearInterval(timer);
         timer = null;
       }
       if (inFlight) await inFlight.catch(() => undefined);
