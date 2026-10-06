@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -20,10 +19,10 @@ const TABLE = (() => {
   return table;
 })();
 
-function crc32(buf) {
+function crc32(buf: Uint8Array): number {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i += 1) {
-    c = TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+    c = (TABLE[(c ^ (buf[i] as number)) & 0xff] as number) ^ (c >>> 8);
   }
   return (c ^ 0xffffffff) >>> 0;
 }

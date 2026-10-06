@@ -25,6 +25,8 @@ import path from 'node:path';
 import http from 'node:http';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { extractFromDeclarationFile, extractFromSource, untypedFiles } from './api-extract.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'site');
 
@@ -272,30 +274,57 @@ const PACKAGES = [
   { name: '@actor/data', entry: 'packages/data/src/index.ts', src: 'packages/data/src' },
 ];
 
-/** 在包内找某个导出名附近的 JSDoc 摘要（启发式，页面上会说明）。 */
-function summarize(sourceFiles, name) {
-  const pattern = new RegExp(
-    `(?:/\\*\\*([\\s\\S]*?)\\*/\\s*)?(?:export\\s+(?:async\\s+)?(?:function|const|let|class|interface|type)\\s+${name}\\b|(?:^|\\n)(?:async\\s+)?function\\s+${name}\\b|(?:^|\\n)class\\s+${name}\\b|(?:^|\\n)${name}\\s*[,}])`,
-  );
-  for (const file of sourceFiles) {
-    const text = file.text;
-    const match = pattern.exec(text);
-    if (match === null) continue;
-    const block = match[1];
-    if (block !== undefined) {
-      const summary = block
-        .split('\n')
-        .map((line) => line.replace(/^\s*\*?\s?/, '').trim())
-        .find((line) => line.length > 0 && !line.startsWith('@'));
-      if (summary !== undefined) return { file: file.relative, summary };
+/** 内核公开面来自手写的 .d.ts（内部实现文件仍有 @ts-nocheck，见"类型覆盖"一节）。 */
+const KERNEL_DECLARATION_FILE = 'packages/core/src/index.d.ts';
+
+/** 收集每个导出名的签名：内核读 .d.ts，typed 包读源码（按声明文本解析）。 */
+async function collectSignatures() {
+  const byName = new Map();
+  const kernel = extractFromDeclarationFile(path.join(ROOT, KERNEL_DECLARATION_FILE));
+  for (const [name, entry] of kernel.found) byName.set(name, { ...entry, source: KERNEL_DECLARATION_FILE });
+
+  for (const spec of PACKAGES) {
+    if (spec.entry === KERNEL_DECLARATION_FILE) continue;
+    for (const file of await walk(path.join(ROOT, spec.src), (full) => full.endsWith('.ts') && !full.endsWith('.d.ts'))) {
+      const relative = path.relative(ROOT, file);
+      if (relative.includes('/test/')) continue;
+      const parsed = extractFromSource(await fsp.readFile(file, 'utf8'), relative);
+      for (const [name, entry] of parsed.found) {
+        if (!byName.has(name)) byName.set(name, { ...entry, source: relative });
+      }
     }
-    return { file: file.relative, summary: null };
   }
-  return null;
+  return byName;
+}
+
+/** 表格一行：导出 / 类别 / 签名（含参数）/ 说明 / 源码。 */
+function renderSignatureRow(name, entry) {
+  const signature = entry.signature ?? entry.returns ?? '—';
+  const params =
+    Array.isArray(entry.params) && entry.params.length > 0
+      ? `<br><span class="note">参数：${entry.params
+          .map((param) => `<code>${escapeHtml(param.name)}</code>: ${escapeHtml(param.type ?? '未标注')}`)
+          .join(' · ')}</span>`
+      : '';
+  const members =
+    Array.isArray(entry.members) && entry.members.length > 0
+      ? `<details><summary>${entry.members.length} 个成员</summary><pre class="code">${escapeHtml(entry.members.join('\n'))}</pre></details>`
+      : '';
+  const source = String(entry.source ?? '');
+  return `<tr>
+  <td><code>${escapeHtml(name)}</code></td>
+  <td>${escapeHtml(entry.kind)}</td>
+  <td><code>${escapeHtml(String(signature).slice(0, 200))}</code>${params}</td>
+  <td>${entry.doc === null || entry.doc === undefined ? '' : escapeHtml(entry.doc)}</td>
+  <td><a href="../${escapeHtml(source.replace(/\.ts$/, '.html'))}">${escapeHtml(source.replace('packages/', ''))}</a>${members}</td>
+</tr>`;
 }
 
 async function buildApiPage() {
+  const signatures = await collectSignatures();
+  const untyped = untypedFiles(ROOT, 'packages/core');
   const sections = [];
+
   for (const spec of PACKAGES) {
     const entryAbs = path.join(ROOT, spec.entry);
     const module = await import(pathToFileURL(entryAbs).href);
@@ -304,27 +333,36 @@ async function buildApiPage() {
       .filter((key) => key !== 'default' && key !== '__esModule')
       .sort((a, b) => a.localeCompare(b));
 
-    const files = [];
-    for (const fileAbs of await walk(path.join(ROOT, spec.src), (full) => full.endsWith('.ts'))) {
-      files.push({ relative: path.relative(ROOT, fileAbs), text: await fsp.readFile(fileAbs, 'utf8') });
-    }
-
-    const rows = names.map((name) => {
-      const found = summarize(files, name);
-      const kind = typeof exported[name] === 'function' ? '函数/类' : '值';
-      const file = found === null ? null : found.file;
-      const where = file === null ? '' : `<a href="../${file.replace(/\.ts$/, '.html')}">${file}</a>`;
-      const summary = found === null || found.summary === null ? '' : escapeHtml(found.summary);
-      return `<tr><td><code>${escapeHtml(name)}</code></td><td>${kind}</td><td>${summary}</td><td>${where}</td></tr>`;
-    });
+    const rows = names.map((name) =>
+      renderSignatureRow(
+        name,
+        signatures.get(name) ?? { kind: '值', signature: '（未提取到声明）', params: [], doc: null, source: spec.entry },
+      ),
+    );
 
     sections.push(`
 <h2 id="${slugify(spec.name)}">${escapeHtml(spec.name)}</h2>
 ${spec.note === undefined ? '' : `<p class="note">${inline(spec.note)}</p>`}
-<p class="note">导出 ${names.length} 项；注释为启发式提取（取声明前的 JSDoc 摘要），源码链接指向文件。</p>
-<table><thead><tr><th>导出</th><th>类别</th><th>注释摘要</th><th>源码</th></tr></thead><tbody>${rows.join('')}</tbody></table>`);
+<p class="note">导出 ${names.length} 项。签名按**声明文本**提取：本仓库的 typescript 7 是原生端口、
+不暴露编译器 API（实测只有 version/default 两个导出），所以不做类型推导；没写出标注的项显示"未标注"。</p>
+<table><thead><tr><th>导出</th><th>类别</th><th>签名 / 类型（含参数）</th><th>说明</th><th>源码</th></tr></thead><tbody>${rows.join('')}</tbody></table>`);
   }
-  return sections.join('\n');
+
+  const coverage = `<h2 id="typing-coverage">类型覆盖（M0.1 进度）</h2>
+<p class="note">内核的**公开面**在一个手写的声明文件里，所以对外是完整的；**内部实现文件**仍在逐个补类型：
+带 <code>@ts-nocheck</code> 的文件会跳过严格检查，<code>npm run typecheck</code> 覆盖不到它们。</p>
+<ul>
+  <li>公开面声明：<code>${KERNEL_DECLARATION_FILE}</code>（本页内核部分的签名全部来自它）</li>
+  <li>已补完 <strong>${45 - untyped.length}/45</strong> 个内核源码文件（去掉 <code>@ts-nocheck</code> 且严格检查通过）</li>
+</ul>
+<details><summary>仍有 ${untyped.length} 个文件带 <code>@ts-nocheck</code></summary>
+<pre class="code">${escapeHtml(untyped.join('\n'))}</pre>
+<p class="note">按"去掉标记后会报多少错"排序，先补成本低的：<code>actor/errors.ts</code>(1)、
+<code>store/backends/crc32.ts</code>(2)、<code>store/backends/naming.ts</code>(5)、<code>plugins/rate-limit.ts</code>(6)…
+全量补完约 2000 个严格错误（实测），属于 M0.1 的持续工作。</p>
+</details>`;
+
+  return `${sections.join('\n')}\n${coverage}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -518,8 +556,8 @@ export async function build({ log = console.log } = {}) {
 
   // API 参考（从源码提取，不手抄）
   const apiBody = `<h1 id="api">API 参考</h1>
-<p class="note">本页由 <code>tools/docs-site.mjs</code> 从各包的入口导出生成：导出名、类别、注释摘要、
-源码位置。**内核多数文件是 <code>@ts-nocheck</code>**，所以类型信息不在其中——这是如实标注，不是遗漏。</p>
+<p class="note">本页由 <code>tools/docs-site.mjs</code> 自动生成：导出名、类别、**签名/类型（含参数）**、
+注释摘要与源码位置。内核公开面来自手写声明文件；内部文件的类型补齐进度见最后一节。</p>
 ${await buildApiPage()}`;
   await fsp.writeFile(
     path.join(OUT, 'api.html'),

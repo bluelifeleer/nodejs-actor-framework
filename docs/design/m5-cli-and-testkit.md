@@ -254,3 +254,36 @@ pino/winston/console 这类对象日志器桥接过来（级别默认按事件�
 
 `release:check` **不进 CI**：它在"还没切版本"时会故意失败（这正是发布检查该拦的状态），
 放进每次 PR 只会制造噪音。CI 跑的是 `npm run ci`（质量门禁），发布检查是**发布时**的那道门。
+
+## 9. API 参考做深 + 内核类型进度（M0.1）
+
+### 9.1 先量化，再动手
+
+"内核那条路要先补类型"听起来像体力活，所以先**测量**：临时去掉所有 `@ts-nocheck` 跑一次 tsc
+→ **1990 个严格错误、40 个文件**。同时发现一件更关键的事：内核其实有一份**手写的公开面声明**
+`packages/core/src/index.d.ts`（515 行），只是**覆盖不全**（28/34 个运行时导出）。
+
+于是顺序反过来了：**先把公开面补全**（对外立刻完整、成本可控），内部 40 个文件按"去掉标记的报错数"
+从低到高逐步补 —— 这是 M0.1 的持续工作，不是一次冲刺。
+
+| 这一步做了什么 | 结果 |
+|---|---|
+| 补全 `index.d.ts` | 运行时导出 **34/34** 全部有声明（补上 `createRealClock`/`Clock`、`createLogAdapter`/`LogTarget`、`ring`、`ownership`、`ChildSupervisor`、`Mailbox`、`Span`/`SpanSink`、`plugins.otlp`） |
+| 顺手补完 9 个内部文件 | `actor/errors.ts`(1 错)、`store/backends/crc32.ts`(2)、`naming.ts`(5)、`plugins/rate-limit.ts`(6)、`tracing.ts`(6)、`store/backends/index.ts`(7)、`plugins/dead-letters.ts`(8)、`obs/log-adapter.ts`(11)、`obs/trace.ts`(11) —— 已在严格检查下通过 |
+
+### 9.2 签名提取：为什么不用编译器 API
+
+本仓库的 devDependency 是 **typescript 7**（原生端口），实测 `import('typescript')` **只有
+`version` / `default` 两个导出**，没有 `createSourceFile` 这类 JS 编译器 API。为一个文档生成器再引一份
+typescript 5 不划算，所以 `tools/api-extract.mjs` 按**声明文本**提取：函数取参数列表与返回标注、
+接口取字段、类取构造与公开成员、值取类型标注。**没写出标注的项显示"未标注"，不猜类型**。
+
+API 页现在是：每项导出 → 类别 / **签名（含逐个参数的类型）** / 说明 / 源码（可展开成员列表），
+外加一节**类型覆盖进度**：`已补完 N/45`，未补文件列表 + 按成本排序的下一步建议。
+
+### 9.3 门禁
+
+`test/unit-docs-site.test.js` 新增两例：提取器的语义（参数/可选/rest/泛型/JSDoc/成员，用 fixture 断言）
+与 **API 页的真实性**（`createSystem(options?: SystemOptions) => ActorSystem`、`createLogAdapter(target: LogTarget…`
+`createSqlRepository<T…(options: SqlRepositoryOptions…`、`otlp` 出现在 `plugins` 成员里），
+以及"页面上的未补文件数**必须等于仓库真实数量**"——防止文档与代码漂移。

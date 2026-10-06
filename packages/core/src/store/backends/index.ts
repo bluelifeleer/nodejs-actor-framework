@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -12,6 +11,18 @@ const { fileName } = require('./naming.ts');
 
 const BACKENDS = ['file', 'memory', 'level'];
 
+interface StoreConfig {
+  backend?: string;
+  levelPath?: string;
+  compactionThresholdBytes?: number;
+  maxFileBytes?: number;
+}
+
+interface StoreOptions extends StoreConfig {
+  store?: StoreConfig;
+  baseDir?: string;
+}
+
 /**
  * Build the configured persistence backend.
  *
@@ -19,7 +30,7 @@ const BACKENDS = ['file', 'memory', 'level'];
  *   ACTOR_STORE=memory  tests / ephemeral
  *   ACTOR_STORE=level   optional classic-level binding (per-actor database)
  */
-function createStore(options = {}) {
+function createStore(options: StoreOptions = {}) {
   const storeConfig = options.store || config.store;
   const backend = String(options.backend || storeConfig.backend || 'file').toLowerCase();
 
@@ -42,7 +53,7 @@ function createStore(options = {}) {
 }
 
 /** Validate the configuration without opening anything. */
-function validateStoreConfig(storeConfig = config.store) {
+function validateStoreConfig(storeConfig: StoreConfig = config.store) {
   const backend = String(storeConfig.backend || 'file').toLowerCase();
   if (!BACKENDS.includes(backend)) {
     return { ok: false, reason: `unknown store backend "${backend}" (expected: ${BACKENDS.join(', ')})` };
@@ -54,7 +65,7 @@ function validateStoreConfig(storeConfig = config.store) {
   return { ok: true, backend };
 }
 
-function pathForActor(actorId, storeConfig = config.store) {
+function pathForActor(actorId: string, storeConfig: StoreConfig = config.store) {
   const backend = String(storeConfig.backend || 'file').toLowerCase();
   if (backend === 'level') {
     return path.join(storeConfig.levelPath || path.join(config.dataDir, 'level'), fileName(actorId, ''));

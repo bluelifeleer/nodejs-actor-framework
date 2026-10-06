@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -16,11 +15,24 @@ const { DeadLetterQueue } = require('../store/dead-letter-queue.ts');
  *   createSystem({ plugins: [deadLetters()] })                       // default path
  *   createSystem({ plugins: [deadLetters({ path: './my-dlq.jsonl' })] })
  */
-function deadLetters(options = {}) {
+/** 插件配置：给 `store` 就用它，否则按 `path`/`baseDir` 建一个文件队列，都没有就用默认队列。 */
+interface DeadLettersOptions {
+  store?: { init?: () => Promise<void> } | null;
+  path?: string;
+  baseDir?: string;
+  maxEntries?: number;
+}
+
+/** 结构型 system 视图（见 rate-limit.ts 的说明）。 */
+interface DeadLettersSystem {
+  deadLetterStore: unknown;
+}
+
+function deadLetters(options: DeadLettersOptions = {}) {
   return {
     name: 'deadLetters',
 
-    async setup(system) {
+    async setup(system: DeadLettersSystem) {
       let store = options.store || null;
       if (!store) {
         store = options.path || options.baseDir
@@ -31,11 +43,13 @@ function deadLetters(options = {}) {
           })
           : defaultQueue;
       }
-      if (typeof store.init === 'function') await store.init();
+      if (store !== null && typeof (store as { init?: () => Promise<void> }).init === 'function') {
+        await (store as { init: () => Promise<void> }).init();
+      }
       system.deadLetterStore = store;
     },
 
-    teardown(system) {
+    teardown(system: DeadLettersSystem | null) {
       if (system) system.deadLetterStore = null;
     },
   };

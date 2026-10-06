@@ -288,6 +288,14 @@ export interface SystemOptions {
   /** How long a graceful actor stop may take before it is forced (default 2000ms). */
   shutdownTimeoutMs?: number;
   maxDeadLetters?: number;
+  /**
+   * Injectable clock (defaults to the real one). Tests pass a virtual clock
+   * (`@actor/testkit` 的 `createVirtualClock().clock`) so timeouts, rate limits and
+   * `ctx.sleep()` can be advanced instantly and deterministically.
+   */
+  clock?: Clock;
+  /** Span sink: receives one span per handled message. Without it no spans are created. */
+  spanSink?: SpanSink;
 }
 
 export interface DeadLetter {
@@ -477,6 +485,8 @@ export function tracing(options?: { sampleRate?: number }): Plugin;
 export function deadLetters(options?: DeadLettersPluginOptions): Plugin;
 export function rateLimit(options?: { capacity?: number; rate?: number; ratePerSec?: number }): Plugin;
 
+export function otlp(options?: OtlpOptions): OtlpExporter;
+
 export const plugins: {
   cluster: typeof cluster;
   pubsub: typeof pubsub;
@@ -484,6 +494,8 @@ export const plugins: {
   tracing: typeof tracing;
   deadLetters: typeof deadLetters;
   rateLimit: typeof rateLimit;
+  /** OTLP/HTTP JSON export (zero dependency): POST <endpoint>/v1/traces. */
+  otlp: typeof otlp;
 };
 
 // ---------------------------------------------------------------------------
@@ -513,3 +525,173 @@ export class EscalationError extends ActorFrameworkError {}
 
 /** A non-replyable placeholder sender. */
 export interface DeadLetterRef extends Tellable { readonly id: null; readonly path: null; }
+
+// ---------------------------------------------------------------------------
+// Injectable clock (M5): timeouts, rate limits and sleeps go through this seam
+// ---------------------------------------------------------------------------
+
+export interface TimerHandle {
+  readonly id: number;
+}
+
+export interface Clock {
+  /** Current time in milliseconds — use this instead of `Date.now()` in logic. */
+  now(): number;
+  setTimeout(callback: () => void, ms: number, options?: { unref?: boolean }): TimerHandle;
+  clearTimeout(handle: TimerHandle | null | undefined): void;
+  setInterval(callback: () => void, ms: number, options?: { unref?: boolean }): TimerHandle;
+  clearInterval(handle: TimerHandle | null | undefined): void;
+}
+
+/** The default clock: wraps the global timers. */
+export function createRealClock(): Clock;
+
+// ---------------------------------------------------------------------------
+// Spans and OTLP export (M5)
+// ---------------------------------------------------------------------------
+
+export interface Span {
+  name: string;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  sampled: boolean;
+  startTimeMs: number;
+  endTimeMs: number;
+  durationMs: number;
+  status: 'ok' | 'error';
+  attributes: Record<string, string | number | boolean>;
+}
+
+export interface SpanSink {
+  onSpan(span: Span): void;
+}
+
+export interface OtlpOptions {
+  /** Collector base URL (the exporter POSTs to `<endpoint>/v1/traces`). */
+  endpoint?: string;
+  serviceName?: string;
+  headers?: Record<string, string>;
+  resource?: Record<string, string>;
+  /** Flush when this many spans are buffered (default 512). */
+  maxBatch?: number;
+  /** Periodic flush interval in ms (default 5000; 0 disables). */
+  flushIntervalMs?: number;
+  /** Custom fetch, for tests. */
+  fetch?: typeof fetch;
+}
+
+export interface OtlpExporter extends Plugin {
+  /** Send whatever is buffered now. */
+  flush(): Promise<{ sent: number; error?: string }>;
+  /** Export counters — failures are visible here, never silent. */
+  stats(): { exported: number; failed: number; batches: number; dropped: number; lastError: string | null; buffered: number };
+  readonly endpoint: string;
+}
+
+// ---------------------------------------------------------------------------
+// Log adapter (M5): bridge pino/winston/console to the `(event, meta)` seam
+// ---------------------------------------------------------------------------
+
+export interface LogTarget {
+  debug?(line: string): void;
+  info?(line: string): void;
+  warn?(line: string): void;
+  error?(line: string): void;
+}
+
+export function createLogAdapter(
+  target: LogTarget,
+  options?: {
+    level?: (event: string, meta?: unknown) => 'debug' | 'info' | 'warn' | 'error';
+    message?: (event: string, meta?: unknown) => string;
+  },
+): (event: string, meta?: unknown) => void;
+
+// ---------------------------------------------------------------------------
+// Cluster governance primitives (M4): ring + ownership guard
+// ---------------------------------------------------------------------------
+
+export interface RingToken {
+  token: number;
+  nodeId: string;
+}
+
+export interface Ring {
+  virtualNodes: number;
+  tokens: readonly RingToken[];
+}
+
+export const ring: {
+  readonly DEFAULT_VIRTUAL_NODES: number;
+  /** Stable 32-bit hash (sha1 前 4 字节). */
+  hash32(value: unknown): number;
+  /** Build a ring from a **set** of node ids (order and duplicates do not matter). */
+  createRing(members: readonly string[], options?: { virtualNodes?: number }): Ring;
+  /** First member clockwise from the key（空环返回 null）。 */
+  ownerOf(ring: Ring, key: string): string | null;
+  /** Which shard an actor path belongs to（对路径哈希：同一实体永远同一个 shard）。 */
+  shardOf(actorPath: string, shardCount: number): number;
+  ownerOfShard(ring: Ring, shard: number): string | null;
+  shardOwners(ring: Ring, shardCount: number): (string | null)[];
+  /** Shards whose owner changed between two rings. */
+  changedShards(before: Ring, after: Ring, shardCount: number): number[];
+  /** Fraction of shards that changed owner (0..1). */
+  migrationRatio(before: Ring, after: Ring, shardCount: number): number;
+  moduloOwners(members: readonly string[], shardCount: number): (string | null)[];
+  moduloMigrationRatio(before: readonly string[], after: readonly string[], shardCount: number): number;
+};
+
+export interface ShardClaim {
+  shard: number;
+  ownerNodeId: string;
+  epoch: number;
+  at: number;
+}
+
+export interface OwnershipGuard {
+  readonly nodeId: string;
+  readonly shardCount: number;
+  updateRing(members: readonly string[]): Ring;
+  ring(): Ring | null;
+  ownerOf(shard: number): string | null;
+  ownsShard(shard: number): boolean;
+  /** 本节点对某 shard 的声明；只有它确实是 owner 时才给出（不自封）。 */
+  claimFor(shard: number): ShardClaim | null;
+  /** 学习一条声明：更高 epoch 换代；同 epoch 换人 = 双主声明，拒绝。 */
+  observe(claim: ShardClaim): { accepted: boolean; reason?: string; learned?: ShardClaim };
+  /** 接收端判决（见 docs/design/m4-cluster-governance.md §3.3）。 */
+  verify(incoming: { shard: number; ownerNodeId: string; epoch: number }): { ok: boolean; reason?: string };
+  isMember(nodeId: string): boolean;
+  bestClaim(shard: number): ShardClaim | null;
+  claims(): ShardClaim[];
+  stats(): { nodeId: string; shards: number; owned: number; claims: number };
+}
+
+export const ownership: {
+  createOwnershipGuard(options: { nodeId: string; shardCount: number; virtualNodes?: number; now?: () => number }): OwnershipGuard;
+};
+
+// ---------------------------------------------------------------------------
+// Internals that are exported for tooling/tests
+// ---------------------------------------------------------------------------
+
+export class Mailbox<E = unknown> {
+  constructor(options?: { maxSize?: number; overflow?: 'reject' | 'drop-oldest' | 'drop-newest' });
+  readonly maxSize: number;
+  readonly size: number;
+  push(envelope: E, opts?: { priority?: number }): boolean;
+  shift(): E | undefined;
+  pushFront(envelope: E): void;
+  drain(): E[];
+  clear(): void;
+}
+
+export class ChildSupervisor {
+  constructor(options: { id: string; strategy?: string; maxRestarts?: number; withinSeconds?: number });
+  add(childId: string): void;
+  remove(childId: string): void;
+  has(childId: string): boolean;
+  decide(crashedId: string, now?: number): { action: string; targets: string[] };
+  info(): Record<string, unknown>;
+}

@@ -108,3 +108,83 @@ test('docs: 页面里的导航与"本页"目录都指向真实锚点', () => {
   const missing = anchors.filter((anchor) => !ids.has(anchor) && anchor !== 'x');
   assert.deepStrictEqual(missing, [], `指向了不存在的锚点：${missing.join(', ')}`);
 });
+
+/** API 参考做深：签名（含参数/返回）必须真实提取出来，类型覆盖进度必须与仓库真实状态一致。 */
+test('docs api: 从声明/源码提取签名（参数、可选、rest、泛型、JSDoc、成员）', async () => {
+  const { extractFromSource, untypedFiles } = await import('../tools/api-extract.mjs');
+
+  const source = [
+    '/** 建一个东西。 */',
+    'export function build<T extends object>(options: BuildOptions, name?: string, ...rest: unknown[]): Promise<T> {',
+    '  return null as never;',
+    '}',
+    '',
+    'export interface BuildOptions {',
+    '  name: string;',
+    '  size?: number;',
+    '}',
+    '',
+    'export class Builder {',
+    '  constructor(options: BuildOptions) {}',
+    '  run(input: string): number { return 1; }',
+    '}',
+    '',
+    'export const VERSION: string = "1.0.0";',
+  ].join('\n');
+
+  const { found } = extractFromSource(source, 'fixture.ts');
+
+  const build = found.get('build');
+  assert.strictEqual(build.kind, '函数');
+  assert.strictEqual(build.doc, '建一个东西。', '取到声明的 JSDoc 摘要');
+  assert.deepStrictEqual(
+    build.params.map((param) => [param.name, param.type, param.optional, param.rest]),
+    [
+      ['options', 'BuildOptions', false, false],
+      ['name', 'string', true, false],
+      ['rest', 'unknown[]', false, true],
+    ],
+  );
+  assert.strictEqual(build.returns, 'Promise<T>');
+  assert.match(build.signature, /^build<T extends object>\(options: BuildOptions, name\?: string, \.\.\.rest: unknown\[\]\) => Promise<T>$/);
+
+  const options = found.get('BuildOptions');
+  assert.strictEqual(options.kind, '接口');
+  assert.ok(options.members.some((line) => line.startsWith('name: string')));
+  assert.ok(options.members.some((line) => line.startsWith('size?: number')));
+
+  const builder = found.get('Builder');
+  assert.strictEqual(builder.kind, '类');
+  assert.deepStrictEqual(builder.params.map((param) => param.type), ['BuildOptions']);
+  assert.ok(builder.members.length >= 1, '类要列出公开成员');
+
+  assert.strictEqual(found.get('VERSION').returns, 'string');
+
+  // 类型覆盖进度：页面上的数字必须来自仓库真实状态（不能写死）
+  const untyped = untypedFiles(path.join(ROOT), 'packages/core');
+  assert.ok(untyped.length > 0, '内核仍有带 @ts-nocheck 的文件（M0.1 进行中）');
+  assert.ok(untyped.every((file) => file.endsWith('.ts') && !file.endsWith('.d.ts')));
+});
+
+test('docs api: 页面里有真实的参数/返回签名与类型覆盖进度', async () => {
+  const { build } = await import('../tools/docs-site.mjs');
+  const { untypedFiles } = await import('../tools/api-extract.mjs');
+  await build({ log: () => {} });
+
+  const api = fs.readFileSync(path.join(ROOT, 'site', 'api.html'), 'utf8');
+
+  // 参数列与返回类型
+  assert.match(api, /createSystem\(options\?: SystemOptions\) =&gt; ActorSystem/);
+  assert.match(api, /createLogAdapter\(target: LogTarget/);
+  assert.match(api, /createSqlRepository&lt;T[^<]*\(options: SqlRepositoryOptions/);
+  assert.match(api, /参数：/);
+  assert.match(api, /PersistenceError/);
+  assert.match(api, /otlp/, '.d.ts 里补上的 otlp 要出现在 plugins 的成员里');
+
+  // 类型覆盖进度必须与仓库真实状态一致
+  const expected = untypedFiles(path.join(ROOT), 'packages/core').length;
+  const match = /仍有 (\d+) 个文件带/.exec(api);
+  assert.ok(match !== null, 'API 页要有类型覆盖一节');
+  assert.strictEqual(Number(match[1]), expected, '页面上的未补文件数必须等于仓库真实数量');
+  assert.match(api, new RegExp(`已补完 <strong>${45 - expected}/45</strong>`));
+});
