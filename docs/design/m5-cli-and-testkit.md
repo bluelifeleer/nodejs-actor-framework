@@ -20,7 +20,7 @@
 | 步 | 内容 | 验收 | 状态 |
 |---|---|---|---|
 | **1** | **CLI 骨架 + `actor new app <dir>`**：零依赖参数解析、模板文件、拒绝覆盖非空目录 | 生成的项目**真的能跑**：自带 4 条端到端用例（CRUD 201/200/409/204、Actor、**重启后持久化**、400/404/405）全过 | ✅ §4 |
-| 2 | `actor migrate status\|up\|down`（对接数据层迁移框架）+ `actor doctor`（Node 版本/配置/迁移态/端口） | 迁移态与"有未应用迁移就拒绝启动"一致；doctor 在缺配置时给出可执行建议 | — |
+| 2 | `actor migrate status\|up\|down`（对接数据层迁移框架）+ `actor doctor`（Node/依赖/配置/数据目录/迁移/端口） | 迁移态与"有未应用迁移就拒绝启动"一致；doctor 每项失败都给下一步；`status` 有待处理时退出码 2 | ✅ §5 |
 | 3 | **内核可注入时钟**（M0.2 的定时器原语）+ `@actor/testkit`：虚拟时钟、探针、故障注入 | 用虚拟时钟测"等 1 小时"的定时逻辑，**测试瞬时完成**；outbox/投影的轮询可换成可注入定时器 | — |
 | 4 | HTTP 测试工具（TestKit 的一部分）+ OTel 真实导出（可选依赖，缺失时明确降级） | 起真 HTTP 断言状态码/头/JSON；OTel 缺依赖时日志说清楚而不是静默 | — |
 | 5 | CHANGELOG + 版本策略落地（`CHANGELOG.md` + 发布检查清单脚本） | `npm run release:check` 一条命令跑完发布前检查 | — |
@@ -105,3 +105,28 @@ workspace 链接解析——不需要联网装依赖。
 
 顺带：根 `npm test` 的 glob 一开始**没包含 `packages/cli/test/*.test.ts`**——新包的测试不会在
 CI 里跑。已加入（这类"新包忘了进测试矩阵"是很容易漏的，值得每次加包时检查一次）。
+
+## 5. 第 2 步：`migrate` 与 `doctor`（已实现）
+
+**不重复实现迁移逻辑**：版本表、幂等、中断可重入、"数据比代码新"都在 `@actor/data` 的
+`createMigrationRunner` 里；CLI 只负责找到项目、找到迁移、把结果讲清楚。
+
+| 命令 | 行为 |
+|---|---|
+| `migrate status` | 打印已应用/待应用/中断/"数据比代码新"；**有待处理时退出码 2**（CI 与启动脚本当门禁用）；`--json` 给脚本 |
+| `migrate up` | 幂等应用；打印本次应用了哪些版本 |
+| `migrate down --to <v>` | **必须显式给 `--to`**：CLI 绝不猜"回滚到哪"；缺 down() 的迁移会明确报错（前滚而不是回滚） |
+| `doctor` | Node 版本（对齐 `engines`）、依赖声明（用户项目不该直接依赖内核）、关键文件、配置能否加载（真的 import 项目文件）、数据目录可写、迁移状态、端口能否监听；每项失败都给"→ 下一步做什么"，有问题退出码 2 |
+
+**项目定位**（`src/project/load.ts`）：只在**约定位置**找东西（`package.json` / `config/default.ts` /
+`src/migrations.ts` / 数据目录 `--data` > `APP_DATA_DIR` > `<dir>/data`），找不到就说清"我期待什么、
+你在哪"。刻意**不向上找** `package.json`——跑到父目录去动别人的项目比报错更糟。
+
+### 5.1 这一步踩到的两个问题
+
+1. **`MigrationStatus.pending` 与同类字段类型不一致**：`applied` / `interrupted` / `unknown` 是版本号
+   数组，`pending` 却是**迁移对象**数组——CLI 打印"待应用"时输出 `v[object Object]` 才暴露出来。
+   已统一成版本号数组（要详情的话，调用方本来就持有自己传进去的那个数组），并加了一条"四个字段都是
+   number[]"的回归测试。
+2. **提示只对 `UsageError` 打印**：`ProjectError`（目录不存在、迁移导出有问题）带 hint 却没输出，
+   用户只看到一行错误、不知道该干什么。现在任何带 `hint` 的错误都会打印"提示：…"。

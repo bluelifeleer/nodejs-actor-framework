@@ -960,6 +960,13 @@ cd my-app && npm install && npm start          # 起 HTTP
 npm test                                       # 4 条端到端用例（含"重启后持久化"）
 ```
 
+```bash
+node packages/cli/src/cli.ts migrate status|up|down   # 迁移：状态/应用/回滚（对接 @actor/data 的迁移框架）
+node packages/cli/src/cli.ts doctor                   # 体检：Node/依赖/配置/数据目录/迁移/端口
+```
+
 生成的是**开箱即跑**的骨架：CRUD（仓储 + 游标分页 + 乐观锁 409）、Actor（`mode: 'snapshot'`）、
 优雅停止、真 HTTP 测试。约定：目标目录非空就拒绝写入（要 `--force`）、不自动装依赖、
-退出码有意义（0/1/2）且默认不打印堆栈。见 [CLI 指南](docs/guide/00-scaffold.md)。
+退出码有意义（0 成功 / 1 用法错误 / 2 项目或环境问题）且默认不打印堆栈。
+`migrate status` **有待处理迁移时退出码 2**，可直接当 CI/启动门禁。
+见 [CLI 指南](docs/guide/00-scaffold.md)。

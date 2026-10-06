@@ -62,6 +62,58 @@ my-app/
 | `POST /counter/add`、`GET /counter` | **Actor**（`mode: 'snapshot'`，状态落盘） |
 | `GET /health` | 函数式控制器（无输入无依赖时最简） |
 
+## 迁移与体检
+
+项目里加 `src/migrations.ts`（约定位置）之后：
+
+```bash
+actor migrate status              # 看已应用/待应用/中断/“数据比代码新”；有待处理时退出码 2
+actor migrate up                  # 应用（幂等：中断过的会被重跑，所以 up() 要幂等）
+actor migrate down --to 1         # 回滚到 v1；**必须显式给 --to**，CLI 绝不猜回滚到哪
+actor doctor                      # 体检：Node/依赖/配置/数据目录/迁移/端口，每项失败都给出下一步
+```
+
+`migrate status` **有待处理就返回退出码 2**：这样 CI 和启动脚本能直接用它当门禁
+（"结构不确定就不许开始服务"是数据层的默认姿态）。`--json` 给脚本用。
+
+```js verify
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const cli = path.join(process.cwd(), 'packages', 'cli', 'src', 'cli.ts');
+const dir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-doctor-'));
+
+try {
+  await run(process.execPath, [cli, 'new', 'app', dir]);
+
+  // 刚生成的骨架应当是"体检全绿"（没有迁移文件 → 迁移这项也算通过）
+  const { stdout } = await run(process.execPath, [cli, 'doctor', '--dir', dir, '--port', '0', '--json']);
+  const report = JSON.parse(stdout);
+  assert.strictEqual(report.problems, 0, `骨架应当体检全绿：${stdout}`);
+  const names = report.checks.map((check) => check.name);
+  for (const expected of ['Node 版本', '依赖声明', '配置', '数据目录', '迁移']) {
+    assert.ok(names.includes(expected), `缺少检查项 ${expected}`);
+  }
+
+  // 给它加一个迁移 → status 会指出"待应用"并给出非零退出码（CI 当门禁用）
+  fs.writeFileSync(
+    path.join(dir, 'src', 'migrations.ts'),
+    'export default [{ version: 1, description: "建表", async up() {}, async down() {} }];\n',
+  );
+  const status = await run(process.execPath, [cli, 'migrate', 'status', '--dir', dir, '--json']).catch((err) => err);
+  assert.strictEqual(status.code, 2, '有未应用迁移时退出码必须是 2');
+  assert.deepStrictEqual(JSON.parse(status.stdout).status.pending, [1]);
+} finally {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+console.log('ok');
+```
+
 ## CLI 约定
 
 | 行为 | 为什么 |

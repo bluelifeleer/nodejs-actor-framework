@@ -25,21 +25,28 @@ export interface ParsedArgs {
 }
 
 /** 已知的开关（有这些才算 flag，其余 `--x` 会报错——错拼一个选项不该被静默忽略）。 */
-const KNOWN_FLAGS = new Set(['force', 'install', 'debug', 'json', 'help', 'version']);
+const KNOWN_FLAGS = new Set(['force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port']);
 
-export function parseArgs(argv: readonly string[], options: { commandWords: readonly string[] }): ParsedArgs {
+/**
+ * `commands` 是命令表：`{ new: ['app'], migrate: ['status', 'up', 'down'], doctor: [] }`。
+ * 只匹配**已知**的词，所以 `actor new service x` 会得到 `command: ['new']` + 两个位置参数
+ * （调用方据此报"未知的脚手架 'service'"），而不是静默吞掉用户打的字。
+ */
+export function parseArgs(argv: readonly string[], options: { commands: Record<string, readonly string[]> }): ParsedArgs {
   const command: string[] = [];
   const positionals: string[] = [];
   const flags: Record<string, string | boolean> = {};
 
   let index = 0;
-  // 先吃掉子命令词（例如 new + app）
-  while (index < argv.length && command.length < options.commandWords.length) {
-    const word = argv[index] as string;
-    if (word.startsWith('-')) break;
-    if (options.commandWords[command.length] !== word) break;
-    command.push(word);
+  const head = argv[index];
+  if (head !== undefined && !head.startsWith('-') && Object.prototype.hasOwnProperty.call(options.commands, head)) {
+    command.push(head);
     index += 1;
+    const sub = argv[index];
+    if (sub !== undefined && !sub.startsWith('-') && (options.commands[head] ?? []).includes(sub)) {
+      command.push(sub);
+      index += 1;
+    }
   }
 
   for (; index < argv.length; index += 1) {

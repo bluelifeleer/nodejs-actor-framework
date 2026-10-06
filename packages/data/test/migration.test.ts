@@ -102,10 +102,7 @@ test('migration: status / migrate —— 按版本升序执行，每个先记 st
 
   const before = await runner.status();
   assert.deepStrictEqual(before.applied, []);
-  assert.deepStrictEqual(
-    before.pending.map((m) => m.version),
-    [1, 2, 3],
-  );
+  assert.deepStrictEqual(before.pending, [1, 2, 3], 'pending 是版本号数组（与 applied 一致）');
 
   const result = await runner.migrate();
   assert.deepStrictEqual(
@@ -231,11 +228,7 @@ test('migration: rollback 按降序执行 down；缺 down 的迁移明确报错'
   assert.deepStrictEqual(calls.slice(3), [-3, -2]);
   const status = await runner.status();
   assert.deepStrictEqual(status.applied, [1]);
-  assert.deepStrictEqual(
-    status.pending.map((m) => m.version),
-    [2, 3],
-    '回滚过的迁移又变成"未应用"',
-  );
+  assert.deepStrictEqual(status.pending, [2, 3], '回滚过的迁移又变成"未应用"');
 
   // 没有 down 的迁移无法回滚：明确报错，而不是默默跳过
   const noDownStore = createMemoryMigrationStore();
@@ -307,5 +300,24 @@ test('migration: SQL 版本表（node:sqlite）自动建表并正常工作', asy
     assert.deepStrictEqual(await store.read(), [], '回滚会把版本表的记录删掉');
   } finally {
     db.close();
+  }
+});
+
+test('migration: 状态对象里的四个字段都是**版本号数组**（同一结构不混类型）', async () => {
+  // 曾经的形状：applied/interrupted/unknown 是 number[]，pending 却是 Migration[] ——
+  // CLI 打印"待应用"时输出 v[object Object] 才暴露出来。
+  const runner = createMigrationRunner({
+    store: createMemoryMigrationStore(),
+    migrations: [
+      { version: 1, description: 'a', async up() {} },
+      { version: 2, description: 'b', async up() {} },
+    ],
+  });
+  const status = await runner.status();
+  for (const [field, value] of Object.entries(status)) {
+    assert.ok(
+      Array.isArray(value) && value.every((item) => typeof item === 'number'),
+      `status.${field} 应当是 number[]，实际 ${JSON.stringify(value)}`,
+    );
   }
 });

@@ -30,8 +30,14 @@ export interface MigrationRunnerOptions {
 export interface MigrationStatus {
   /** 已完成的版本（升序）。 */
   applied: number[];
-  /** 声明了但没跑的迁移（升序）。 */
-  pending: Migration[];
+  /**
+   * 声明了但没跑的迁移版本（升序）。
+   *
+   * 与 `applied` / `interrupted` / `unknown` 一样是**版本号**：同一个状态对象里混两种类型
+   * （这里给对象、那里给数字）会让使用者写出 `v[object Object]` 这种输出——CLI 打印状态时
+   * 就是这么发现的。要迁移详情，调用方本来就持有自己传进去的那个数组。
+   */
+  pending: number[];
   /** 版本表里是 started 的（执行到一半中断）。 */
   interrupted: number[];
   /** 版本表里有、但当前代码里没有的版本（代码比数据旧）。 */
@@ -89,7 +95,7 @@ export function createMigrationRunner(options: MigrationRunnerOptions) {
     const done = new Set([...applied, ...interrupted]);
     return {
       applied: applied.sort((a, b) => a - b),
-      pending: migrations.filter((migration) => !done.has(migration.version)),
+      pending: migrations.filter((migration) => !done.has(migration.version)).map((migration) => migration.version),
       interrupted: interrupted.sort((a, b) => a - b),
       unknown: unknown.sort((a, b) => a - b),
     };
@@ -105,7 +111,7 @@ export function createMigrationRunner(options: MigrationRunnerOptions) {
       ]);
     }
     if (current.interrupted.length > 0) throw new MigrationInterruptedError(current.interrupted);
-    if (current.pending.length > 0) throw new MigrationPendingError(current.pending.map((m) => m.version));
+    if (current.pending.length > 0) throw new MigrationPendingError([...current.pending]);
     return current;
   }
 
@@ -120,7 +126,7 @@ export function createMigrationRunner(options: MigrationRunnerOptions) {
     const ran: Migration[] = [];
     // interrupted 也要重跑（顺序仍然按版本升序）
     const todo = migrations.filter(
-      (migration) => current.pending.includes(migration) || current.interrupted.includes(migration.version),
+      (migration) => current.pending.includes(migration.version) || current.interrupted.includes(migration.version),
     );
     for (const migration of todo) {
       const wasInterrupted = current.interrupted.includes(migration.version);
