@@ -6,6 +6,7 @@
 
 | # | 指南 | 读完你会 |
 |---|---|---|
+| 0 | [从零生成一个能跑的项目](./00-scaffold.md) | 用脚手架生成 CRUD + Actor + 持久化 + 测试的骨架，并知道 CLI 的约定 |
 | 1 | [第一个 Actor](./01-first-actor.md) | 起一个系统、spawn/ask/tell/stop，理解消息与状态 |
 | 2 | [持久化与恢复](./02-persistence.md) | 快照与事件两种模式、怎么恢复、快照只是缓存 |
 | 3 | [HTTP 应用（@actor/app + @actor/web）](./03-http-app.md) | 配置/模块/控制器/错误语义/优雅停止 |

@@ -951,3 +951,15 @@ Pages 上传目录与构建产物不一致、权限少一项……这些都在�
 > 诚实说明：这两条工作流还没有在 GitHub 上跑过（仓库此前没有任何 CI），本地验证的是**它们执行的
 > 那条命令**（`npm run ci` 全绿）与工作流文件的结构约束；实际的 runner 行为、Pages 首次部署需要
 > 推到远端后才能确认。
+
+## 命令行（脚手架）
+
+```bash
+node packages/cli/src/cli.ts new app my-app    # 发布后：actor new app my-app
+cd my-app && npm install && npm start          # 起 HTTP
+npm test                                       # 4 条端到端用例（含"重启后持久化"）
+```
+
+生成的是**开箱即跑**的骨架：CRUD（仓储 + 游标分页 + 乐观锁 409）、Actor（`mode: 'snapshot'`）、
+优雅停止、真 HTTP 测试。约定：目标目录非空就拒绝写入（要 `--force`）、不自动装依赖、
+退出码有意义（0/1/2）且默认不打印堆栈。见 [CLI 指南](docs/guide/00-scaffold.md)。

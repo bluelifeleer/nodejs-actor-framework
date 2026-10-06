@@ -1,0 +1,17 @@
+{
+  "name": "@actor/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "actor 命令行：脚手架、迁移、诊断（零依赖，Node 直接跑 TS）",
+  "bin": {
+    "actor": "./src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "src",
+    "templates"
+  ]
+}

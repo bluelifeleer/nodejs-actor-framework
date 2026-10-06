@@ -24,3 +24,6 @@ packages/core/test/fixtures/tls/*-db/
 
 # 文档站产物（tools/docs-site.mjs 生成，不入库）
 /site/
+
+# 测试/脚手架生成的临时目录（正常会被清理，进程被杀时可能残留）
+.tmp-*/
