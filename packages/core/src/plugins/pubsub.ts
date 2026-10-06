@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -16,12 +15,53 @@ const { ActorNotFoundError } = require('../actor/errors.ts');
  * topic broadcast has no meaningful reply. `publish()` therefore reports
  * *acceptance* per subscriber, not the handler result.
  */
-function pubsub(options = {}) {
-  const topics = new Map(); // topic -> Set<path>
-  const remoteSubs = new Map(); // nodeId -> { topic: [paths] }
+/** 插件配置（当前只有 nodeId，保留给将来的本地命名空间隔离）。 */
+interface PubSubOptions {
+  nodeId?: string;
+}
 
-  const exportSubscriptions = () => {
-    const out = {};
+/** 一条订阅者（ref 或路径都能收）。 */
+interface SubscribableTarget {
+  readonly path?: string;
+}
+
+/** publish 的逐订阅者结果：`tell` 只报告**是否被接收**，不是处理结果。 */
+interface PublishResult {
+  path: string;
+  ok: boolean;
+  err?: string;
+}
+
+/** 结构型 system 视图：只声明本插件真正碰到的字段（内核是 CJS，不能 import type）。 */
+interface PubSubSystem {
+  cluster?: { gossip: PubSubGossip } | null;
+  pubsub: PubSubApi | null;
+  resolve(path: string): { tell(msg: unknown): boolean | undefined } | null | undefined;
+  emit(event: string, ...args: unknown[]): void;
+}
+
+interface PubSubGossip {
+  nodeId: string;
+  setLocal(key: string, value: unknown): void;
+  on(event: string, handler: (...args: never[]) => void): void;
+}
+
+interface PubSubApi {
+  subscribe(topic: string, target: string | SubscribableTarget): boolean;
+  unsubscribe(topic: string, target: string | SubscribableTarget): boolean;
+  topics(): string[];
+  subscribers(topic: string): string[];
+  localSubscriptions(): Record<string, string[]>;
+  publish(topic: string, msg: Record<string, unknown>): Promise<PublishResult[]>;
+}
+
+function pubsub(options: PubSubOptions = {}) {
+  void options;
+  const topics = new Map<string, Set<string>>(); // topic -> Set<path>
+  const remoteSubs = new Map<string, Record<string, string[]>>(); // nodeId -> { topic: [paths] }
+
+  const exportSubscriptions = (): Record<string, string[]> => {
+    const out: Record<string, string[]> = {};
     for (const [topic, set] of topics) out[topic] = [...set];
     return out;
   };
@@ -29,21 +69,24 @@ function pubsub(options = {}) {
   return {
     name: 'pubsub',
 
-    async setup(system) {
+    async setup(system: PubSubSystem) {
       const gossip = system.cluster ? system.cluster.gossip : null;
 
       const broadcast = () => {
         if (gossip) gossip.setLocal(`subs:${gossip.nodeId}`, exportSubscriptions());
       };
 
-      const onUpdate = (key, value) => {
+      const onUpdate = (key: string, value: unknown) => {
         if (!key.startsWith('subs:')) return;
-        remoteSubs.set(key.slice('subs:'.length), value && typeof value === 'object' ? value : {});
+        remoteSubs.set(
+          key.slice('subs:'.length),
+          value !== null && typeof value === 'object' ? (value as Record<string, string[]>) : {},
+        );
       };
-      const onDelete = (key) => {
+      const onDelete = (key: string) => {
         if (key.startsWith('subs:')) remoteSubs.delete(key.slice('subs:'.length));
       };
-      const onNodeTimeout = (nodeId) => remoteSubs.delete(nodeId);
+      const onNodeTimeout = (nodeId: string) => remoteSubs.delete(nodeId);
 
       if (gossip) {
         gossip.on('registry_update', onUpdate);
@@ -51,7 +94,7 @@ function pubsub(options = {}) {
         gossip.on('node_timeout', onNodeTimeout);
       }
 
-      const pathOf = (target) => {
+      const pathOf = (target: string | SubscribableTarget): string => {
         if (!target) throw new ActorNotFoundError('subscribe(topic, target): target is required');
         if (typeof target === 'string') return target;
         if (typeof target.path === 'string') return target.path;
@@ -59,17 +102,17 @@ function pubsub(options = {}) {
       };
 
       system.pubsub = {
-        subscribe(topic, target) {
+        subscribe(topic: string, target: string | SubscribableTarget): boolean {
           if (!topic) throw new TypeError('subscribe(topic, target): topic is required');
           const path = pathOf(target);
-          if (!topics.has(topic)) topics.set(topic, new Set());
-          topics.get(topic).add(path);
+          if (!topics.has(topic)) topics.set(topic, new Set<string>());
+          topics.get(topic)?.add(path);
           broadcast();
           system.emit('subscribe', topic, path);
           return true;
         },
 
-        unsubscribe(topic, target) {
+        unsubscribe(topic: string, target: string | SubscribableTarget): boolean {
           const set = topics.get(topic);
           if (!set) return false;
           const removed = set.delete(pathOf(target));
@@ -79,14 +122,14 @@ function pubsub(options = {}) {
         },
 
         /** Topics known locally or through gossip. */
-        topics() {
+        topics(): string[] {
           const all = new Set(topics.keys());
           for (const subs of remoteSubs.values()) for (const topic of Object.keys(subs)) all.add(topic);
           return [...all].sort();
         },
 
         /** Subscriber paths for a topic: local plus gossiped. */
-        subscribers(topic) {
+        subscribers(topic: string): string[] {
           const all = new Set(topics.get(topic) || []);
           for (const subs of remoteSubs.values()) for (const path of subs[topic] || []) all.add(path);
           return [...all].sort();
@@ -98,15 +141,15 @@ function pubsub(options = {}) {
          * Broadcast to every subscriber.
          * @returns {Promise<Array<{path:string, ok:boolean, err?:string}>>}
          */
-        async publish(topic, msg) {
-          const subscribers = system.pubsub.subscribers(topic);
-          const results = [];
+        async publish(topic: string, msg: Record<string, unknown>): Promise<PublishResult[]> {
+          const subscribers = system.pubsub === null ? [] : system.pubsub.subscribers(topic);
+          const results: PublishResult[] = [];
           for (const path of subscribers) {
-            let ref;
+            let ref: { tell(msg: unknown): boolean | undefined } | null | undefined;
             try {
               ref = system.resolve(path);
             } catch (err) {
-              results.push({ path, ok: false, err: err.message });
+              results.push({ path, ok: false, err: (err as Error).message });
               continue;
             }
             if (!ref) {
@@ -117,7 +160,7 @@ function pubsub(options = {}) {
               const accepted = ref.tell({ ...msg, topic });
               results.push({ path, ok: accepted !== false });
             } catch (err) {
-              results.push({ path, ok: false, err: err.message });
+              results.push({ path, ok: false, err: (err as Error).message });
             }
           }
           system.emit('publish', topic, results);
@@ -128,7 +171,7 @@ function pubsub(options = {}) {
       broadcast();
     },
 
-    teardown(system) {
+    teardown(system: PubSubSystem | null) {
       topics.clear();
       remoteSubs.clear();
       if (system) system.pubsub = null;

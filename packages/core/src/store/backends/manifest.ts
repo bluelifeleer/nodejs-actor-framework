@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -18,20 +17,35 @@ const path = require('path');
  * and rebuilt as actors write again, because it is derived data, not a source
  * of truth.
  */
+/** 一条清单记录：actor 的磁盘文件名与更新时间。 */
+interface ManifestEntry {
+  file: string;
+  updatedAt: number;
+}
+
 class Manifest {
-  constructor(baseDir, fileName = 'manifest.json') {
+  readonly baseDir: string;
+  readonly path: string;
+  /** 读到的条目（`null` = 还没加载过）。 */
+  entries: Record<string, ManifestEntry> | null;
+  /** 串行化写盘，避免并发写同一文件。 */
+  _chain: Promise<void>;
+
+  constructor(baseDir: string, fileName = 'manifest.json') {
     this.baseDir = baseDir;
     this.path = path.join(baseDir, fileName);
     this.entries = null;
     this._chain = Promise.resolve();
   }
 
-  async _load() {
+  async _load(): Promise<Record<string, ManifestEntry>> {
     if (this.entries) return this.entries;
     try {
       const raw = await fsp.readFile(this.path, 'utf8');
       const parsed = JSON.parse(raw);
-      this.entries = parsed && typeof parsed === 'object' && parsed.actors ? parsed.actors : {};
+      this.entries = parsed !== null && typeof parsed === 'object' && (parsed as { actors?: unknown }).actors
+        ? ((parsed as { actors: Record<string, ManifestEntry> }).actors)
+        : {};
     } catch {
       this.entries = {};
     }
@@ -39,7 +53,7 @@ class Manifest {
   }
 
   /** Remember that `actorId` lives in `file`. Cheap when already recorded. */
-  async record(actorId, file) {
+  async record(actorId: string, file: string): Promise<boolean> {
     const entries = await this._load();
     const key = String(actorId);
     if (entries[key] && entries[key].file === file) return false;
@@ -51,7 +65,7 @@ class Manifest {
     return true;
   }
 
-  async remove(actorId) {
+  async remove(actorId: string): Promise<void> {
     const entries = await this._load();
     delete entries[String(actorId)];
     this._chain = this._chain
@@ -60,22 +74,22 @@ class Manifest {
     await this._chain;
   }
 
-  async _persist() {
+  async _persist(): Promise<void> {
     const entries = await this._load();
     const tmp = `${this.path}.${process.pid}.tmp`;
     await fsp.writeFile(tmp, `${JSON.stringify({ version: 1, actors: entries }, null, 2)}\n`);
     await fsp.rename(tmp, this.path);
   }
 
-  /** @returns {Promise<Array<{actorId:string, file:string, updatedAt:number}>>} */
-  async list() {
+  /** 列出所有记录（按 actorId 排序，便于运维与测试断言）。 */
+  async list(): Promise<{ actorId: string; file: string; updatedAt: number }[]> {
     const entries = await this._load();
     return Object.entries(entries)
       .map(([actorId, meta]) => ({ actorId, file: meta.file, updatedAt: meta.updatedAt || 0 }))
       .sort((a, b) => a.actorId.localeCompare(b.actorId));
   }
 
-  exists() {
+  exists(): boolean {
     return fs.existsSync(this.path);
   }
 }

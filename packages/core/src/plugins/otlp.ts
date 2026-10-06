@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -19,8 +18,60 @@
 
 const { randomBytes } = require('node:crypto');
 
+/** 内核产生的 span（结构型：内核是 CJS，不 import type）。 */
+interface Span {
+  name: string;
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  sampled: boolean;
+  startTimeMs: number;
+  endTimeMs: number;
+  durationMs: number;
+  status: 'ok' | 'error';
+  attributes: Record<string, string | number | boolean>;
+}
+
+interface OtlpOptions {
+  endpoint?: string;
+  serviceName?: string;
+  headers?: Record<string, string>;
+  resource?: Record<string, string>;
+  maxBatch?: number;
+  flushIntervalMs?: number;
+  fetch?: typeof fetch;
+}
+
+/** 导出统计：失败必须可见（不静默丢 span）。 */
+interface OtlpStats {
+  exported: number;
+  failed: number;
+  batches: number;
+  dropped: number;
+  lastError: string | null;
+}
+
+/** 结构型 system 视图：只需要时钟、日志与 span 出口。 */
+interface OtlpSystem {
+  clock: {
+    setInterval(cb: () => void, ms: number, options?: { unref?: boolean }): { id: number };
+    clearInterval(handle: { id: number } | null): void;
+  };
+  spanSink: { onSpan(span: Span): void } | null;
+  _log(event: string, meta?: Record<string, unknown>): void;
+}
+
+interface OtlpExporter {
+  name: string;
+  setup(target: OtlpSystem): void;
+  teardown(target: OtlpSystem | null): Promise<void>;
+  flush(): Promise<{ sent: number; error?: string }>;
+  stats(): OtlpStats & { buffered: number };
+  endpoint: string;
+}
+
 /** span → OTLP JSON 的一条 span。 */
-function toOtlpSpan(span) {
+function toOtlpSpan(span: Span): Record<string, unknown> {
   const attributes = Object.entries(span.attributes || {}).map(([key, value]) => ({
     key,
     value:
@@ -46,21 +97,21 @@ function toOtlpSpan(span) {
   };
 }
 
-function otlp(options = {}) {
-  const endpoint = String(options.endpoint || 'http://127.0.0.1:4318').replace(/\/+$/, '');
-  const serviceName = String(options.serviceName || 'actor-framework');
-  const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
-  const maxBatch = Number.isInteger(options.maxBatch) ? options.maxBatch : 512;
-  const flushIntervalMs = Number.isFinite(options.flushIntervalMs) ? options.flushIntervalMs : 5000;
-  const fetchImpl = options.fetch || globalThis.fetch;
+function otlp(options: OtlpOptions = {}): OtlpExporter {
+  const endpoint = String(options.endpoint ?? 'http://127.0.0.1:4318').replace(/\/+$/, '');
+  const serviceName = String(options.serviceName ?? 'actor-framework');
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...(options.headers ?? {}) };
+  const maxBatch = Number.isInteger(options.maxBatch) ? (options.maxBatch as number) : 512;
+  const flushIntervalMs = Number.isFinite(options.flushIntervalMs) ? (options.flushIntervalMs as number) : 5000;
+  const fetchImpl = options.fetch ?? globalThis.fetch;
 
-  let buffer = [];
-  let timer = null;
-  const stats = { exported: 0, failed: 0, batches: 0, dropped: 0, lastError: null };
-  let system = null;
-  let flushing = null;
+  let buffer: Span[] = [];
+  let timer: { id: number } | null = null;
+  const stats: OtlpStats = { exported: 0, failed: 0, batches: 0, dropped: 0, lastError: null };
+  let system: OtlpSystem | null = null;
+  let flushing: Promise<{ sent: number; error?: string }> | null = null;
 
-  const body = (spans) => ({
+  const body = (spans: Span[]): Record<string, unknown> => ({
     resourceSpans: [
       {
         resource: {
@@ -77,7 +128,7 @@ function otlp(options = {}) {
     ],
   });
 
-  const flush = async () => {
+  const flush = async (): Promise<{ sent: number; error?: string }> => {
     if (buffer.length === 0) return { sent: 0 };
     if (flushing !== null) return flushing;
     const batch = buffer;
@@ -90,8 +141,8 @@ function otlp(options = {}) {
           headers,
           body: JSON.stringify(body(batch)),
         });
-        if (!response || response.ok !== true) {
-          throw new Error(`HTTP ${response ? response.status : 'no response'}`);
+        if (response === undefined || response.ok !== true) {
+          throw new Error(`HTTP ${response === undefined ? 'no response' : response.status}`);
         }
         stats.exported += batch.length;
         return { sent: batch.length };
@@ -99,8 +150,8 @@ function otlp(options = {}) {
         // 失败要可见：计数 + 日志（span 已经出队，不重试——重试策略交给收集器/代理）
         stats.failed += 1;
         stats.dropped += batch.length;
-        stats.lastError = err && err.message ? err.message : String(err);
-        if (system) system._log('otlp_export_failed', { endpoint, err: stats.lastError, spans: batch.length });
+        stats.lastError = err instanceof Error ? err.message : String(err);
+        if (system !== null) system._log('otlp_export_failed', { endpoint, err: stats.lastError, spans: batch.length });
         return { sent: 0, error: stats.lastError };
       } finally {
         flushing = null;
@@ -112,11 +163,11 @@ function otlp(options = {}) {
   return {
     name: 'otlp',
 
-    setup(target) {
+    setup(target: OtlpSystem): void {
       system = target;
       // 作为 spanSink 接上：内核只在装了 sink 时才创建 span（热路径零开销）
       target.spanSink = {
-        onSpan(span) {
+        onSpan(span: Span): void {
           if (!span.sampled) return;
           buffer.push(span);
           if (buffer.length >= maxBatch) void flush();
@@ -127,11 +178,11 @@ function otlp(options = {}) {
       }
     },
 
-    async teardown(target) {
-      if (timer !== null && target && target.clock) target.clock.clearInterval(timer);
+    async teardown(target: OtlpSystem | null): Promise<void> {
+      if (timer !== null && target !== null) target.clock.clearInterval(timer);
       timer = null;
       await flush(); // 关机前尽量把已产生的 span 发出去
-      if (target) target.spanSink = null;
+      if (target !== null) target.spanSink = null;
       system = null;
     },
 

@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -19,22 +18,61 @@ const MetricsExporter = require('../obs/metrics-exporter.ts');
  *     plugins: [metrics({ intervalMs: 500, exporter: { enabled: true, port: 9464 } })],
  *   })
  */
-function metrics(options = {}) {
-  const state = { metrics: null, exporter: null, timer: null, last: new Map() };
+/** 指标实例（内核的 obs/metrics.ts）。 */
+interface MetricsLike {
+  observe(path: string, delta: Record<string, number>): void;
+}
+
+interface MetricsExporterLike {
+  listen(): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface MetricsExporterOptions {
+  host?: string;
+  port?: number;
+  [key: string]: unknown;
+}
+
+/** 插件配置。`intervalMs: 0` 表示不周期采集（只在 scrape 时刷新）。 */
+interface MetricsPluginOptions {
+  metrics?: MetricsLike;
+  logDir?: string;
+  intervalMs?: number;
+  exporter?: MetricsExporterOptions;
+  storeBackend?: string;
+}
+
+/** 结构型 system 视图（内核是 CJS，不能 import type）。 */
+interface MetricsSystem {
+  cells: Map<string, { path: string; counters: Record<string, number> }>;
+  clock: { setInterval(cb: () => void, ms: number, options?: { unref?: boolean }): { id: number }; clearInterval(handle: { id: number } | null): void };
+  metrics: MetricsLike | null;
+  metricsExporter: MetricsExporterLike | null;
+  collectMetrics: (() => void) | null;
+}
+
+function metrics(options: MetricsPluginOptions = {}) {
+  const state: {
+    metrics: MetricsLike | null;
+    exporter: MetricsExporterLike | null;
+    timer: { id: number } | null;
+    last: Map<string, Record<string, number>>;
+  } = { metrics: null, exporter: null, timer: null, last: new Map() };
 
   return {
     name: 'metrics',
 
-    async setup(system) {
+    async setup(system: MetricsSystem) {
       const instance = options.metrics || new Metrics({ logDir: options.logDir });
       state.metrics = instance;
 
-      const collect = () => {
+      const collect = (): void => {
         for (const cell of system.cells.values()) {
-          const previous = state.last.get(cell.path) || {};
-          const delta = {};
+          const previous = state.last.get(cell.path) ?? {};
+          const delta: Record<string, number> = {};
           for (const [field, value] of Object.entries(cell.counters)) {
-            const grew = value - (previous[field] || 0);
+            const grew = Number(value) - (previous[field] ?? 0);
             if (grew > 0) delta[field] = grew;
           }
           if (Object.keys(delta).length > 0) instance.observe(cell.path, delta);
@@ -51,13 +89,13 @@ function metrics(options = {}) {
       collect();
 
       if (options.intervalMs !== 0) {
-        state.timer = setInterval(collect, options.intervalMs || 500);
-        if (typeof state.timer.unref === 'function') state.timer.unref();
+        // 走系统时钟：注入虚拟时钟后，指标采集也可以被 advance() 瞬时推进
+        state.timer = system.clock.setInterval(collect, options.intervalMs ?? 500, { unref: true });
       }
 
       if (options.exporter) {
         const exporter = new MetricsExporter({
-          ...options.exporter,
+          ...(options.exporter ?? {}),
           metrics: instance,
           framework: system,
           storeBackend: options.storeBackend || 'file',
@@ -72,9 +110,9 @@ function metrics(options = {}) {
         } catch (err) {
           // Name the subsystem and address: a bare "plugin setup failed" hides
           // which port is actually taken.
-          const where = `${options.exporter.host || '127.0.0.1'}:${
-            options.exporter.port === undefined ? '' : options.exporter.port}`;
-          const wrapped = new Error(`metrics exporter could not listen on ${where}: ${err.message}`);
+          const exporterOptions = options.exporter ?? {};
+          const where = `${exporterOptions.host ?? '127.0.0.1'}:${exporterOptions.port === undefined ? '' : exporterOptions.port}`;
+          const wrapped = new Error(`metrics exporter could not listen on ${where}: ${(err as Error).message}`);
           wrapped.cause = err;
           throw wrapped;
         }
@@ -83,8 +121,8 @@ function metrics(options = {}) {
       }
     },
 
-    async teardown(system) {
-      if (state.timer) clearInterval(state.timer);
+    async teardown(system: MetricsSystem | null) {
+      if (state.timer !== null && system !== null) system.clock.clearInterval(state.timer);
       state.timer = null;
       if (state.exporter) await state.exporter.close().catch(() => {});
       state.exporter = null;
