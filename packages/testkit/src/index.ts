@@ -1,8 +1,11 @@
 /**
  * `@actor/testkit`：测试工具（零依赖）。
  *
- * 目前有：**虚拟时钟**（把"等一小时"变成 0 真实毫秒，顺序确定）。
- * 计划中：探针（记录消息/回复）、故障注入（按次数失败/延迟/丢弃）。
+ * - **虚拟时钟**：把"等一小时"变成 0 真实毫秒，顺序确定；
+ * - **探针**：记录 Actor 收到/回复/抛错（断言可观察行为，而不是内部字段）；
+ * - **故障注入**：按次数让 Actor 失败/变慢/丢消息（把"生产里偶发"的情况变成显式声明）。
  */
 
 export { createVirtualClock, type Clock, type TimerHandle, type VirtualClock, type VirtualClockOptions } from './virtual-clock.ts';
+export { createProbe, type Probe, type ProbeCall } from './probe.ts';
+export { createFaultInjector, type Faults, type FaultRule, type FaultMatch } from './faults.ts';
