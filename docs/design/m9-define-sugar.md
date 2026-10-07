@@ -142,6 +142,41 @@ defineUploadStorage defineWebPlugin
 | 文档只教一种写法 | 指南 verify 块同时跑两种并断言相等 |
 | 内核被顺手加糖 | 明确列出"内核不参与"，并在 review 时按包核对 |
 
+## 8.5 保留名与冲突检测（用户提出：短名都是常见词，要不要做"用户定义 vs 框架关键字"的一致性校验）
+
+**结论：要做，但只做"编译器挡不住"的那一层。** 分三档，别越界：
+
+| 档 | 谁管 | 做法 |
+|---|---|---|
+| ① 重复标识符 / 同作用域 shadowing（`import { config }` + `const config`） | **TypeScript 编译器** | **不重复做** —— `tsc` 已经会报，框架再查只会重复噪音 |
+| ② **框架保留位**（service 名、路由前缀、`ctx` 保留键、插件名） | **框架（启动期，明确报错）** | 现状**部分覆盖**：插件/provider/Actor 重名与服务重复注册**已经大声报错**（`assembly.ts`）；缺的是**保留键的单一来源 + 校验**（见下） |
+| ③ 用户代码里与**短名同名**的顶层声明（`export const model`） | **doctor（warning，启发式）** | 正则扫 `src/**/*.ts` 的顶层声明，命中短名清单就提示"import 时会撞车，建议改名或 `import { model as m }`"；**只警告、不作为 CI 失败条件** |
+
+**② 里的一个真洞（已核实，必须修）**：
+`packages/web/src/controller.ts` 会写 `ctx.state.route = spec`（authPlugin 靠它读控制器的 `auth: { required }`），
+但 `CORE_CONTEXT_KEYS`（`packages/web/src/context.ts`）里**没有 `route`** →
+任何插件/中间件执行 `ctx.extend({ route: ... })` 都会**静默覆盖**它，auth 随后读到错的声明。**编译器完全挡不住**。
+修法（比"事后检测"彻底）：把这类框架内部槽改成**不可能被撞的键**（如 `ctx.state['@actor/route']`，或干脆用 symbol），
+同时把保留键清单补全（`route` 先兜底进 `CORE_CONTEXT_KEYS`）。
+
+**②的落地形态**：
+- `@actor/web` / `@actor/app` 导出**单一来源**的保留名常量（`RESERVED_CONTEXT_KEYS` / `RESERVED_SERVICE_NAMES` /
+  `RESERVED_ROUTE_PREFIXES`），文档与门禁都读它；
+- 启动期校验：插件注册的服务名、插件贡献的路由前缀、`ctx.extend` 的键，撞上保留名一律**报错并说清"下一步"**
+  （延续"响亮失败优于静默覆盖"）。
+
+**③的诚实边界**：本仓库的工具链是**文本/正则**的（`typescript@7` 原生端口**没有 JS API**，M8 已确认），
+所以它只能是**启发式**（会漏、也可能误报）→ 因此**只警告**，名单**显式写死**（就是 §3 的短名清单），
+不去猜"什么看起来像关键字"。
+
+**降冲突面的两条零成本做法**（写进指南，不新增机制）：
+1. 小程序/脚手架/示例用**短名**（面向读者）；库代码或大文件里鼓励 `defineX`（面向维护者），
+   或自己起别名 `import { defineConfig as config }`；
+2. 真撞了就 `import { config as appConfig }` —— 这是用户能自己解决的事，框架只需**守住保留位**。
+
+**分期**：上述 ② 并进 **M9e**（短名落地那一期，顺手修掉 `ctx.state.route` 这个洞）；③ 并进 doctor 扩展
+（与 M9c 余下/ M9d 一起）；本条结论写进指南的"命名与保留名"一节。
+
 ## 9. 已确认（用户拍板）
 
 1. ✅ `model()` **小写**（`Model` 在 `@actor/db` 已是类型名）；且**所有短名统一小写**（见 §2 第 4 条）；
