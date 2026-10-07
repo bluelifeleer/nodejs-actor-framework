@@ -344,9 +344,21 @@ export const myDb = defineDatabaseAdapter({
   `tools/docs-site.mjs` 的 PACKAGES（API 页已收录 `supervise`/`defineDatabaseAdapter`）。
 - **验证**：全量 **738/738**（724 原有 + core 12 + 基线 2）、typecheck 0（源码 + 声明面）、文档站 41 页。
 
-尚未完成（M7a 第二部分）：把 SQL 侧连接生命周期（`database.ts`/`plugin.ts`）**接到 `supervise()` 上**
-（内部改走 ManagedConnection + 事件 + drain），对外行为保持不变 —— 这是"SQL 也走同一条路"的落点，
-放到下一轮做，避免与搬迁混在一个提交里。
+尚未完成（M7a 第二部分）：把 SQL 侧连接生命周期（`database.ts`/`plugin.ts`）**接到 `supervise()` 上**。
+
+**顺序决定（值得记下来）**：SQL 侧现在的 `connect/close/healthCheck/stats` 其实**就是** supervisor 的原型
+——它是先有 SQL 实现、再提炼成通用管控的。所以"接上去"本身不产生新的对外行为，风险却全在**等价性**上：
+
+| 现有 SQL 行为（必须保住） | supervisor 缺什么 |
+|---|---|
+| `connect()` 失败时：`DbError` 原样抛、其它包成 `DbConnectionError`、失败后关掉半开的池 | 需要在 **SQL 适配器**的 `connect()` 里做同样的包装（supervisor 不管错误语义） |
+| 未连接时抛 **`DbNotConnectedError`**（既有测试依赖这个类型） | supervisor 抛的是 `DbUnavailableError` → 需要在边界翻译 |
+| `logger` 事件串（`db_connected` / `db_closed` / `db_close_failed`） | supervisor 发的是自己的事件名 → 需要按事件回译，否则会改变日志观测 |
+| `close()` 吞掉关闭错误并只记日志 | supervisor 会把错误抛出来 → 需要在边界 catch |
+
+结论：**先把 M7b 的"连接管理契约套件"做出来，再接线** —— 这样"SQL 接上 supervisor 后行为等价"是可**被测试
+证明**的（同一套断言同时跑 fake 适配器与 SQL 适配器），而不是靠人肉对比。顺序：M7a（已完成）→ M7b（契约套件）
+→ 接线（SQL 走同一条路）→ M7c（Redis）。
 
 ## 9. 分期路线
 
