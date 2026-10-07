@@ -1,5 +1,9 @@
 import { DbConfigError } from '../errors.ts';
+import { createMysqlDriver } from '../drivers/mysql.ts';
 import {
+  hostConnectionFromFields,
+  hostConnectionFromUrl,
+  hostDescribe,
   normalizeTypeText,
   numericLiteral,
   sqlString,
@@ -56,6 +60,8 @@ const TYPES: TypeRenderers = {
   binary: (o) => (o.length === undefined ? 'varbinary(255)' : `varbinary(${o.length})`),
 };
 
+const DEFAULT_PORT = 3306;
+
 function quote(name: string): string {
   return `\`${String(name).split('`').join('``')}\``;
 }
@@ -63,7 +69,8 @@ function quote(name: string): string {
 export const mysql: DialectSpec = {
   name: 'mysql',
   driverPackage: 'mysql2',
-  defaultPort: 3306,
+  driver: () => createMysqlDriver(),
+  defaultPort: DEFAULT_PORT,
   placeholder: () => '?',
   quote,
   quoteTable: (schema, table) => (schema === undefined ? quote(table) : `${quote(schema)}.${quote(table)}`),
@@ -123,4 +130,9 @@ export const mysql: DialectSpec = {
   serializeBoolean: (value) => (value ? 1 : 0),
   serializeTimestamp: (date) => date,
   comments: 'inline',
+
+  connectionKind: 'host',
+  connectionFromFields: (input) => hostConnectionFromFields(input, 'mysql', DEFAULT_PORT),
+  connectionFromUrl: (url) => hostConnectionFromUrl(url, 'mysql', DEFAULT_PORT),
+  describe: (connection) => hostDescribe(connection, DEFAULT_PORT),
 };

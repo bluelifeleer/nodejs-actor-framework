@@ -31,6 +31,11 @@ export const DRIVER_PACKAGES: Record<Dialect, string> = {
   sqlite: DIALECT_SPECS.sqlite.driverPackage,
 };
 
+/** 值是不是已知方言（注册表驱动，不写方言名）。 */
+export function isDialect(value: unknown): value is Dialect {
+  return typeof value === 'string' && (DIALECTS as readonly string[]).includes(value);
+}
+
 /** 该方言是否支持 `INSERT … RETURNING`（自增主键靠它回读生成值）。 */
 export function supportsReturning(dialect: Dialect): boolean {
   return dialectSpec(dialect).supportsReturning;
@@ -107,48 +112,16 @@ export function parseConnection(input: { url?: string; dialect?: Dialect } & Rec
         `connection url looks like ${fromUrl} but dialect ${explicit} was configured — remove one of them`,
       );
     }
-    const dialect = explicit ?? fromUrl;
-    if (dialect === 'sqlite') {
-      const rest = url.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:(\/\/)?/, '');
-      return { dialect, filename: rest === '' ? ':memory:' : rest, url };
-    }
-    const parsed = new URL(url);
-    const port = parsed.port === '' ? DEFAULT_PORTS[dialect] ?? undefined : Number(parsed.port);
-    const normalized: NormalizedConnection = { dialect, url };
-    // 严格模式（exactOptionalPropertyTypes）下不能给可选字段赋 undefined，所以逐个条件赋值
-    if (parsed.hostname !== '') normalized.host = parsed.hostname;
-    if (port !== undefined && port !== null) normalized.port = port;
-    if (parsed.username !== '') normalized.user = decodeURIComponent(parsed.username);
-    if (parsed.password !== '') normalized.password = decodeURIComponent(parsed.password);
-    const database = parsed.pathname.replace(/^\//, '');
-    if (database !== '') normalized.database = database;
-    return normalized;
+    // 连接形状（sqlite 的 path 是文件、其它是 database）由方言描述符负责
+    return dialectSpec(explicit ?? fromUrl).connectionFromUrl(url);
   }
 
-  const dialect = explicit ?? 'pgsql';
-  if (dialect === 'sqlite') {
-    const filename = typeof input.filename === 'string' && input.filename !== '' ? input.filename : ':memory:';
-    return { dialect, filename };
-  }
-  const port = input.port === undefined || input.port === null ? DEFAULT_PORTS[dialect] ?? undefined : Number(input.port);
-  const result: NormalizedConnection = { dialect };
-  if (typeof input.host === 'string' && input.host !== '') result.host = input.host;
-  if (port !== undefined && port !== null) result.port = port;
-  if (typeof input.user === 'string' && input.user !== '') result.user = input.user;
-  if (typeof input.password === 'string' && input.password !== '') result.password = input.password;
-  if (typeof input.database === 'string' && input.database !== '') result.database = input.database;
-  if (result.host === undefined && result.database === undefined) {
-    throw new DbConfigError('connection config needs at least a host or a database (or pass a full { url })');
-  }
-  return result;
+  return dialectSpec(explicit ?? 'pgsql').connectionFromFields(input);
 }
 
 /** 只用于日志/错误：**永远不含密码**。 */
 export function describeConnection(connection: NormalizedConnection): string {
-  if (connection.dialect === 'sqlite') return `sqlite:${String(connection.filename ?? ':memory:')}`;
-  const host = connection.host ?? 'localhost';
-  const port = connection.port ?? DEFAULT_PORTS[connection.dialect] ?? '';
-  return `${connection.dialect}://${host}:${String(port)}/${String(connection.database ?? '')}`;
+  return dialectSpec(connection.dialect).describe(connection);
 }
 
 /** `createDatabase({ dialect })` 的默认值：dsn 有就按 dsn，否则默认 pgsql。 */

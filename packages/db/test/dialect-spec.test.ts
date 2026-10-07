@@ -175,3 +175,143 @@ test('dialect-spec: 注释能力用能力位表达，而不是在 schema 层写�
   assert.strictEqual(dialectSpec('mysql').comments, 'inline');
   assert.strictEqual(dialectSpec('sqlite').comments, 'none');
 });
+
+// ---------------------------------------------------------------------------
+// Step 4 的两条验收：门禁 + 假第 4 方言
+// ---------------------------------------------------------------------------
+
+/** 扫出"按方言名分支"的地方（比较/switch 到 pgsql|mysql|sqlite 字面量）。 */
+function findDialectNameBranches(source: string): string[] {
+  const hits: string[] = [];
+  const pattern = /(===|!==)\s*'(pgsql|mysql|sqlite)'|'(pgsql|mysql|sqlite)'\s*(===|!==)|case\s+'(pgsql|mysql|sqlite)'/g;
+  for (const match of source.matchAll(pattern)) hits.push(match[0]);
+  return hits;
+}
+
+test('gate: dialects/ 之外的源码不允许再按方言名分支（加方言只写一个文件）', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const srcDir = path.join(import.meta.dirname, '..', 'src');
+
+  const walk = (dir: string): string[] =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return entry.name === 'dialects' ? [] : walk(full); // 方言自己的目录豁免
+      return entry.name.endsWith('.ts') ? [full] : [];
+    });
+
+  const offenders: string[] = [];
+  for (const file of walk(srcDir)) {
+    const hits = findDialectNameBranches(fs.readFileSync(file, 'utf8'));
+    if (hits.length > 0) offenders.push(`${path.relative(srcDir, file)}: ${hits.join(', ')}`);
+  }
+  assert.deepStrictEqual(
+    offenders,
+    [],
+    `方言知识必须待在 src/dialects/ 里，别处不该再按方言名分支：\n${offenders.join('\n')}`,
+  );
+
+  // 门禁必须能证伪：同样的扫描函数要能抓到一段"坏代码"
+  assert.ok(
+    findDialectNameBranches("if (dialect === 'mysql') return 'x';").length === 1,
+    '门禁抓不到方言名分支 —— 这条测试是假的',
+  );
+  assert.ok(findDialectNameBranches("switch (dialect) { case 'sqlite': break; }").length === 1);
+  assert.ok(findDialectNameBranches("const t = 'pgsql' === dialect;").length === 1);
+  assert.deepStrictEqual(findDialectNameBranches("field.type === 'text'"), [], '逻辑类型不算方言名');
+});
+
+test('gate: 假第 4 方言只需要实现 DialectSpec —— 共享装配器就能生成完整 DDL/内省', async () => {
+  const { assembleColumn, assembleCreateTable, assembleIndex } = await import('../src/dialects/assemble.ts');
+  const { hostConnectionFromFields } = await import('../src/dialects/types.ts');
+  const type = await import('../src/dialects/types.ts');
+  void type;
+
+  // 一个假想方言（不注册、不碰任何现有文件），只实现接口
+  const FAKE_TYPES = new Proxy({} as Record<string, (o: { length?: number }) => string>, {
+    get: () => () => 'FAKETYPE',
+  });
+  const fake: import('../src/dialects/types.ts').DialectSpec = {
+    name: 'fake' as never,
+    driverPackage: 'fake-driver',
+    driver: () => () => ({ name: 'fake', create: async () => ({} as never) }),
+    defaultPort: 1234,
+    placeholder: () => '@p',
+    quote: (name) => `[${name}]`,
+    quoteTable: (schema, table) => (schema === undefined ? `[${table}]` : `[${schema}].[${table}]`),
+    supportsReturning: false,
+    columnType: (logical) => FAKE_TYPES[logical]({}) ?? 'FAKETYPE',
+    autoIncrementPieces: (field) => (field.autoIncrement ? { beforeNotNull: 'IDENTITY(1,1)' } : null),
+    defaultLiteral: (field) => (field.hasDefault ? String(field.defaultValue) : null),
+    inlineComment: (field) => (field.comment === undefined ? null : `'${field.comment}'`),
+    tableSuffix: () => ' SUFFIXED',
+    commentStatements: () => [],
+    indexIfNotExists: false,
+    isDuplicateIndexError: () => false,
+    introspection: {
+      tableExists: (table) => ({ sql: 'SELECT 1 FROM fake_tables WHERE name = @p', params: [table] }),
+      columns: (table) => ({ sql: 'SELECT * FROM fake_columns WHERE table_name = @p', params: [table] }),
+      toColumn: (row) => ({
+        name: String(row.name),
+        type: String(row.type).toLowerCase(),
+        rawType: String(row.type),
+        notNull: row.nullable === false,
+        hasDefault: row.default !== undefined,
+      }),
+    },
+    normalizeDbType: (rawType) => String(rawType).toLowerCase(),
+    serializeBoolean: (value) => (value ? 1 : 0),
+    serializeTimestamp: (date) => date.toISOString(),
+    comments: 'inline',
+    connectionKind: 'host',
+    connectionFromFields: (input) => hostConnectionFromFields(input, 'fake' as never, 1234),
+    connectionFromUrl: () => ({ dialect: 'fake' as never, host: 'h' }),
+    describe: (connection) => `fake://${String(connection.host)}`,
+  };
+
+  const model = defineModel({
+    name: 'things',
+    comment: '假方言的表',
+    fields: {
+      id: { type: 'integer', primaryKey: true, autoIncrement: true },
+      title: { type: 'string', length: 10, notNull: true, comment: '标题' },
+      flag: { type: 'boolean', default: true },
+    },
+  });
+
+  // 列定义：假方言的片段要出现在正确位置（IDENTITY 在 NOT NULL 之前）
+  const idColumn = assembleColumn(fake, model.fieldFor('id'), { withComments: true });
+  assert.strictEqual(idColumn, '[id] FAKETYPE IDENTITY(1,1) NOT NULL PRIMARY KEY');
+  const titleColumn = assembleColumn(fake, model.fieldFor('title'), { withComments: true });
+  assert.strictEqual(titleColumn, "[title] FAKETYPE NOT NULL COMMENT '标题'");
+  const flagColumn = assembleColumn(fake, model.fieldFor('flag'), { withComments: true });
+  assert.strictEqual(flagColumn, '[flag] FAKETYPE DEFAULT true');
+
+  // 建表 / 索引 / 内省：全都走共享装配器与描述符，不需要任何"方言专用代码"
+  const ddl = assembleCreateTable(fake, model, { withComments: true });
+  assert.match(ddl, /^CREATE TABLE IF NOT EXISTS \[things\] /);
+  assert.match(ddl, / SUFFIXED$/, '表级后缀没有生效');
+  assert.strictEqual(
+    assembleIndex(fake, 'things', { name: 'things_title', columns: ['title'], unique: false }),
+    'CREATE INDEX [things_title] ON [things] ([title])',
+    '假方言不支持 IF NOT EXISTS，装配器必须尊重这个能力位',
+  );
+  assert.deepStrictEqual(fake.introspection.tableExists('things').params, ['things']);
+  assert.deepStrictEqual(fake.introspection.toColumn({ name: 'id', type: 'INT', nullable: false }), {
+    name: 'id',
+    type: 'int',
+    rawType: 'INT',
+    notNull: true,
+    hasDefault: false,
+  });
+  assert.strictEqual(fake.describe({ dialect: 'fake' as never, host: 'db' }), 'fake://db');
+  assert.deepStrictEqual(fake.connectionFromFields({ host: 'h', database: 'd' }), {
+    dialect: 'fake',
+    host: 'h',
+    port: 1234,
+    database: 'd',
+  });
+
+  // 注册表仍然是唯一的门槛：假方言没登记 → 明确报错（而不是静默当成某个已有方言）
+  assert.throws(() => dialectSpec('fake' as never), /unknown dialect/i);
+});

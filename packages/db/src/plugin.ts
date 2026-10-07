@@ -1,6 +1,7 @@
-import { dialectFromUrl, type Dialect } from './dialect.ts';
+import { DIALECTS, dialectFromUrl, isDialect, type Dialect } from './dialect.ts';
 import { DbConfigError } from './errors.ts';
 import { createDatabase, type Database } from './database.ts';
+import { dialectSpec } from './dialects/index.ts';
 import type { PoolOptions } from './drivers/types.ts';
 import type { Model } from './model.ts';
 import type { Repository } from './repository.ts';
@@ -83,10 +84,13 @@ export interface DatabasePluginOptions {
 function inferDialect(connection: Record<string, unknown> | undefined): Dialect | undefined {
   if (connection === undefined) return undefined;
   const explicit = connection.dialect;
-  if (explicit === 'pgsql' || explicit === 'mysql' || explicit === 'sqlite') return explicit;
+  if (isDialect(explicit)) return explicit;
   const url = connection.url;
   if (typeof url === 'string' && url !== '') return dialectFromUrl(url);
-  if (typeof connection.filename === 'string') return 'sqlite';
+  if (typeof connection.filename === 'string') {
+    // "文件名形式的连接"是哪个方言由能力位决定（不点名 sqlite —— 加方言时这里不用改）
+    return DIALECTS.find((dialect) => dialectSpec(dialect).connectionKind === 'file');
+  }
   return undefined;
 }
 
@@ -137,7 +141,7 @@ export function databasePlugin(options: DatabasePluginOptions = {}): DatabasePlu
       const file = read<string>('file', './data/app.sqlite');
       // 方言优先级：显式 options.dialect → 从显式 connection 推断（filename/url）→ 配置 driver → pgsql
       const dialect = (options.dialect ?? inferDialect(options.connection) ?? read<Dialect>('driver', 'sqlite')) as Dialect;
-      if (url === '' && options.connection === undefined && dialect !== 'sqlite') {
+      if (url === '' && options.connection === undefined && dialectSpec(dialect).connectionKind === 'host') {
         // 需要 host 的方言却没给 url：给一句能照着做的错误，而不是让它掉进通用解析错误里
         throw new DbConfigError(
           `databasePlugin: driver "${dialect}" needs a connection url — set plugins.db.url ` +

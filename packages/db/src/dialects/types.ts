@@ -1,3 +1,4 @@
+import type { DriverFactory } from '../drivers/types.ts';
 import { DbConfigError } from '../errors.ts';
 
 /**
@@ -171,6 +172,12 @@ export interface DialectSpec {
   readonly name: Dialect;
   /** 懒加载的驱动包名（sqlite 是内置模块，不需要安装）。 */
   readonly driverPackage: string;
+  /**
+   * 这个方言用哪个驱动（把"方言 → 驱动"的绑定也放进描述符）。
+   *
+   * 驱动本身仍是**懒加载**的：`() => createPgDriver()` 只返回工厂，真正 `import('pg')` 发生在连接时。
+   */
+  readonly driver: () => DriverFactory;
   readonly defaultPort: number | null;
 
   // --- 语法层面 ---------------------------------------------------------
@@ -216,6 +223,63 @@ export interface DialectSpec {
 
   // --- 注释能力位（代替 schema 层写方言名）-----------------------------
   readonly comments: 'statements' | 'inline' | 'none';
+
+  // --- 连接形状 ---------------------------------------------------------
+  /**
+   * 连接是"一个文件"还是"host + 端口"。
+   *
+   * 用能力位而不是方言名：插件里"需要 host 的方言必须给 url"这条判断因此不需要点名 pgsql/mysql。
+   */
+  readonly connectionKind: 'file' | 'host';
+  /** 字段式连接（`{ host, port, … }`）→ 规范化连接（sqlite 取 `filename`）。 */
+  connectionFromFields(input: Record<string, unknown>): NormalizedConnection;
+  /** DSN → 规范化连接（sqlite 的 path 是**文件名**，其它方言是 database）。 */
+  connectionFromUrl(url: string): NormalizedConnection;
+  /** 只用于日志/错误：**永远不含密码**。 */
+  describe(connection: NormalizedConnection): string;
+}
+
+// --- 三个方言共用的连接处理（host 形式的方言直接用；sqlite 自己实现）---------
+
+/** 字段式连接（host/port/user/password/database）—— pg 与 mysql 共用。 */
+export function hostConnectionFromFields(
+  input: Record<string, unknown>,
+  dialect: Dialect,
+  defaultPort: number | null,
+): NormalizedConnection {
+  const result: NormalizedConnection = { dialect };
+  const port = input.port === undefined || input.port === null ? (defaultPort ?? undefined) : Number(input.port);
+  // 严格模式（exactOptionalPropertyTypes）下不能给可选字段赋 undefined，所以逐个条件赋值
+  if (typeof input.host === 'string' && input.host !== '') result.host = input.host;
+  if (port !== undefined && port !== null) result.port = port;
+  if (typeof input.user === 'string' && input.user !== '') result.user = input.user;
+  if (typeof input.password === 'string' && input.password !== '') result.password = input.password;
+  if (typeof input.database === 'string' && input.database !== '') result.database = input.database;
+  if (result.host === undefined && result.database === undefined) {
+    throw new DbConfigError('connection config needs at least a host or a database (or pass a full { url })');
+  }
+  return result;
+}
+
+/** DSN 解析（host 形式）—— pg 与 mysql 共用。 */
+export function hostConnectionFromUrl(url: string, dialect: Dialect, defaultPort: number | null): NormalizedConnection {
+  const parsed = new URL(url);
+  const port = parsed.port === '' ? (defaultPort ?? undefined) : Number(parsed.port);
+  const normalized: NormalizedConnection = { dialect, url };
+  if (parsed.hostname !== '') normalized.host = parsed.hostname;
+  if (port !== undefined && port !== null) normalized.port = port;
+  if (parsed.username !== '') normalized.user = decodeURIComponent(parsed.username);
+  if (parsed.password !== '') normalized.password = decodeURIComponent(parsed.password);
+  const database = parsed.pathname.replace(/^\//, '');
+  if (database !== '') normalized.database = database;
+  return normalized;
+}
+
+/** 日志友好的描述（host 形式）—— **不含密码**。 */
+export function hostDescribe(connection: NormalizedConnection, defaultPort: number | null): string {
+  const host = connection.host ?? 'localhost';
+  const port = connection.port ?? defaultPort ?? '';
+  return `${connection.dialect}://${host}:${String(port)}/${String(connection.database ?? '')}`;
 }
 
 /** 每个方言一张类型表：`Record<LogicalType, …>` 让 TypeScript 强制补齐，漏一个就编译报错。 */

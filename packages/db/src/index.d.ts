@@ -63,18 +63,87 @@ export declare const DRIVER_PACKAGES: Record<Dialect, string>;
  */
 export declare function supportsReturning(dialect: Dialect): boolean;
 
-/** 一个方言的差异点（详见 docs/design/m6-dialect-spec.md）。 */
+/** 内省出来的一列。 */
+export interface IntrospectedColumn {
+  name: string;
+  type: string;
+  rawType: string;
+  notNull: boolean;
+  hasDefault: boolean;
+}
+
+/** 一个方言的差异点（**加方言只需实现它 + 在 DIALECT_SPECS 登记一行**）。 */
 export interface DialectSpec {
   readonly name: Dialect;
   /** 懒加载的驱动包名（sqlite 是内置模块，不需要安装）。 */
   readonly driverPackage: string;
+  /** 这个方言用哪个驱动（驱动本身仍是懒加载）。 */
+  readonly driver: () => DriverFactory;
   readonly defaultPort: number | null;
+  readonly connectionKind: 'file' | 'host';
+
   placeholder(index: number): string;
   quote(name: string): string;
   quoteTable(schema: string | undefined, table: string): string;
   readonly supportsReturning: boolean;
   columnType(logical: LogicalType, options?: ColumnTypeOptions): string;
+
+  autoIncrementPieces(field: RenderableField): AutoIncrementPieces | null;
+  defaultLiteral(field: RenderableField): string | null;
+  inlineComment(field: RenderableField): string | null;
+  tableSuffix(model: RenderableModel, options: { withComments: boolean }): string;
+  commentStatements(model: RenderableModel): string[];
+  readonly indexIfNotExists: boolean;
+  isDuplicateIndexError(error: unknown): boolean;
+  readonly comments: 'statements' | 'inline' | 'none';
+
+  introspection: {
+    tableExists(table: string): { sql: string; params: readonly unknown[] };
+    columns(table: string): { sql: string; params: readonly unknown[] } | { pragma: string };
+    toColumn(row: Record<string, unknown>): IntrospectedColumn;
+  };
+  normalizeDbType(rawType: string, options?: { length?: number | null }): string;
+  serializeBoolean(value: unknown): boolean | number;
+  serializeTimestamp(date: Date): Date | string;
+
+  connectionFromFields(input: Record<string, unknown>): NormalizedConnection;
+  connectionFromUrl(url: string): NormalizedConnection;
+  describe(connection: NormalizedConnection): string;
 }
+
+/** 渲染列定义需要的字段视图（`Field` 结构上满足它）。 */
+export interface RenderableField {
+  readonly column: string;
+  readonly name: string;
+  readonly type: LogicalType;
+  readonly length?: number;
+  readonly precision?: number;
+  readonly scale?: number;
+  readonly notNull: boolean;
+  readonly primaryKey: boolean;
+  readonly unique: boolean;
+  readonly hasDefault: boolean;
+  readonly defaultValue?: unknown;
+  readonly autoIncrement: boolean;
+  readonly comment?: string;
+}
+
+/** 渲染建表语句需要的表视图（`Model` 结构上满足它）。 */
+export interface RenderableModel {
+  readonly table: string;
+  readonly comment?: string;
+  readonly fields: readonly RenderableField[];
+}
+
+/** 自增身份的方言片段（位置有讲究，所以结构化返回）。 */
+export interface AutoIncrementPieces {
+  override?: string;
+  beforeNotNull?: string;
+  afterNotNull?: string;
+}
+
+/** 值是不是已知方言（注册表驱动）。 */
+export declare function isDialect(value: unknown): value is Dialect;
 
 /** 方言描述符注册表（加方言＝加一个文件 + 这里加一行）。 */
 export declare const DIALECT_SPECS: Record<Dialect, DialectSpec>;
@@ -352,8 +421,8 @@ export declare function normalizeDbType(
   rawType: string,
   options?: { length?: number | null },
 ): string;
-export declare function tableExistsSql(dialect: Dialect): string;
-export declare function columnsSql(dialect: Dialect): string;
+export declare function tableExistsSql(dialect: Dialect, table?: string): string;
+export declare function columnsSql(dialect: Dialect, table?: string): string;
 export declare function inspectTable(dialect: Dialect, runner: Runner, table: string): Promise<TableInfo>;
 export declare function checkDrift(dialect: Dialect, model: Model, info: TableInfo): DriftReport;
 export declare function syncModels(

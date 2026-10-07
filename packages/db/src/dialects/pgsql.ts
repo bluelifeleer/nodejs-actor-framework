@@ -1,4 +1,8 @@
+import { createPgDriver } from '../drivers/pg.ts';
 import {
+  hostConnectionFromFields,
+  hostConnectionFromUrl,
+  hostDescribe,
   normalizeTypeText,
   numericLiteral,
   sqlString,
@@ -52,6 +56,8 @@ function normalizeDbType(rawType: string, options: { length?: number | null }): 
   return normalizeTypeText(text, options.length);
 }
 
+const DEFAULT_PORT = 5432;
+
 function quote(name: string): string {
   return `"${String(name).split('"').join('""')}"`;
 }
@@ -59,7 +65,8 @@ function quote(name: string): string {
 export const pgsql: DialectSpec = {
   name: 'pgsql',
   driverPackage: 'pg',
-  defaultPort: 5432,
+  driver: () => createPgDriver(),
+  defaultPort: DEFAULT_PORT,
   placeholder: (index) => `$${index}`,
   quote,
   quoteTable: (schema, table) => (schema === undefined ? quote(table) : `${quote(schema)}.${quote(table)}`),
@@ -133,4 +140,9 @@ export const pgsql: DialectSpec = {
   serializeBoolean: (value) => Boolean(value), // pg 的 boolean 列不接受 1/0
   serializeTimestamp: (date) => date,
   comments: 'statements',
+
+  connectionKind: 'host',
+  connectionFromFields: (input) => hostConnectionFromFields(input, 'pgsql', DEFAULT_PORT),
+  connectionFromUrl: (url) => hostConnectionFromUrl(url, 'pgsql', DEFAULT_PORT),
+  describe: (connection) => hostDescribe(connection, DEFAULT_PORT),
 };

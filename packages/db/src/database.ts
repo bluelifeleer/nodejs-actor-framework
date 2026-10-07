@@ -1,3 +1,4 @@
+import { dialectSpec } from './dialects/index.ts';
 import {
   DbConfigError,
   DbConnectionError,
@@ -95,17 +96,9 @@ export interface Database {
   ): Repository<M>;
 }
 
+/** 方言 → 驱动（绑定写在方言描述符里；加方言不用来改这个文件）。 */
 function defaultDriverFor(dialect: Dialect): DriverFactory {
-  switch (dialect) {
-    case 'pgsql':
-      return createPgDriver();
-    case 'mysql':
-      return createMysqlDriver();
-    case 'sqlite':
-      return createSqliteDriver();
-    default:
-      throw new DbConfigError(`no driver for dialect "${String(dialect)}"`);
-  }
+  return dialectSpec(dialect).driver();
 }
 
 /**

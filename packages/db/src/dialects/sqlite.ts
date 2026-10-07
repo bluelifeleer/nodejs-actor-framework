@@ -1,3 +1,4 @@
+import { createSqliteDriver } from '../drivers/sqlite.ts';
 import {
   normalizeTypeText,
   numericLiteral,
@@ -48,6 +49,7 @@ function quote(name: string): string {
 export const sqlite: DialectSpec = {
   name: 'sqlite',
   driverPackage: 'node:sqlite', // 内置模块，不需要安装
+  driver: () => createSqliteDriver(),
   defaultPort: null,
   placeholder: () => '?',
   quote,
@@ -105,4 +107,17 @@ export const sqlite: DialectSpec = {
   // sqlite 的 timestamp 列是 TEXT：统一存 ISO 串（字典序 == 时间序）
   serializeTimestamp: (date) => date.toISOString(),
   comments: 'none',
+
+  // sqlite 没有 host/port/database：连接就是一个文件（缺省内存库）
+  connectionKind: 'file',
+  connectionFromFields: (input) => {
+    const filename = typeof input.filename === 'string' && input.filename !== '' ? input.filename : ':memory:';
+    return { dialect: 'sqlite', filename };
+  },
+  connectionFromUrl: (url) => {
+    // 去掉 scheme（`sqlite:` / `sqlite://`），剩下的就是文件路径
+    const rest = url.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:(\/\/)?/, '');
+    return { dialect: 'sqlite', filename: rest === '' ? ':memory:' : rest, url };
+  },
+  describe: (connection) => `sqlite:${String(connection.filename ?? ':memory:')}`,
 };

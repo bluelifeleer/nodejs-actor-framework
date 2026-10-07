@@ -253,10 +253,44 @@ MySQL 的 `insertId`（没有 RETURNING）。这些最终会退化成 `if (name 
   最终只加 `serializeBoolean`/`serializeTimestamp`（我自己写的测试先按老草图断言了 `coerceBoolean`，
   发现它在三方言下没有差异后删掉了 —— 不为想象出来的差异造接口）。
 
-## 14. 验收
+## 14. 实施进度（续 3）—— Step 4 完成，全部收口
 
-- [ ] `dialects/` 之外 grep 不到 `dialect === '`（门禁测试，可证伪）。
-- [ ] 契约测试覆盖 3 方言 × 23 类型（TS 的 `Record` 保证不遗漏）。
-- [ ] 测试里的**假第 4 方言**能通过 `createDatabase` + `sync` + 仓储 CRUD（证明"加方言 = 一个文件"）。
-- [ ] 现有 704+ 条测试、`npm run typecheck`（源码 + 声明面）、`docs:build` 全绿。
-- [ ] DDL 文本逐条对照测试**一字不改**地通过（证明行为没变）。
+- **Step 4（已完成）**：连接形状（`connectionFromFields`/`connectionFromUrl`/`describe`）与
+  **驱动绑定**（`driver: () => DriverFactory`）都搬进描述符，"方言 → 驱动"的 switch 也从 `database.ts` 消失。
+  新增 `connectionKind: 'file' | 'host'` 能力位 —— 插件里"需要 host 的方言必须给 url"这条判断、
+  以及"从 `filename` 推断方言"，都不再点名某个方言（`DIALECTS.find(d => dialectSpec(d).connectionKind === 'file')`）。
+  新增共享装配器 `dialects/assemble.ts`（`assembleColumn`/`assembleCreateTable`/`assembleIndex`）——
+  `model.ts` 不再自己拼 SQL，测试也能拿**假方言**喂进同一个装配器。
+- **门禁达成**：`packages/db/src/dialects/` 之外 **0 处**按方言名分支（比较/switch），由测试扫描保证，
+  并且门禁本身带证伪用例（喂一段坏代码必须被抓到、`field.type === 'text'` 不算）。
+- **假第 4 方言用例**：测试内实现一个完整的 `DialectSpec`（不注册、不碰任何现有文件），
+  用共享装配器生成列/建表/索引 SQL、走内省与连接形状 —— 证明"加方言 = 实现接口 + 注册表一行"；
+  同时断言未注册的方言名仍然明确报错（注册表是唯一门槛）。
+- **最终数据**：方言名分支 **55 → 0**（`dialect.ts` 从 ~270 行降到 133 行；方言知识集中在
+  `dialects/` 6 个文件里）；`npm test` **714/714**、typecheck 0（源码 + 声明面）、文档站 40 页。
+
+### 与设计草图的偏差（如实记录）
+
+1. **`parseValue`/`serializeValue` 缩成两个方法**：真正随方言而异的只有"写库的布尔"（`true/false` vs `1/0`）
+   与"sqlite 的时间戳要 ISO 文本"；解析布尔（`Number(value) === 1`）与 JSON/日期/数字处理都是通用的 →
+   最终只加 `serializeBoolean`/`serializeTimestamp`（不为想象出来的差异造接口）。
+2. **`columnExtras` 改成结构化 + 拆细**：`autoIncrementPieces`（位置敏感：`beforeNotNull`/`afterNotNull`/`override`）
+   / `inlineComment` / `tableSuffix` / `commentStatements`。拼字符串的 `string[]` 无法表达"IDENTITY 在 NOT NULL 之前、
+   AUTO_INCREMENT 在之后"这种位置差异。
+3. **`generatedIdFrom` 没有进描述符**：自增回读留在**驱动层**（mysql 的 `insertReturning` 返回 `{ insertId }`，
+   仓储层做两种形状的兼容读取），因为那取决于驱动的返回形状（`RETURNING` 行 vs `insertId`），不是 SQL 方言。
+4. **多了一个 `introspection.toColumn`**：information_schema 与 PRAGMA 的**行形状**不同，必须在方言里归一。
+5. **"52 处"这个数字在实施期间长到了 55**：最初是拿 `dialect === '` 这个窄模式量的，而插件里
+   `explicit === 'pgsql'` 这类"换个接收者的方言名比较"没被算进去 —— 最终门禁用更宽的规则
+   （任意接收者与方言名字面量比较 / `case '<方言>'`），并把 `dialects/` 划为唯一豁免区。
+
+## 15. 验收
+
+- [x] `dialects/` 之外扫不到任何按方言名的分支（门禁测试 + 证伪用例）。
+      注：最终用的是"任意接收者与方言名字面量比较 / `case '<方言>'`"这条更宽的规则；
+      假第 4 方言的验收方式改成了"用共享装配器跑通列/建表/索引/内省"（而不是 `createDatabase`），
+      因为注册表是唯一的门槛 —— 未注册的方言必须报错，这是刻意保留的。
+- [x] 契约测试覆盖 3 方言 × 22 逻辑类型（TS 的 `Record<LogicalType, …>` 保证每个方言不遗漏）。
+- [x] 测试里的**假第 4 方言**能生成完整 DDL/索引/内省（`dialect-spec.test.ts`）。
+- [x] `npm test` 714/714、`npm run typecheck`（源码 + 声明面）0 错误、`docs:build` 40 页全绿。
+- [x] DDL 文本逐条对照测试**一字未改**地通过（证明行为没变）。

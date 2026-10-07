@@ -1,4 +1,5 @@
 import { type Dialect, type LogicalType } from './dialect.ts';
+import { assembleColumn, assembleCreateTable, assembleIndex } from './dialects/assemble.ts';
 import { dialectSpec } from './dialects/index.ts';
 import { DbConfigError } from './errors.ts';
 
@@ -168,41 +169,13 @@ function assertSafeName(kind: string, value: string): void {
 }
 
 /**
- * 列定义：**共享骨架 + 方言数据**。
+ * 列定义：**共享骨架 + 方言数据**（装配逻辑在 `dialects/assemble.ts`）。
  *
- * 顺序（三方言一致的约束由这里保证，方言只提供片段，避免各写一遍导致漂移）：
- *   `列名 类型 [NOT NULL 之前的方言片段] NOT NULL [NOT NULL 之后的片段] 约束 [DEFAULT …] [内联注释]`
- *
- * 方言片段来自 `DialectSpec`：`autoIncrementPieces`（IDENTITY / AUTO_INCREMENT / rowid 别名接管整列）、
- * `defaultLiteral`（含"这个方言不给这种列写默认值"的 `null`）、`inlineComment`（只有 MySQL 有）。
+ * 顺序：`列名 类型 [NOT NULL 之前的方言片段] NOT NULL [NOT NULL 之后的片段] 约束 [DEFAULT …] [内联注释]`
+ * —— 三方言一致的约束由装配器保证，方言只提供片段。
  */
-function typeOptionsFor(field: Field): { length?: number; precision?: number; scale?: number } {
-  return {
-    ...(field.length === undefined ? {} : { length: field.length }),
-    ...(field.precision === undefined ? {} : { precision: field.precision }),
-    ...(field.scale === undefined ? {} : { scale: field.scale }),
-  };
-}
-
 function columnDefinition(dialect: Dialect, field: Field, withComments = true): string {
-  const impl = dialectSpec(dialect);
-  const pieces = impl.autoIncrementPieces(field);
-  if (pieces !== null && pieces.override !== undefined) return pieces.override;
-
-  const parts: string[] = [impl.quote(field.column), impl.columnType(field.type, typeOptionsFor(field))];
-  if (pieces !== null && pieces.beforeNotNull !== undefined) parts.push(pieces.beforeNotNull);
-  if (field.notNull || field.primaryKey) parts.push('NOT NULL'); // 主键隐含 NOT NULL（三方言一致）
-  if (pieces !== null && pieces.afterNotNull !== undefined) parts.push(pieces.afterNotNull);
-  if (field.primaryKey) parts.push('PRIMARY KEY');
-  else if (field.unique) parts.push('UNIQUE');
-
-  const literal = impl.defaultLiteral(field);
-  if (literal !== null) parts.push(`DEFAULT ${literal}`);
-  if (withComments) {
-    const comment = impl.inlineComment(field);
-    if (comment !== null) parts.push(`COMMENT ${comment}`);
-  }
-  return parts.join(' ');
+  return assembleColumn(dialectSpec(dialect), field, { withComments });
 }
 
 function defaultIndexName(table: string, columns: readonly string[]): string {
@@ -340,23 +313,16 @@ export function defineModel(spec: ModelSpec): Model {
       return fields.find((f) => f.column === column);
     },
     createTableSql(dialect: Dialect, options: { comments?: boolean } = {}): string {
-      const impl = dialectSpec(dialect);
       const withComments = options.comments !== false;
-      const columns = fields.map((field) => columnDefinition(dialect, field, withComments)).join(', ');
-      const suffix = impl.tableSuffix(this, { withComments });
-      return `CREATE TABLE IF NOT EXISTS ${impl.quote(table)} (${columns})${suffix}`;
+      return assembleCreateTable(dialectSpec(dialect), this, { withComments });
     },
     commentSql(dialect: Dialect): string[] {
       // 由方言决定：PG 走独立 COMMENT ON；MySQL 已内联在建表语句里；SQLite 没有注释这回事
       return dialectSpec(dialect).commentStatements(this);
     },
     createIndexSql(dialect: Dialect, index: Index): string {
-      const impl = dialectSpec(dialect);
-      const kind = index.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX';
       // mysql 不支持 CREATE INDEX IF NOT EXISTS → 由 schema 层容忍"已存在"错误
-      const ifNotExists = impl.indexIfNotExists ? ' IF NOT EXISTS' : '';
-      const columns = index.columns.map((column) => impl.quote(column)).join(', ');
-      return `${kind}${ifNotExists} ${impl.quote(index.name)} ON ${impl.quote(table)} (${columns})`;
+      return assembleIndex(dialectSpec(dialect), table, index);
     },
     addColumnSql(dialect: Dialect, field: Field): string {
       const impl = dialectSpec(dialect);
