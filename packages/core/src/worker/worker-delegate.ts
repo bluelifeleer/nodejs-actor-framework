@@ -3,6 +3,7 @@
 'use strict';
 
 const path = require('path');
+const fs = require('node:fs');
 const { Worker } = require('worker_threads');
 const config = require('../config.ts');
 const { ActorDefinition } = require('../actor/actor.ts');
@@ -30,10 +31,37 @@ const HOST_PATH = path.join(__dirname, 'worker-host.ts');
 function resolveActorModule(requested: string): string {
   const root = config.root;
   const resolved = path.resolve(root, requested);
-  const relative = path.relative(root, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  /**
+   * 审计 S15：
+   *   1. 光比 `path.relative` **挡不住符号链接** —— root 里一个指向 root 外的软链就能绕过，
+   *      所以对**已存在**的路径再解一次 realpath 比包含关系（不存在的路径交给后面的 require 报错）；
+   *   2. `relative.startsWith('..')` 会把 root 内以 `..` 开头的**合法名字**（`..foo/x.js`）误拒，
+   *      正确的边界是"等于 `..`"或"以 `..` + 分隔符开头"。
+   */
+  const insideRoot = (candidate: string): boolean => {
+    const relative = path.relative(root, candidate);
+    return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  if (!insideRoot(resolved)) {
     throw new DefinitionError(`actor module must live inside ${root} (got "${requested}")`);
   }
+  if (!fs.existsSync(resolved)) return resolved;
+  /**
+   * **两边都要解 realpath**：root 自己也可能是个软链（macOS 上 `/var` → `/private/var`，
+   * 临时目录全在这条链下），只解目标那一侧会把 root 内的合法路径判成"在外面"。
+   */
+  const realRoot = fs.existsSync(root) ? fs.realpathSync(root) : root;
+  const real = fs.realpathSync(resolved);
+  const relativeToRealRoot = path.relative(realRoot, real);
+  const insideRealRoot =
+    relativeToRealRoot !== '..' &&
+    !relativeToRealRoot.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativeToRealRoot);
+  if (!insideRealRoot) {
+    throw new DefinitionError(`actor module resolves outside ${root} via a symlink (got "${requested}")`);
+  }
+  // realpath 只用于**检查**；返回调用方给的那条路径（root 自己可能是软链，返回 realpath 会让
+  // 调用方拿到的路径与传入的形式不一致，测试与日志都会困惑）
   return resolved;
 }
 

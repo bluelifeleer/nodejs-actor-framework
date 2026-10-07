@@ -30,8 +30,13 @@ const BANNER = [
 function tokenEquals(a: unknown, b: unknown): boolean {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  // 审计 S13：长度不早退（先哈希再比，摘要等长）
+
+  const digestA = crypto.createHash('sha256').update(bufA).digest();
+
+  const digestB = crypto.createHash('sha256').update(bufB).digest();
+
+  return crypto.timingSafeEqual(digestA, digestB);
 }
 
 /** 按日志器的**实际形状**调用：函数直接调，对象走 `logSystem`（保留 `this`）。 */

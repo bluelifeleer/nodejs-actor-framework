@@ -379,7 +379,7 @@ class ActorSystem extends EventEmitter {
       await cell._init();
     } catch (err) {
       this._log('actor_init_failed', { path: cell.path, err: err instanceof Error ? err.message : String(err) });
-      const decision = this.rootSupervisor.decide(id);
+      const decision = this.rootSupervisor.decide(id, this.clock.now());
       if (decision.action === 'escalate') {
         await this._onEscalation(cell, err);
         throw err;
@@ -579,7 +579,7 @@ class ActorSystem extends EventEmitter {
   // --- system-level supervision -------------------------------------------
 
   async _onRootCrash(cell: CellLike, reason: unknown): Promise<void> {
-    const decision = this.rootSupervisor.decide(cell.id);
+    const decision = this.rootSupervisor.decide(cell.id, this.clock.now());
     if (decision.action === 'escalate') {
       await this._onEscalation(cell, reason);
       return;

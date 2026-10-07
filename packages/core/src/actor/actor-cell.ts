@@ -815,7 +815,7 @@ class ActorCell {
   }
 
   async _onChildCrash(child: ActorCell, reason: unknown): Promise<void> {
-    const decision = this.childSupervisor.decide(child.id);
+    const decision = this.childSupervisor.decide(child.id, this.system.clock.now());
     if (decision.action === 'escalate') {
       this.system._log('supervisor_escalate', {
         path: this.path,
@@ -970,7 +970,7 @@ class ActorCell {
       await child._init();
     } catch (err) {
       this.system._log('actor_init_failed', { path: child.path, err: err instanceof Error ? err.message : String(err) });
-      const decision = this.childSupervisor.decide(id);
+      const decision = this.childSupervisor.decide(id, this.system.clock.now());
       if (decision.action === 'escalate') {
         this.system._log('supervisor_escalate', { path: this.path, child: child.path, reason: decision.reason });
         throw err;

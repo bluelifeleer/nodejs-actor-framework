@@ -57,25 +57,48 @@ function createFraming(codecs: FramingCodecs) {
   }
 
   class FrameDecoder {
-    buf: Buffer;
+    /** 还没消费完的字节。审计 S11：改成"待拼片段队列"，避免每个 chunk 都 concat 全部已收字节。 */
+    chunks: Buffer[];
+    /** 已收到但还没解析的字节数（用于判断"帧到齐了没有"，不需要真的拼起来）。 */
+    pending: number;
     max: number;
 
+    /** 兼容旧字段名（有些调用方/测试读 `decoder.buf`）——惰性拼一次。 */
+    get buf(): Buffer {
+      if (this.chunks.length === 0) return Buffer.alloc(0);
+      if (this.chunks.length === 1) return this.chunks[0] ?? Buffer.alloc(0);
+      const joined = Buffer.concat(this.chunks, this.pending);
+      this.chunks = [joined];
+      return joined;
+    }
+
     constructor(maxFrameBytes: number) {
-      this.buf = Buffer.alloc(0);
+      this.chunks = [];
+      this.pending = 0;
       this.max = maxFrameBytes;
     }
 
     push(chunk: Buffer): Record<string, unknown>[] {
-      this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
+      if (chunk.length > 0) {
+        this.chunks.push(chunk);
+        this.pending += chunk.length;
+      }
       const frames: Record<string, unknown>[] = [];
-      while (this.buf.length >= HEADER_BYTES) {
-        const len = this.buf.readUInt32BE(0);
+      // 头部（5 字节）先拼出来读长度；只有确认"整帧到齐"才拼一次完整的帧
+      while (this.pending >= HEADER_BYTES) {
+        const head = this.buf.subarray(0, HEADER_BYTES);
+        const len = head.readUInt32BE(0);
         if (len > this.max) throw new Error(`frame too large: ${len} > ${this.max}`);
-        if (this.buf.length < HEADER_BYTES + len) break;
-        const codec = this.buf.readUInt8(4);
-        const body = this.buf.subarray(HEADER_BYTES, HEADER_BYTES + len);
+        if (this.pending < HEADER_BYTES + len) break;
+        const whole = this.buf.subarray(0, HEADER_BYTES + len);
+        const codec = whole.readUInt8(4);
+        const body = whole.subarray(HEADER_BYTES);
         frames.push(decode(codec, body));
-        this.buf = this.buf.subarray(HEADER_BYTES + len);
+        // 注意：rest 必须从**整个缓冲区**上取，而不是从 `whole`（那是只到本帧末尾的视图）——
+        // 我第一版就是从前一帧的视图上取 rest，于是同一块里的后续帧全被丢掉（网关请求全部超时）。
+        const rest = this.buf.subarray(HEADER_BYTES + len); // subarray 是视图，不拷贝
+        this.chunks = rest.length > 0 ? [Buffer.from(rest)] : [];
+        this.pending = rest.length;
       }
       return frames;
     }

@@ -53,10 +53,19 @@ export interface WebhookOptions {
 }
 
 export interface AlertManagerOptions {
-  source?: any;
-  rules?: any[];
-  notifiers?: any[];
+  source?: { url?: string; snapshot?: () => unknown };
+  rules?: Array<Record<string, unknown>>;
+  notifiers?: Array<Record<string, unknown>>;
   intervalMs?: number;
+  /**
+   * 可注入时钟（审计"时钟接缝"）：告警评估是**纯逻辑轮询**，理应走与内核同一套时钟，
+   * 否则注入虚拟时钟的测试"推不动"它，只能真等 intervalMs。
+   */
+  clock?: {
+    now(): number;
+    setInterval(fn: () => void, ms: number, options?: { unref?: boolean }): { id: number };
+    clearInterval(handle: { id: number } | null): void;
+  };
 }
 
 function parsePrometheusText(text: string) {
@@ -259,6 +268,16 @@ class AlertManager extends EventEmitter {
    */
   constructor(options: AlertManagerOptions = {}) {
     super();
+    // 默认时钟 = 真实时间（与 createRealClock 同语义）；测试可以注入虚拟时钟
+    this.clock =
+      options.clock ||
+      {
+        now: () => Date.now(),
+        setInterval: (fn: () => void, ms: number) => setInterval(fn, ms) as unknown as { id: number },
+        clearInterval: (handle: { id: number } | null) => {
+          if (handle) clearInterval(handle as unknown as NodeJS.Timeout);
+        },
+      };
     this.source = options.source || {};
     this.rules = (options.rules || []).map((rule: any) => {
       if (!rule.name || !rule.metric) throw new Error('each alert rule needs { name, metric }');
@@ -288,7 +307,7 @@ class AlertManager extends EventEmitter {
   }
 
   /** Scrape/collect once and evaluate every rule. */
-  async evaluateOnce(now = Date.now()) {
+  async evaluateOnce(now = this.clock.now()) {
     const parsed = await this._collect(now);
     parsed._now = now;
     const transitions = [];
@@ -386,12 +405,12 @@ class AlertManager extends EventEmitter {
   async start() {
     if (this._running) return;
     this._running = true;
-    this.startedAt = Date.now();
+    this.startedAt = this.clock.now();
     await this.evaluateOnce().catch((err: Error) => {
       this.lastError = err;
       this.emit('error', err);
     });
-    this.timer = setInterval(() => {
+    this.timer = this.clock.setInterval(() => {
       // Serialise evaluations: a slow scrape must not stack up.
       this._pending = this._pending
         .then(() => (this._running ? this.evaluateOnce() : null))
@@ -405,7 +424,7 @@ class AlertManager extends EventEmitter {
 
   async stop() {
     this._running = false;
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) this.clock.clearInterval(this.timer);
     this.timer = null;
     await this._pending.catch(() => {});
   }

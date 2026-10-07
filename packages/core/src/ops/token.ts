@@ -156,8 +156,13 @@ class TokenAuthority {
 function timingSafeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(String(a));
   const bufB = Buffer.from(String(b));
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  /**
+   * 审计 S13：原来"长度不等就 return false"，内容比较是恒定时间但**长度会经耗时泄漏**。
+   * 改成先各自 SHA-256 再比：摘要等长，比较路径不依赖输入长度。
+   */
+  const digestA = crypto.createHash('sha256').update(bufA).digest();
+  const digestB = crypto.createHash('sha256').update(bufB).digest();
+  return crypto.timingSafeEqual(digestA, digestB);
 }
 
 /**
