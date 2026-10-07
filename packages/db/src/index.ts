@@ -6,6 +6,7 @@
  *   2. **SQL 全参数化**：标识符走引号转义，值只走占位符。
  */
 export {
+  assertDialect,
   columnTypeFor,
   DIALECTS,
   DEFAULT_PORTS,
@@ -37,3 +38,22 @@ export { createMysqlDriver } from './drivers/mysql.ts';
 export type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';
 
 export { createDatabase, defaultPortFor, DEFAULT_POOL, type Database, type DatabaseOptions, type HealthReport } from './database.ts';
+
+// --- model 层（用户写声明，框架生成 DDL / 做漂移检测）-------------------------
+export { defineModel, type Field, type FieldHooks, type FieldSpec, type Index, type IndexSpec, type Model, type ModelSpec } from './model.ts';
+
+// --- schema 层 ---------------------------------------------------------------
+export {
+  checkDrift,
+  columnsSql,
+  DbSchemaDriftError,
+  inspectTable,
+  normalizeDbType,
+  syncModels,
+  tableExistsSql,
+  type ColumnInfo,
+  type DriftReport,
+  type SyncOptions,
+  type SyncReport,
+  type TableInfo,
+} from './schema.ts';

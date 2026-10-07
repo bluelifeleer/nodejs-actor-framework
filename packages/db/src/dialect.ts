@@ -50,6 +50,9 @@ export function quoteTable(dialect: Dialect, schemaOrTable: string, maybeTable?:
  * 逻辑类型 → 真实列类型。逐条对照（三个方言各一行），不做"听起来对"的猜测。
  */
 export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: { length?: number } = {}): string {
+  // 未知方言必须报错：第一版这里对 uuid 用了 `dialect === 'pgsql' ? … : dialect === 'mysql' ? … : 'text'`，
+  // 于是 'oracle' 会被**静默当成 sqlite** —— 测试抓到了这个"不认识的输入也照做"的洞。
+  assertDialect(dialect);
   const length = options.length;
   switch (logical) {
     case 'uuid':
@@ -93,7 +96,7 @@ export interface NormalizedConnection {
   url?: string;
 }
 
-function assertDialect(value: unknown): Dialect {
+export function assertDialect(value: unknown): Dialect {
   if (value === undefined || value === null || value === '') return 'pgsql';
   if (DIALECTS.includes(value as Dialect)) return value as Dialect;
   throw new DbConfigError(`unknown dialect "${String(value)}": expected one of ${DIALECTS.join(', ')}`);

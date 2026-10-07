@@ -32,6 +32,7 @@ export declare function placeholderFor(dialect: Dialect): (index: number) => str
 export declare function quoteIdentifier(dialect: Dialect, name: string): string;
 export declare function quoteTable(dialect: Dialect, schemaOrTable: string, table?: string): string;
 /** 逻辑类型 → 真实列类型。 */
+export declare function assertDialect(value: unknown): Dialect;
 export declare function columnTypeFor(
   dialect: Dialect,
   logical: LogicalType,
@@ -74,6 +75,9 @@ export declare class DbDriverMissingError extends DbError {
 export declare class DbConfigError extends DbError {}
 export declare class DbConnectionError extends DbError {}
 export declare class DbNotConnectedError extends DbError {}
+export declare class DbSchemaDriftError extends DbError {
+  readonly drift: DriftReport;
+}
 
 // --- 驱动 -------------------------------------------------------------------
 
@@ -120,6 +124,138 @@ export declare function createSqliteDriver(loadModule?: () => unknown): DriverFa
 export declare function createPgDriver(loadModule?: (resolve?: DriverResolver) => Promise<unknown>): DriverFactory;
 export declare function createMysqlDriver(loadModule?: (resolve?: DriverResolver) => Promise<unknown>): DriverFactory;
 
+// --- model 层（用户写声明，框架生成 DDL）-------------------------------------
+
+export interface FieldHooks {
+  /** 列值 → 领域值（如 JSON 解码）。 */
+  parse?: (raw: unknown) => unknown;
+  /** 领域值 → 列值（如 JSON 编码）。 */
+  serialize?: (value: unknown) => unknown;
+}
+
+export interface FieldSpec extends FieldHooks {
+  type: LogicalType;
+  /** `string` 的长度（其它类型忽略）。 */
+  length?: number;
+  /** 列名（默认与字段名相同）。 */
+  column?: string;
+  notNull?: boolean;
+  primaryKey?: boolean;
+  unique?: boolean;
+  /** DB 侧默认值（会渲染成方言正确的字面量）。 */
+  default?: unknown;
+  /** 时间戳自动填充：`create` 只在插入时写，`update` 每次更新都写（由仓储层执行）。 */
+  auto?: 'create' | 'update';
+  /** 乐观锁版本列（一个 model 最多一个）。 */
+  version?: boolean;
+}
+
+export interface Field {
+  name: string;
+  column: string;
+  type: LogicalType;
+  length?: number;
+  notNull: boolean;
+  primaryKey: boolean;
+  unique: boolean;
+  hasDefault: boolean;
+  defaultValue: unknown;
+  auto?: 'create' | 'update';
+  version: boolean;
+  parse?: (raw: unknown) => unknown;
+  serialize?: (value: unknown) => unknown;
+}
+
+export interface IndexSpec {
+  fields: readonly string[];
+  unique?: boolean;
+  name?: string;
+}
+export interface Index {
+  name: string;
+  columns: readonly string[];
+  unique: boolean;
+}
+
+export interface ModelSpec {
+  name: string;
+  /** 表名（默认 = name）。 */
+  table?: string;
+  fields: Record<string, FieldSpec>;
+  indexes?: readonly IndexSpec[];
+  /** 整行级自定义映射（**用户可写**）：行 → 实体。 */
+  parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
+  /** 整行级自定义映射（**用户可写**）：实体 → 行。 */
+  serializeRow?: (entity: Record<string, unknown>) => Record<string, unknown>;
+}
+
+export interface Model {
+  readonly name: string;
+  readonly table: string;
+  readonly fields: readonly Field[];
+  readonly indexes: readonly Index[];
+  readonly primaryKey: string;
+  readonly versionField: string | null;
+  readonly parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
+  readonly serializeRow?: (entity: Record<string, unknown>) => Record<string, unknown>;
+  fieldFor(name: string): Field;
+  fieldByColumn(column: string): Field | undefined;
+  createTableSql(dialect: Dialect): string;
+  createIndexSql(dialect: Dialect, index: Index): string;
+  addColumnSql(dialect: Dialect, field: Field): string;
+}
+
+/** 声明一个 model（用户写这一层；此处不访问数据库）。 */
+export declare function defineModel(spec: ModelSpec): Model;
+
+// --- schema 层 ---------------------------------------------------------------
+
+export interface ColumnInfo {
+  name: string;
+  /** 规范化后的类型（用于比较）。 */
+  type: string;
+  rawType: string;
+  notNull: boolean;
+  hasDefault: boolean;
+}
+export interface TableInfo {
+  table: string;
+  exists: boolean;
+  columns: ColumnInfo[];
+}
+export interface DriftReport {
+  ok: boolean;
+  table: string;
+  tableMissing: boolean;
+  missingColumns: Array<{ field: string; column: string; type: string }>;
+  typeMismatches: Array<{ column: string; expected: string; actual: string }>;
+}
+export interface SyncReport {
+  created: string[];
+  altered: string[];
+  indexes: string[];
+}
+export interface SyncOptions {
+  auto?: boolean;
+  logger?: (event: string, meta?: Record<string, unknown>) => void;
+}
+
+export declare function normalizeDbType(
+  dialect: Dialect,
+  rawType: string,
+  options?: { length?: number | null },
+): string;
+export declare function tableExistsSql(dialect: Dialect): string;
+export declare function columnsSql(dialect: Dialect): string;
+export declare function inspectTable(dialect: Dialect, runner: Runner, table: string): Promise<TableInfo>;
+export declare function checkDrift(dialect: Dialect, model: Model, info: TableInfo): DriftReport;
+export declare function syncModels(
+  dialect: Dialect,
+  runner: Runner,
+  models: readonly Model[],
+  options?: SyncOptions,
+): Promise<SyncReport>;
+
 // --- 数据库句柄 -------------------------------------------------------------
 
 export interface DatabaseOptions {
@@ -128,6 +264,8 @@ export interface DatabaseOptions {
   pool?: PoolOptions;
   driver?: DriverFactory;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
+  /** schema 自动迁移开关（默认 false：`sync()` 只建不改）。 */
+  migrations?: { auto?: boolean };
 }
 
 export declare const DEFAULT_POOL: Required<PoolOptions>;
@@ -155,6 +293,12 @@ export interface Database {
   raw<T = Row>(sql: string, params?: readonly unknown[]): Promise<T[]>;
   rawRun(sql: string, params?: readonly unknown[]): Promise<number>;
   stats(): Record<string, unknown> | null;
+  /** 按 model 建表/建索引（`migrations.auto` 时才做安全加列）。 */
+  sync(models: readonly Model[] | Model, options?: SyncOptions): Promise<SyncReport>;
+  /** 读一张表的实况。 */
+  inspectTable(table: string): Promise<TableInfo>;
+  /** 只比不改：model 与库里实况的差异。 */
+  checkDrift(model: Model): Promise<DriftReport>;
 }
 
 /** 建一个数据库句柄（此刻还不连接）。 */

@@ -16,6 +16,8 @@ import { createMysqlDriver } from './drivers/mysql.ts';
 import { createPgDriver } from './drivers/pg.ts';
 import { createSqliteDriver } from './drivers/sqlite.ts';
 import type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';
+import { checkDrift, inspectTable, syncModels, type DriftReport, type SyncReport, type SyncOptions, type TableInfo } from './schema.ts';
+import type { Model } from './model.ts';
 
 export interface DatabaseOptions {
   /** 方言；不写时按 connection.url 推断，字段式则默认 `pgsql`。 */
@@ -28,6 +30,14 @@ export interface DatabaseOptions {
   driver?: DriverFactory;
   /** 诊断日志接缝（与内核同形状：`(event, meta) => void`）。密码不会进日志。 */
   logger?: (event: string, meta?: Record<string, unknown>) => void;
+  /**
+   * schema 自动迁移开关。
+   *
+   * 默认 `auto: false`：`sync()` 只建表、**不改表**；发现漂移就抛错。
+   * `auto: true` 时只做**安全**操作（加可空列 / 有默认值的列 / 建索引），
+   * 删列、改类型、加 NOT NULL 无默认值的列一律拒绝并说明原因。
+   */
+  migrations?: { auto?: boolean };
 }
 
 /** 池参数的默认值（写在一处，文档与实现不会漂移）。 */
@@ -62,6 +72,12 @@ export interface Database {
   rawRun(sql: string, params?: readonly unknown[]): Promise<number>;
   /** 池的只读统计（驱动不给就返回 null）。 */
   stats(): Record<string, unknown> | null;
+  /** 按 model 建表/建索引（`migrations.auto` 时才做安全加列）；漂移且不允许改时抛 `DbSchemaDriftError`。 */
+  sync(models: readonly Model[] | Model, options?: SyncOptions): Promise<SyncReport>;
+  /** 读一张表的实况（表不存在时 `exists: false`）。 */
+  inspectTable(table: string): Promise<TableInfo>;
+  /** 只比不改：model 与库里实况的差异。 */
+  checkDrift(model: Model): Promise<DriftReport>;
 }
 
 function defaultDriverFor(dialect: Dialect): DriverFactory {
@@ -200,6 +216,23 @@ export function createDatabase(options: DatabaseOptions): Database {
     stats(): Record<string, unknown> | null {
       if (pool === null || typeof pool.stats !== 'function') return null;
       return pool.stats();
+    },
+
+    async sync(models: readonly Model[] | Model, syncOptions: SyncOptions = {}): Promise<SyncReport> {
+      const list = Array.isArray(models) ? models : [models as Model];
+      return syncModels(dialect, requirePool(), list, {
+        auto: syncOptions.auto ?? options.migrations?.auto === true,
+        ...(syncOptions.logger === undefined ? (log === undefined ? {} : { logger: log }) : { logger: syncOptions.logger }),
+      });
+    },
+
+    async inspectTable(table: string): Promise<TableInfo> {
+      return inspectTable(dialect, requirePool(), table);
+    },
+
+    async checkDrift(model: Model): Promise<DriftReport> {
+      const info = await inspectTable(dialect, requirePool(), model.table);
+      return checkDrift(dialect, model, info);
     },
   };
   return api;

@@ -137,10 +137,31 @@ const Note = defineModel({
 - 测试 16 条：方言 5、sqlite 真库 4、pg/mysql 假驱动 4（含驱动缺失的真实报错路径）、
   与 `@actor/data` 的组合 1（`db.runner()` 直接喂给 `createSqlRepository`）、公开面 2。
 
+### Round 2（已完成）：model 层 + schema 层
+
+- `defineModel`：归一化（列名映射、主键/版本字段唯一性校验、索引默认命名）、每字段 `parse`/`serialize`
+  钩子、整行级 `parseRow`/`serializeRow`（用户可写）；标识符安全检查（拒绝空白/分号，引号转义）。
+- DDL 纯函数：`createTableSql` / `createIndexSql` / `addColumnSql`，逐条对照三方言；
+  处理了方言特有的坑：pg 的 `jsonb` 默认值要 `::jsonb`、pg 布尔用 `TRUE/FALSE`（不是 1/0）、
+  **mysql 不给 TEXT/JSON/BLOB 写默认值**（8.0.13 之前不支持表达式默认值，文档写明）、
+  mysql 没有 `CREATE INDEX IF NOT EXISTS`（由 schema 层容忍"索引已存在"）。
+- schema 层：`inspectTable`（sqlite 走 `sqlite_master` + `PRAGMA table_info`，pg/mysql 走 `information_schema`）、
+  `checkDrift`（规范化后的宽松比较）、`syncModels`（建表 + 建索引；表已存在且有漂移 → **默认抛
+  `DbSchemaDriftError` 并列出差异**；`migrations.auto: true` 时只自动做**安全**加列，NOT NULL 无默认值/加主键一律拒绝）。
+- `Database` 增加 `sync` / `inspectTable` / `checkDrift` 与 `migrations: { auto }`；声明面同步更新
+  （公开面门禁核对）。
+- 测试 16 条：model 纯函数 8（DDL 文本逐方言对照、校验、字面量渲染、标识符转义）、
+  sqlite 真库 5（建表/幂等/漂移报错/自动加列/不安全拒绝/类型不符）、pg+mysql 契约 3（内省 SQL、自动加列 SQL、索引已存在容忍）。
+
+**这一轮我自己被抓住的五处**（都是"测试或假数据写错/实现有洞"）：
+① `columnTypeFor` 遇未知方言会**静默当成 sqlite**（真 bug，测试抓到后加了 `assertDialect` 守卫）；
+② 主键错误文案写成 `primaryKey` 而测试期望 "primary key"（改了文案，对使用者也更清楚）；
+③ 假 pg 内省数据漏了 `character_maximum_length` → 被误判成类型不符；
+④ 假 mysql 内省没给列 → 被误判成"所有列都缺"；
+⑤ 我的测试在**建表路径**上断言"必须查列内省"（那是浪费）→ 断言移到"表已存在"的路径。
+
 ### 待做
 
-- **Round 2：model 层** —— `defineModel`（字段/类型/约束/默认值/索引/每字段 parse+serialize）、
-  `sync()` 生成 `CREATE TABLE IF NOT EXISTS`、漂移检测（introspect 三方言）、`migrations.auto` 仅安全操作。
 - **Round 3：ORM 映射层 + 仓储 + 关联** —— 实体↔行映射（列名/JSON/时间戳/version 乐观锁）、
   `db.repository(Model)`、`hasMany/belongsTo` 声明与查询构造、错误类型（冲突/未找到）。
 - **Round 4：文档与门禁收尾** —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
