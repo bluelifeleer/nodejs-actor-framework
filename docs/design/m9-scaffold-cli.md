@@ -147,13 +147,20 @@ actor migrate                                                 # 不变
 就会吃到类型错误。装配时本来就把 `plugin.config` 当 schema 用（`as ConfigSchema`）并在配置加载期校验，
 所以放宽不会让错配置通过（错配置仍在启动期被拒）。
 
-**剩余 6 处（均在示例代码里，分两类）**：
-1. `examples/app-data/src/module.ts` ×3 —— provider 的 `deps` 是 `Record<string, unknown>`，`config` 用前要显式收窄。
-   这是**已知的边界松散**，按脚手架模板的既有做法在边界收窄一次即可（不把 `src/` 放宽）；
-2. `examples/app-plugin/src/greeting-plugin.ts` ×2 与 `examples/app-web/src/module.ts` ×1 ——
-   **看起来是框架类型偏严**：`Route` 不接受 readonly 元组；`RouterSpec`（`defineRouter(...)` 的产物）
-   不能当路由数组用（提示缺 `readonly unknown[]` 的那些成员）。这两处运行时是好的（示例 e2e 通过），
-   所以是**类型与运行时不一致**，要判断是"该放宽 Route/接上 flattenRouter"还是"示例写法不对"。
+**剩余 3 处（已收窄，全是"框架类型与运行时不一致"这一类）**：
+1. `examples/app-plugin/src/greeting-plugin.ts` ×2 —— `get(...)` / `post(...)` 返回的是 **readonly 元组**，
+   而 `Route` 类型不接受 readonly（`readonly [method, path, controller, input?]` 不能赋给 `Route`）；
+2. `examples/app-web/src/module.ts` ×1 —— `routes({...})` 语法糖产出的是**路由表规格**（配 `RoutesTableSpec`），
+   而 `defineModule({ routes })` 只接受**路由数组**（`RouterSpec` 报缺 `readonly unknown[]` 的成员）。
+
+这两处**运行时都是好的**（示例 e2e 与冒烟全过），所以是**类型比运行时严**。要修就得定一个方向：
+是把 `Route` 放宽到接受 readonly 元组、并让 `defineModule({ routes })` 接受"表规格（自动 flatten）"，
+还是要求用户写 `flattenRoutes(routes({...}))`。**这属于公开 API 的形状决策，应该先定方向再改**，
+不能为了"把 examples 接进 typecheck"而临时塞 cast（那会把 cast 教给用户）。
+
+**已提前修掉的一类（3 处）**：`examples/app-data/src/module.ts` 的 3 个 provider 原来写 `({ config }) =>`，
+而 `deps` 是 `Record<string, unknown>` → `config` 是 `unknown`。按脚手架模板的既有做法在**边界**收窄一次
+（`({ config }: { config: { get<T>(key: string): T } }) =>`），不把 `src/` 整体放宽。
 
 **计划**：先修 1、2 两处**插件 spec 类型与 `PluginSpec` 的兼容性**（这是框架的问题，会影响所有用户），
 再把 `examples/**/*.ts` 接进 include；接进去之后若仍有少量"边界收窄"类错误，就逐个按模板的既有做法修掉

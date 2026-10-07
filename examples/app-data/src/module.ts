@@ -13,14 +13,14 @@ let projection: { start(o?: { intervalMs?: number }): void; stop(): Promise<void
 export default defineModule({
   name: 'data',
   providers: {
-    notes: ({ config }) =>
+    notes: ({ config }: { config: { get<T>(key: string): T } }) =>
       createFileRepository<Record<string, unknown>>({
         dir: path.join(config.get<string>('dataDir'), 'notes'),
         idField: 'id',
       }),
-    summaries: ({ config }) =>
+    summaries: ({ config }: { config: { get<T>(key: string): T } }) =>
       createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'summaries') }),
-    orderDedupe: ({ config }) =>
+    orderDedupe: ({ config }: { config: { get<T>(key: string): T } }) =>
       createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'dedupe') }),
   },
   actors: {
