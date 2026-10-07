@@ -8,13 +8,23 @@ export type LogicalType =
   | 'uuid'
   | 'string'
   | 'text'
+  /** 定长字符串（`char(n)`，默认长度 1）；三方言都按标准走。 */
+  | 'char'
+  /** 小文本（MySQL `tinytext`；PG/SQLite 就是 `text`）。 */
+  | 'tinyText'
   /** 大文本（MySQL `longtext`；PG/SQLite 就是 `text`）。 */
   | 'bigText'
+  /** 中等文本（MySQL `mediumtext`；PG/SQLite 就是 `text`）。 */
+  | 'mediumText'
+  /** 极小整数（MySQL `tinyint`；PG 用 `smallint`）。 */
+  | 'tinyint'
   | 'smallint'
   | 'integer'
   | 'bigint'
   /** 定点小数：用 `precision`/`scale`（默认 10,2），**不要**拿它当浮点用。 */
   | 'decimal'
+  /** 4 字节浮点（MySQL `float`；PG `real`）。要双精度请用 `real`。 */
+  | 'float'
   | 'real'
   | 'boolean'
   /** 只有日期（`2026-10-07`），没有时间/时区。 */
@@ -22,6 +32,8 @@ export type LogicalType =
   /** 只有时间（`13:45:06`），没有日期/时区。 */
   | 'time'
   | 'timestamp'
+  /** **不带时区**的时间戳（PG `timestamp` / MySQL `datetime(3)`）；要带时区请用 `timestamp`。 */
+  | 'dateTime'
   | 'json'
   | 'blob'
   /** 定长/变长二进制（MySQL `varbinary(n)`）。 */
@@ -84,9 +96,20 @@ export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: C
       return dialect === 'mysql' ? 'varchar(255)' : 'text';
     case 'text':
       return 'text';
+    case 'char': {
+      // 定长：SQL 标准默认长度 1；sqlite 没有定长概念（用 text）
+      const size = length ?? 1;
+      return dialect === 'sqlite' ? 'text' : `char(${size})`;
+    }
+    case 'tinyText':
+      return dialect === 'mysql' ? 'tinytext' : 'text';
     case 'bigText':
       // MySQL 区分 text/longtext；PG 与 SQLite 只有 text
       return dialect === 'mysql' ? 'longtext' : 'text';
+    case 'mediumText':
+      return dialect === 'mysql' ? 'mediumtext' : 'text';
+    case 'tinyint':
+      return dialect === 'mysql' ? 'tinyint' : dialect === 'pgsql' ? 'smallint' : 'integer';
     case 'smallint':
       return dialect === 'sqlite' ? 'integer' : 'smallint';
     case 'integer':
@@ -99,6 +122,9 @@ export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: C
       const scale = options.scale ?? 2;
       return dialect === 'mysql' ? `decimal(${precision}, ${scale})` : `numeric(${precision}, ${scale})`;
     }
+    case 'float':
+      // 4 字节浮点：pg 的 real 就是它；sqlite 只有 REAL
+      return dialect === 'pgsql' ? 'real' : dialect === 'mysql' ? 'float' : 'real';
     case 'real':
       return dialect === 'pgsql' ? 'double precision' : dialect === 'mysql' ? 'double' : 'real';
     case 'boolean':
@@ -110,6 +136,9 @@ export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: C
       return dialect === 'sqlite' ? 'text' : 'time';
     case 'timestamp':
       return dialect === 'pgsql' ? 'timestamptz' : dialect === 'mysql' ? 'datetime(3)' : 'text';
+    case 'dateTime':
+      // 不带时区：pg 的 timestamp（without time zone）；MySQL 的 datetime 本来就不带时区
+      return dialect === 'pgsql' ? 'timestamp' : dialect === 'mysql' ? 'datetime(3)' : 'text';
     case 'json':
       return dialect === 'pgsql' ? 'jsonb' : dialect === 'mysql' ? 'json' : 'text';
     case 'blob':

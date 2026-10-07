@@ -126,7 +126,8 @@ export interface Model {
   readonly serializeRow?: (entity: Record<string, unknown>) => Record<string, unknown>;
   fieldFor(name: string): Field;
   fieldByColumn(column: string): Field | undefined;
-  createTableSql(dialect: Dialect): string;
+  /** 建表语句；`options.comments === false` 时不写任何内联注释（`comments: 'never'` 用）。 */
+  createTableSql(dialect: Dialect, options?: { comments?: boolean }): string;
   createIndexSql(dialect: Dialect, index: Index): string;
   addColumnSql(dialect: Dialect, field: Field): string;
   /**
@@ -189,7 +190,7 @@ function supportsColumnDefault(dialect: Dialect, field: Field): boolean {
   return field.type !== 'text' && field.type !== 'json' && field.type !== 'blob';
 }
 
-function columnDefinition(dialect: Dialect, field: Field): string {
+function columnDefinition(dialect: Dialect, field: Field, withComments = true): string {
   const parts: string[] = [
     quote(dialect, field.column),
     // 严格模式：不能把 undefined 塞进可选字段
@@ -200,7 +201,7 @@ function columnDefinition(dialect: Dialect, field: Field): string {
   else if (field.unique) parts.push('UNIQUE');
   if (supportsColumnDefault(dialect, field)) parts.push(`DEFAULT ${literalFor(dialect, field, field.defaultValue)}`);
   // MySQL 只支持"建表时内联列注释"（已存在的表不会被自动改注释，设计文档与指南都写明了）
-  if (dialect === 'mysql' && field.comment !== undefined) {
+  if (withComments && dialect === 'mysql' && field.comment !== undefined) {
     parts.push(`COMMENT ${commentLiteral('mysql', field.comment, `column "${field.column}"`)}`);
   }
   return parts.join(' ');
@@ -324,10 +325,11 @@ export function defineModel(spec: ModelSpec): Model {
     fieldByColumn(column: string): Field | undefined {
       return fields.find((f) => f.column === column);
     },
-    createTableSql(dialect: Dialect): string {
-      const columns = fields.map((field) => columnDefinition(dialect, field)).join(', ');
+    createTableSql(dialect: Dialect, options: { comments?: boolean } = {}): string {
+      const withComments = options.comments !== false;
+      const columns = fields.map((field) => columnDefinition(dialect, field, withComments)).join(', ');
       const suffix =
-        dialect === 'mysql' && spec.comment !== undefined
+        withComments && dialect === 'mysql' && spec.comment !== undefined
           ? ` COMMENT=${commentLiteral('mysql', String(spec.comment), `table "${table}"`)}`
           : '';
       return `CREATE TABLE IF NOT EXISTS ${quote(dialect, table)} (${columns})${suffix}`;

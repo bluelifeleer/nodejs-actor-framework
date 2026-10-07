@@ -30,10 +30,15 @@ export interface DriftReport {
   typeMismatches: Array<{ column: string; expected: string; actual: string }>;
 }
 
+/** 注释策略：`never` 从不写；`create`（默认）只在建表那一次写；`always` 每次 sync 都重新应用。 */
+export type CommentMode = 'never' | 'create' | 'always';
+
 export interface SyncReport {
   created: string[];
   altered: string[];
   indexes: string[];
+  /** 这次 sync 是否真的应用了注释（`never` / 已存在的表 / sqlite 上都是 false）。 */
+  commentsApplied: boolean;
   /** 成功应用了注释的目标（形如 `notes` / `notes.title`）。 */
   comments: string[];
   /**
@@ -201,6 +206,11 @@ function canAutoAdd(field: Field): { ok: boolean; reason?: string } {
 export interface SyncOptions {
   /** 是否允许自动 ALTER（默认 false：`sync` 只建不改）。 */
   auto?: boolean;
+  /**
+   * 注释策略（默认 `create`）：**已存在的表不会被自动更新注释** —— 注释是给人看的 schema 文档，
+   * 改它应当是一个显式决定（`always`），而不是每次部署顺手改一遍。
+   */
+  comments?: CommentMode;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -218,11 +228,20 @@ export async function syncModels(
   models: readonly Model[],
   options: SyncOptions = {},
 ): Promise<SyncReport> {
-  const report: SyncReport = { created: [], altered: [], indexes: [], comments: [], unsupportedComments: [] };
+  const commentMode: CommentMode = options.comments ?? 'create';
+  const report: SyncReport = {
+    created: [],
+    altered: [],
+    indexes: [],
+    commentsApplied: false,
+    comments: [],
+    unsupportedComments: [],
+  };
   for (const model of models) {
     const info = await inspectTable(dialect, runner, model.table);
-    if (!info.exists) {
-      await runner.run(model.createTableSql(dialect));
+    const wasCreated = !info.exists;
+    if (wasCreated) {
+      await runner.run(model.createTableSql(dialect, { comments: commentMode !== 'never' }));
       report.created.push(model.table);
       options.logger?.('db_table_created', { table: model.table });
     } else {
@@ -259,27 +278,45 @@ export async function syncModels(
         report.altered.push(model.table);
       }
     }
-    // 注释：pg 走独立的（幂等）COMMENT 语句；mysql 只在建表时内联；sqlite 不支持 → 如实报告
+    /**
+     * 注释：默认**只在建表时**写（`create`）。已存在的表不会被自动更新 —— 想让它每次同步就用
+     * `comments: 'always'`（显式选择）。方言差异如实报告，不假装：
+     *   - MySQL：注释内联在建表语句里；已存在表要改注释得 `ALTER … MODIFY COLUMN`（框架不替你做）；
+     *   - PostgreSQL：`COMMENT ON …`（幂等），`create` 模式只在建表时发、`always` 每次发；
+     *   - SQLite：没有列/表注释这回事。
+     */
     const declaredComments: string[] = [
       ...(model.comment === undefined ? [] : [model.table]),
       ...model.fields.filter((field) => field.comment !== undefined).map((field) => `${model.table}.${field.column}`),
     ];
     if (declaredComments.length > 0) {
-      if (dialect === 'pgsql') {
-        for (const statement of model.commentSql(dialect)) {
-          await runner.run(statement);
-        }
-        report.comments.push(...declaredComments);
-        options.logger?.('db_comments_applied', { table: model.table, count: declaredComments.length });
+      if (commentMode === 'never') {
+        report.unsupportedComments.push(
+          ...declaredComments.map((target) => `${target} (comments disabled: comments: 'never')`),
+        );
       } else if (dialect === 'sqlite') {
         report.unsupportedComments.push(...declaredComments.map((target) => `${target} (sqlite has no column/table comments)`));
-      } else if (info.exists) {
-        // MySQL：注释写在建表语句里，已存在的表不会被自动改注释（要改得 ALTER MODIFY，风险自负）
+      } else if (dialect === 'pgsql') {
+        const shouldApply = commentMode === 'always' || wasCreated;
+        if (shouldApply) {
+          for (const statement of model.commentSql(dialect)) await runner.run(statement);
+          report.comments.push(...declaredComments);
+          report.commentsApplied = true;
+          options.logger?.('db_comments_applied', { table: model.table, count: declaredComments.length });
+        } else {
+          report.unsupportedComments.push(
+            ...declaredComments.map(
+              (target) => `${target} (comments are only applied when the table is created; pass comments: 'always' to update them)`,
+            ),
+          );
+        }
+      } else if (wasCreated) {
+        report.comments.push(...declaredComments); // 刚建表 → 注释已内联在 CREATE TABLE 里
+        report.commentsApplied = true;
+      } else {
         report.unsupportedComments.push(
           ...declaredComments.map((target) => `${target} (mysql comments are only applied at CREATE TABLE)`),
         );
-      } else {
-        report.comments.push(...declaredComments); // 刚建表 → 注释已内联
       }
     }
 

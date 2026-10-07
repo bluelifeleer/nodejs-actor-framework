@@ -38,7 +38,14 @@ export interface DatabaseOptions {
    * `auto: true` 时只做**安全**操作（加可空列 / 有默认值的列 / 建索引），
    * 删列、改类型、加 NOT NULL 无默认值的列一律拒绝并说明原因。
    */
-  migrations?: { auto?: boolean };
+  migrations?: {
+    auto?: boolean;
+    /**
+     * 注释策略（默认 `create`）：只在建表时写注释；已存在的表**不会**被自动更新，
+     * 想每次同步就显式写 `'always'`。
+     */
+    comments?: import('./schema.ts').CommentMode;
+  };
 }
 
 /** 池参数的默认值（写在一处，文档与实现不会漂移）。 */
@@ -234,6 +241,11 @@ export function createDatabase(options: DatabaseOptions): Database {
       for (const model of list) registry.set(model.name, model);
       return syncModels(dialect, requirePool(), list, {
         auto: syncOptions.auto ?? options.migrations?.auto === true,
+        ...(syncOptions.comments === undefined
+          ? options.migrations?.comments === undefined
+            ? {}
+            : { comments: options.migrations.comments }
+          : { comments: syncOptions.comments }),
         ...(syncOptions.logger === undefined ? (log === undefined ? {} : { logger: log }) : { logger: syncOptions.logger }),
       });
     },

@@ -242,6 +242,24 @@ const Note = defineModel({
   并保留"手写接线要注意 provider 是同步的"那段说明；示例 README 同步更新；示例冒烟门禁改用
   `APP_PLUGINS__DB__FILE`；内核成员门禁的"应用/Web 层"白名单补 `ctx.get`（附理由）。
 
+### Round 7（已完成）：再补一批类型 + **注释更新改为不自动**（用户反馈）
+
+- **类型再扩 6 个（17 → 23）**：`char`（定长，`length` 默认 1）、`tinyText` / `mediumText`
+  （补齐 MySQL 的文本家族）、`tinyint`、`float`（单精度，`real` 保持双精度）、`dateTime`
+  （**不带时区**：PG `timestamp` / MySQL `datetime(3)`，与带时区的 `timestamp` 区分开）。
+  逐条对照三方言 + 测试；`dateTime` 与 `timestamp` 一样按 `Date` 处理。
+- **注释不再自动更新**：新增注释策略 `CommentMode = 'never' | 'create' | 'always'`，
+  **默认 `create`** —— 注释只在**建表那一次**写；已存在的表 `sync()` 不会碰它们，并在
+  `SyncReport.unsupportedComments` 里如实说明原因（"comments are only applied when the table is created;
+  pass comments: 'always' to update them"）。`always` 是显式选择（PG 的 `COMMENT ON` 幂等）；
+  `never` 连建表都不写。`SyncReport` 增加 `commentsApplied` 布尔。
+  策略可从 `createDatabase({ migrations: { comments } })` 或插件配置 `plugins.db.comments` 设置
+  （插件会校验取值，非法值直接报错）。
+- 测试 +3（新类型、默认只在建表时写、三种模式的矩阵），并**修正两条"假绿"的旧用例**：
+  它们的假驱动从 `params[0]` 取建表表名，而 `CREATE TABLE` 是字面量 SQL（没有参数）——
+  于是"表已存在"的判断永远为假，旧断言（"每次 sync 都重新应用注释"）其实测的是错的东西。
+  修好假驱动后，旧断言按新语义改成"默认不再动注释"。
+
 ### 待做
  —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。

@@ -4,6 +4,7 @@ import { createDatabase, type Database } from './database.ts';
 import type { PoolOptions } from './drivers/types.ts';
 import type { Model } from './model.ts';
 import type { Repository } from './repository.ts';
+import type { CommentMode } from './schema.ts';
 
 /**
  * 插件需要的**应用侧**能力（结构化，不 import `@actor/app`）。
@@ -45,6 +46,11 @@ export interface DatabasePluginOptions {
   pool?: PoolOptions;
   /** 是否允许 `sync()` 自动补**安全**的列（默认 false；也可由配置 `plugins.<name>.autoMigrate` 打开）。 */
   autoMigrate?: boolean;
+  /**
+   * 注释策略（默认 `create`）：注释只在**建表时**写，已存在的表不会被自动更新；
+   * 想每次同步就显式写 `'always'`（也可由配置 `plugins.<name>.comments` 设置）。
+   */
+  comments?: CommentMode;
   /** 连接后是否必须健康才继续启动（默认 true：连不上就启动失败，不静默降级）。 */
   requireHealthy?: boolean;
   /** 诊断日志接缝（与内核同形状）。 */
@@ -113,6 +119,8 @@ export function databasePlugin(options: DatabasePluginOptions = {}): DatabasePlu
       file: { type: 'string' as const, default: './data/app.sqlite' },
       poolMax: { type: 'number' as const, default: 10 },
       autoMigrate: { type: 'boolean' as const, default: options.autoMigrate === true },
+      // 注释策略：never | create（默认）| always
+      comments: { type: 'string' as const, default: options.comments ?? 'create' },
     },
 
     async onReady(app: DbPluginApp): Promise<void> {
@@ -142,12 +150,18 @@ export function databasePlugin(options: DatabasePluginOptions = {}): DatabasePlu
         base.dialect !== undefined || typeof base.url === 'string' ? base : { dialect, ...base };
       const pool = options.pool ?? { max: read<number>('poolMax', 10) };
       const autoMigrate = options.autoMigrate ?? read<boolean>('autoMigrate', false);
+      const comments = (options.comments ?? read<string>('comments', 'create')) as CommentMode;
+      if (comments !== 'never' && comments !== 'create' && comments !== 'always') {
+        throw new DbConfigError(
+          `databasePlugin: plugins.${name}.comments must be one of never|create|always (got "${String(comments)}")`,
+        );
+      }
 
       db = createDatabase({
         dialect,
         connection: connection as { url: string },
         pool,
-        migrations: { auto: autoMigrate },
+        migrations: { auto: autoMigrate, comments },
         ...(options.logger === undefined ? {} : { logger: options.logger }),
       });
 

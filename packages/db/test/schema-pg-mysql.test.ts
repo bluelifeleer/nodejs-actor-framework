@@ -33,7 +33,9 @@ function fakePgBackend(options: { tables?: string[]; columns?: Record<string, un
       if (/from information_schema\.columns/i.test(sql)) {
         return { rows: columns, rowCount: columns.length };
       }
-      if (/^create table/i.test(sql.trim())) tables.add(String(params[0]));
+      // 建表语句是字面量 SQL（无参数）→ 表名必须从文本里取
+      const created = /^create table(?: if not exists)?\s+["`]?([\w.]+)["`]?/i.exec(sql.trim());
+      if (created !== null) tables.add(created[1]);
       return { rows: [], rowCount: 0 };
     }
     async connect() {
@@ -60,7 +62,9 @@ function fakeMysqlBackend(options: { tables?: string[]; columns?: Record<string,
         err.code = 'ER_DUP_KEYNAME';
         throw err;
       }
-      if (/^create table/i.test(sql.trim())) tables.add(String(params[0]));
+      // 建表语句是字面量 SQL（无参数）→ 表名必须从文本里取
+      const created = /^create table(?: if not exists)?\s+["`]?([\w.]+)["`]?/i.exec(sql.trim());
+      if (created !== null) tables.add(created[1]);
       return [{ affectedRows: 0 }, []];
     },
     async getConnection() {
@@ -178,8 +182,14 @@ test('schema/mysql: 已存在的索引名要容忍（mysql 不支持 CREATE INDE
   }
 });
 
-test('schema/pg: 注释走独立的 COMMENT ON 语句（幂等，每次 sync 都会发）', async () => {
-  const fake = fakePgBackend();
+test('schema/pg: 注释走独立的 COMMENT ON 语句（默认只在建表时写）', async () => {
+  // 表建好之后第二次 sync 会做列内省，所以假驱动要给出与 model 一致的列
+  const fake = fakePgBackend({
+    columns: [
+      { column_name: 'id', is_nullable: 'NO', data_type: 'uuid' },
+      { column_name: 'title', is_nullable: 'YES', data_type: 'character varying', character_maximum_length: 200 },
+    ],
+  });
   const Commented = defineModel({
     name: 'notes',
     comment: '用户笔记',
@@ -205,11 +215,16 @@ test('schema/pg: 注释走独立的 COMMENT ON 语句（幂等，每次 sync 都
     assert.deepStrictEqual(report.comments, ['notes', 'notes.title']);
     assert.deepStrictEqual(report.unsupportedComments, []);
 
-    // 再 sync 一次（表已存在）：pg 的 COMMENT 是幂等的，仍然会发（幂等 + 修正历史遗留注释）
+    // 再 sync 一次（表已存在）：**默认不再动注释**（注释更新不是自动的）
     const before = fake.calls.filter((sql) => /^COMMENT ON /i.test(sql)).length;
-    await db.sync([Commented]);
+    const second = await db.sync([Commented]);
     const after = fake.calls.filter((sql) => /^COMMENT ON /i.test(sql)).length;
-    assert.strictEqual(after - before, 2, 'pg 每次 sync 都应当重新应用注释（幂等）');
+    assert.strictEqual(after - before, 0, '默认（comments: create）下不该更新已存在表的注释');
+    assert.deepStrictEqual(second.comments, []);
+    assert.ok(
+      second.unsupportedComments.some((item) => item.includes('only applied when the table is created')),
+      `应当如实说明注释策略：${JSON.stringify(second.unsupportedComments)}`,
+    );
   } finally {
     await db.close();
   }

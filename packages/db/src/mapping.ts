@@ -29,6 +29,7 @@ export function defaultParseValue(dialect: Dialect, field: Field, value: unknown
     case 'boolean':
       if (typeof value === 'boolean') return value;
       return Number(value) === 1;
+    case 'dateTime':
     case 'timestamp': {
       if (value instanceof Date) return value;
       const parsed = new Date(typeof value === 'number' ? value : String(value));
@@ -42,8 +43,11 @@ export function defaultParseValue(dialect: Dialect, field: Field, value: unknown
       // 只有时间：统一成 'HH:MM:SS'（UTC；Date 输入按 UTC 取时分秒）
       if (value instanceof Date) return value.toISOString().slice(11, 19);
       return String(value).slice(0, 8);
+    case 'tinyint':
+    case 'smallint':
     case 'integer':
     case 'bigint':
+    case 'float':
     case 'real':
       return typeof value === 'number' ? value : Number(value);
     default:
@@ -61,6 +65,7 @@ export function defaultSerializeValue(dialect: Dialect, field: Field, value: unk
     case 'boolean':
       if (dialect === 'pgsql') return Boolean(value); // pg 的 boolean 列不接受 1/0
       return value ? 1 : 0;
+    case 'dateTime':
     case 'timestamp': {
       const date = value instanceof Date ? value : new Date(String(value));
       if (Number.isNaN(date.getTime())) throw new DbConfigError(`cannot serialize "${String(value)}" as a timestamp`);

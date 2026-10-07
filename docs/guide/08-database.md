@@ -86,18 +86,29 @@ console.log(Note.createTableSql('mysql'));
 |---|---|---|---|---|
 | `uuid` | `uuid` | `char(36)` | `text` | 主键由仓储自动生成 |
 | `string` | `varchar(n)` / `text` | `varchar(n)` / `varchar(255)` | `text` | 用 `length` 指定长度 |
+| `char` | `char(n)` | `char(n)` | `text` | 定长字符串，`length` 默认 1 |
 | `text` | `text` | `text` | `text` | 普通文本 |
-| `bigText` | `text` | `longtext` | `text` | 大文本（MySQL 用 `longtext`） |
-| `smallint` / `integer` / `bigint` | `smallint` / `integer` / `bigint` | 同左 | `integer` | SQLite 只有整数 |
+| `tinyText` / `mediumText` / `bigText` | `text` | `tinytext` / `mediumtext` / `longtext` | `text` | MySQL 的文本家族；PG/SQLite 只有 `text` |
+| `tinyint` / `smallint` / `integer` / `bigint` | `smallint` / `smallint` / `integer` / `bigint` | `tinyint` / `smallint` / `int` / `bigint` | `integer` | SQLite 只有整数 |
+| `float` / `real` | `real` / `double precision` | `float` / `double` | `real` | 单精度 / 双精度 |
 | `decimal` | `numeric(p, s)` | `decimal(p, s)` | `numeric(p, s)` | 定点小数，用 `precision`/`scale`（默认 10,2） |
 | `real` | `double precision` | `double` | `real` | 浮点 |
 | `boolean` | `boolean` | `tinyint(1)` | `integer` | 领域里统一是 `boolean` |
 | `date` / `time` | `date` / `time` | `date` / `time` | `text` | 领域里统一是 `'YYYY-MM-DD'` / `'HH:MM:SS'`（不带时区） |
-| `timestamp` | `timestamptz` | `datetime(3)` | `text` | 领域里统一是 `Date` |
+| `timestamp` | `timestamptz` | `datetime(3)` | `text` | **带时区**；领域里统一是 `Date` |
+| `dateTime` | `timestamp` | `datetime(3)` | `text` | **不带时区**；领域里也是 `Date` |
 | `json` | `jsonb` | `json` | `text` | 领域里统一是对象/数组 |
 | `blob` / `binary` | `bytea` | `blob` / `varbinary(n)` | `blob` | 二进制 |
 
-字段还可以带 **schema 注释**（给人看的，不是给你看的）：
+字段还可以带 **schema 注释**（给人看的，不是给你看的）。**注释不会自动更新**：
+默认只在**建表时**写一次，已存在的表不会被 `sync()` 改动（改注释是显式决定，不是每次部署顺手改）：
+
+| 策略（`migrations.comments` / 插件配置 `plugins.db.comments`） | 行为 |
+|---|---|
+| `never` | 从不写注释（连建表也不写） |
+| `create`（默认） | 只在建表时写；已存在的表不动（`SyncReport.unsupportedComments` 会说明原因） |
+| `always` | 每次 `sync()` 都重新应用（PG 的 `COMMENT ON` 是幂等的；MySQL 仍只在建表时能写） |
+
 
 ```js verify
 import { defineModel } from '@actor/db';

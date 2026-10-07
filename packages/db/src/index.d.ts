@@ -12,14 +12,45 @@ export type Dialect = 'pgsql' | 'mysql' | 'sqlite';
 export type LogicalType =
   | 'uuid'
   | 'string'
+  /** 定长字符串（`char(n)`，默认 1）。 */
+  | 'char'
   | 'text'
+  /** 小文本（MySQL `tinytext`）。 */
+  | 'tinyText'
+  /** 中等文本（MySQL `mediumtext`）。 */
+  | 'mediumText'
+  /** 大文本（MySQL `longtext`）。 */
+  | 'bigText'
+  | 'tinyint'
+  | 'smallint'
   | 'integer'
   | 'bigint'
+  /** 定点小数（`precision`/`scale`，默认 10,2）。 */
+  | 'decimal'
+  /** 4 字节浮点。 */
+  | 'float'
+  /** 双精度浮点。 */
   | 'real'
   | 'boolean'
+  /** 只有日期（`'YYYY-MM-DD'`）。 */
+  | 'date'
+  /** 只有时间（`'HH:MM:SS'`）。 */
+  | 'time'
+  /** 带时区的时间戳（PG `timestamptz`）。 */
   | 'timestamp'
+  /** 不带时区的时间戳（PG `timestamp` / MySQL `datetime`）。 */
+  | 'dateTime'
   | 'json'
-  | 'blob';
+  | 'blob'
+  /** 变长二进制（MySQL `varbinary(n)`）。 */
+  | 'binary';
+
+/** 列类型映射的附加参数。 */
+export interface ColumnTypeOptions {
+  length?: number;
+  precision?: number;
+  scale?: number;
+}
 
 export declare const DIALECTS: readonly Dialect[];
 export declare const DEFAULT_PORTS: Record<Dialect, number | null>;
@@ -36,7 +67,7 @@ export declare function assertDialect(value: unknown): Dialect;
 export declare function columnTypeFor(
   dialect: Dialect,
   logical: LogicalType,
-  options?: { length?: number },
+  options?: ColumnTypeOptions,
 ): string;
 
 export interface NormalizedConnection {
@@ -227,7 +258,8 @@ export interface Model {
   readonly serializeRow?: (entity: Record<string, unknown>) => Record<string, unknown>;
   fieldFor(name: string): Field;
   fieldByColumn(column: string): Field | undefined;
-  createTableSql(dialect: Dialect): string;
+  /** 建表语句；`options.comments === false` 时不写内联注释。 */
+  createTableSql(dialect: Dialect, options?: { comments?: boolean }): string;
   createIndexSql(dialect: Dialect, index: Index): string;
   addColumnSql(dialect: Dialect, field: Field): string;
 }
@@ -257,10 +289,15 @@ export interface DriftReport {
   missingColumns: Array<{ field: string; column: string; type: string }>;
   typeMismatches: Array<{ column: string; expected: string; actual: string }>;
 }
+/** 注释策略：`never` 从不写；`create`（默认）只在建表那一次写；`always` 每次 sync 都重新应用。 */
+export type CommentMode = 'never' | 'create' | 'always';
+
 export interface SyncReport {
   created: string[];
   altered: string[];
   indexes: string[];
+  /** 这次 sync 是否真的应用了注释。 */
+  commentsApplied: boolean;
   /** 成功应用了注释的目标（`notes` / `notes.title`）。 */
   comments: string[];
   /** **没有**被应用的注释目标 + 原因（不静默丢弃）。 */
@@ -268,6 +305,8 @@ export interface SyncReport {
 }
 export interface SyncOptions {
   auto?: boolean;
+  /** 注释策略（默认 `create`）：已存在的表**不会**被自动更新注释。 */
+  comments?: CommentMode;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -371,6 +410,8 @@ export interface DatabasePluginOptions {
   pool?: PoolOptions;
   /** 是否允许 sync 自动补安全列（默认 false，也可由配置打开）。 */
   autoMigrate?: boolean;
+  /** 注释策略（默认 `create`；`always` 才会更新已存在表的注释）。 */
+  comments?: CommentMode;
   /** 连接后是否必须健康（默认 true）。 */
   requireHealthy?: boolean;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
@@ -387,8 +428,11 @@ export interface DatabaseOptions {
   pool?: PoolOptions;
   driver?: DriverFactory;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
-  /** schema 自动迁移开关（默认 false：`sync()` 只建不改）。 */
-  migrations?: { auto?: boolean };
+  /**
+   * schema 策略：`auto` 是否允许自动补安全列（默认 false）；`comments` 注释策略
+   * （默认 `create` = 只在建表时写，已存在的表不自动更新）。
+   */
+  migrations?: { auto?: boolean; comments?: CommentMode };
 }
 
 export declare const DEFAULT_POOL: Required<PoolOptions>;
