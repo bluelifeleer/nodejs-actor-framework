@@ -18,6 +18,7 @@ import {
   type RequestContext,
 } from './context.ts';
 import { composeMiddleware, type Middleware } from './middleware.ts';
+import { orderMiddleware } from './plugins.ts';
 import { matchRoute, type HttpMethod, type Route } from './routes.ts';
 
 export interface ControllerSpec {
@@ -66,6 +67,11 @@ export interface DispatchOptions {
    * 使用者接一条日志即可（库代码不自己写 stdout）。
    */
   onError?: (error: unknown, info: { requestId: string; route?: Route; status: number }) => void;
+  /**
+   * 插件贡献的请求上下文钩子（`defineWebPlugin({ context })` 会注册成服务，httpPlugin 读出来传进来）。
+   * 每个请求在中间件之前执行，用来挂 `ctx.log` 这类派生值。
+   */
+  contextHooks?: readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[];
 }
 
 /** 派发结果：响应 + 匹配信息（后者便于 httpPlugin 写访问日志）。 */
@@ -149,13 +155,20 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     ...(options.log === undefined ? {} : { log: options.log }),
   });
 
+  // 插件贡献的上下文（每个请求执行一次；失败即 500，不静默）
+  for (const hook of options.contextHooks ?? []) {
+    const values = hook(ctx as unknown as Record<string, unknown>);
+    if (values !== undefined && values !== null) ctx.extend(values);
+  }
+
   try {
     // 中间件链：全局 → 路由 → 控制器；输入校验紧贴 handle（鉴权/限流可先短路）
-    const chain: Middleware[] = [
+    // 阶段排序：未声明阶段的中间件按 `pre` 处理（于是"不写阶段的既有代码"顺序不变）
+    const chain: Middleware[] = orderMiddleware([
       ...(options.middleware ?? []),
       ...((route.middleware ?? []) as readonly Middleware[]),
       ...(spec.middleware ?? []),
-    ];
+    ]);
     const run = composeMiddleware(chain);
     const result = await run(ctx, async () => {
       let input: Record<string, unknown> = declared;

@@ -35,6 +35,14 @@ function makeAccessor<V>(
 
 export type HeaderValue = string | string[];
 
+import { DbConfigError } from '@actor/resource';
+
+/** 框架保留的 ctx 字段：插件扩展**不能**覆盖它们（覆盖了会让中间件/控制器拿到错东西）。 */
+const CORE_CONTEXT_KEYS = new Set([
+  'method', 'path', 'requestId', 'body', 'params', 'qs', 'headers', 'header',
+  'actor', 'get', 'config', 'state', 'extend', 'extension',
+]);
+
 export interface RequestContextInit {
   method: string;
   path: string;
@@ -64,8 +72,20 @@ export interface RequestContext {
   get(name: string): unknown;
   config: unknown;
   log: unknown;
-  /** 每请求可变袋：中间件放鉴权结果等，控制器读取。 */
+  /** 每请求可变袋：中间件放鉴权结果等，控制器读取（**无类型**的逃生通道）。 */
   state: Record<string, unknown>;
+  /**
+   * 插件/中间件往 ctx 上挂派生值（`ctx.extend({ user })` → `ctx.user`）。
+   *
+   * 与 `state` 的区别：`extend` 同时写到 `ctx` 本身上（所以 `ctx.user` 能直接用），并**拒绝覆盖框架保留字段**。
+   */
+  extend(values: Record<string, unknown>): void;
+  /** 读扩展值（带泛型；没有就是 undefined）。 */
+  extension<T = unknown>(key: string): T | undefined;
+  /** 约定字段：由 authPlugin 写入（M8c）。 */
+  user?: unknown;
+  /** 约定字段：由 uploadPlugin 写入（M8b）。 */
+  files?: unknown;
 }
 
 export function createRequestContext(init: RequestContextInit): RequestContext {
@@ -94,6 +114,19 @@ export function createRequestContext(init: RequestContextInit): RequestContext {
     config: init.config ?? null,
     log: init.log ?? console,
     state: {},
+    extend(values: Record<string, unknown>): void {
+      for (const [key, value] of Object.entries(values)) {
+        if (CORE_CONTEXT_KEYS.has(key)) {
+          throw new DbConfigError(`ctx.extend: "${key}" 是框架保留字段，不能被插件覆盖`);
+        }
+        (this as unknown as Record<string, unknown>)[key] = value;
+        this.state[key] = value;
+      }
+    },
+    extension<T = unknown>(key: string): T | undefined {
+      const value = (this as unknown as Record<string, unknown>)[key];
+      return value === undefined ? undefined : (value as T);
+    },
   };
 }
 

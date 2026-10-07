@@ -14,6 +14,7 @@ import type { Application, PluginSpec } from '@actor/app';
 import { dispatch } from './controller.ts';
 import type { Middleware } from './middleware.ts';
 import type { HeaderValue } from './context.ts';
+import { WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
 import { buildRouteTable, type HttpMethod, type Route } from './routes.ts';
 import { flattenRoutes } from './router.ts';
 
@@ -43,6 +44,20 @@ function readSchema() {
     accessLog: { type: 'boolean' as const, default: true },
     slowMs: { type: 'number' as const, default: 500, min: 0 },
   };
+}
+
+/** 读插件注册的 context 钩子（没有就空数组；服务不存在不是错误）。 */
+function readContextHooks(app: {
+  get?<T>(name: string): T;
+}): readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[] {
+  try {
+    const hooks = app.get?.<readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[]>(
+      WEB_CONTEXT_HOOKS_SERVICE,
+    );
+    return Array.isArray(hooks) ? hooks : [];
+  } catch {
+    return [];
+  }
 }
 
 export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
@@ -119,6 +134,8 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               actor: (name: string) => app.actor(name),
               get: (name: string) => app.get(name),
               config: app.config,
+              // 插件声明的 context 钩子（defineWebPlugin({ context }) → 服务）
+              contextHooks: readContextHooks(app),
               log: { info: console.info, warn: console.warn, error: console.error },
               // 5xx 必须在服务端可见：转成应用事件（由使用者决定怎么记日志）
               onError: (error, info) => {

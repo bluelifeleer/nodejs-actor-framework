@@ -4,6 +4,17 @@
  * 边界规则与 `@actor/app` 相同：用户项目只依赖应用层包，不接触内核；
  * 本包不得 re-export 内核内部类型。
  */
+export {
+  defineWebPlugin,
+  MIDDLEWARE_PHASES,
+  orderMiddleware,
+  runWebPluginContract,
+  WEB_CONTEXT_HOOKS_SERVICE,
+  type MiddlewarePhase,
+  type PhasedMiddleware,
+  type WebPluginSpec,
+} from './plugins.ts';
+
 export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
 export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
 export {

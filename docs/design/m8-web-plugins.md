@@ -221,6 +221,22 @@ export function runMailTransportContract(...): void;                      // 契
   自带公开面门禁（含证伪）；通用层测试（managed/plugin/real-db-helpers/kind-gate）随包搬到 `packages/resource/test/`。
 - **验证**：全量 **850/850**（833 pass / 0 fail / 17 skipped）、typecheck 0、文档站 46 页；db-core 运行时导出数不变。
 
+### M8a（机制部分已完成）：web 插件机制
+
+- `PluginSpec` 扩展三个**不透明**贡献点：`routes` / `routePrefix` / `middleware`（应用层不依赖 Web 层，
+  保持既有依赖方向）；`app.routes` 与 `app.middleware` 把插件贡献聚合进去（模块路由之后、全局中间件之后）。
+- `@actor/web` 新增 `plugins.ts`：`defineWebPlugin()`（校验名字/前缀/**阶段**/插件内重复路由 —— 全在**定义期**报错）、
+  `MIDDLEWARE_PHASES`（pre/auth/parse/handler/post/error）、`orderMiddleware()`（**稳定排序**：未声明阶段的按
+  `pre` 处理 → 既有代码顺序不变，有测试钉住）、`WEB_CONTEXT_HOOKS_SERVICE`，以及**契约套件**
+  `runWebPluginContract()`（阶段合法、路由带前缀无冲突、`context` 钩子注册成服务、非法阶段/重复路由被拒、
+  阶段排序真实执行验证）。
+- `dispatch` 中间件链改走 `orderMiddleware`；新增 `contextHooks`：`defineWebPlugin({ context })` 通过 `setup`
+  把钩子注册成服务，`httpPlugin` 每请求读出并执行。
+- `RequestContext` 新增 `extend(values)`（写到 ctx 本身 + `state`，**拒绝覆盖框架保留字段**，有测试）
+  与 `extension<T>(key)`；约定字段 `user`/`files`/`log` 已声明（由后续 M8b/M8c/M8d 写入）。
+- 测试：`packages/web/test/plugins.test.ts` 11 条（含契约套件 5 条）；`web + app` 44/44 全绿。
+- 待本期的后续提交收尾：`examples/app-plugin`（冒烟）+ 指南 `docs/guide/12-web-plugin.md`（含离线 verify 块）。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

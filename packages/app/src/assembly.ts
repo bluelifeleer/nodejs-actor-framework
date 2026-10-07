@@ -95,6 +95,18 @@ export interface PluginSpec {
   onStopping?: (app: Application) => void | Promise<void>;
   /** 在模块 onStop 与内核停止之后执行（逆序）。 */
   teardown?: (app: Application) => void | Promise<void>;
+  /**
+   * 插件贡献的路由（**不透明类型**：应用层不依赖 Web 层，由 httpPlugin 解释）。
+   * 配合 `routePrefix` 使用；与模块路由同样进 `app.routes`。
+   */
+  routes?: readonly unknown[];
+  /** 插件路由前缀（由 Web 层的 `defineWebPlugin` 在定义时套到每个模式上）。 */
+  routePrefix?: string;
+  /**
+   * 插件贡献的中间件（**不透明类型**）：可以是函数，也可以是
+   * `{ handler, phase }`（Web 层按阶段排序；见 `defineWebPlugin`）。
+   */
+  middleware?: readonly unknown[];
 }
 
 export interface ModuleSpec {
@@ -245,13 +257,21 @@ export class Application {
   }
 
   /** 模块声明的路由（由 Web 层插件解释；应用层不做解释，保持依赖方向）。 */
-  /** 全局中间件（由 web 层插件解释；应用层不依赖 Web 层，保持依赖方向）。 */
+  /**
+   * 全局中间件（由 web 层插件解释；应用层不依赖 Web 层，保持依赖方向）。
+   *
+   * 顺序：显式声明的全局中间件在前（保持既有行为），随后是各插件贡献的中间件
+   * （插件按声明顺序；Web 层再按 `phase` 稳定排序）。
+   */
   get middleware(): readonly unknown[] {
-    return this.spec.middleware ?? [];
+    const pluginMiddleware = (this.spec.plugins ?? []).flatMap((plugin) => plugin.middleware ?? []);
+    return [...(this.spec.middleware ?? []), ...pluginMiddleware];
   }
 
   get routes(): readonly unknown[] {
-    return this.routeSpecs;
+    // 插件路由追加在模块路由之后（模块路由还带自己的子树中间件，见 collect）
+    const pluginRoutes = (this.spec.plugins ?? []).flatMap((plugin) => plugin.routes ?? []);
+    return [...this.routeSpecs, ...pluginRoutes];
   }
 
   /** 逃生通道：高级用法可直接访问内核 system（应用层签名不依赖它）。 */
