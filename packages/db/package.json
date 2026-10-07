@@ -1,0 +1,19 @@
+{
+  "name": "@actor/db",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Application-layer database support for nodejs-actor-framework: dialects (pgsql/mysql/sqlite), connection-pool management, model definitions and ORM row mapping. Zero runtime dependencies (drivers are lazy-loaded from the user's project).",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@actor/data": "*"
+  },
+  "files": [
+    "src"
+  ]
+}
