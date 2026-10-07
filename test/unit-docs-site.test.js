@@ -160,9 +160,11 @@ test('docs api: 从声明/源码提取签名（参数、可选、rest、泛型�
 
   assert.strictEqual(found.get('VERSION').returns, 'string');
 
-  // 类型覆盖进度：页面上的数字必须来自仓库真实状态（不能写死）
+  // 类型覆盖进度：页面上的数字必须来自仓库真实状态（不能写死）。
+  // 曾经断言"仍有文件带标记（M0.1 进行中）"；内核补完后这条改成断言"已归零"——
+  // 断言与目标同向，才不会在目标达成时变成假红。
   const untyped = untypedFiles(path.join(ROOT), 'packages/core');
-  assert.ok(untyped.length > 0, '内核仍有带 @ts-nocheck 的文件（M0.1 进行中）');
+  assert.deepStrictEqual(untyped, [], `内核源码不应再有 @ts-nocheck：${untyped.join(', ')}`);
   assert.ok(untyped.every((file) => file.endsWith('.ts') && !file.endsWith('.d.ts')));
 });
 

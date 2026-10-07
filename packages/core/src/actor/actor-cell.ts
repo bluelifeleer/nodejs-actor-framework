@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -12,21 +11,25 @@ const { defineActor } = require('./actor.ts');
 const { resolvePersistence, callEvolution } = require('../store/persistence.ts');
 
 /** `events` 模式快照的外层包装：只有内核关心"恢复到第几条"，用户状态原样放在 `snapshot` 里。 */
-function wrapEventsSnapshot(atSeq, snapshot) {
+function wrapEventsSnapshot(atSeq: number, snapshot: unknown): { __snapshotAtSeq: number; snapshot: unknown } {
   return { __snapshotAtSeq: atSeq, snapshot };
 }
 
-function unwrapEventsSnapshot(raw) {
+/** 解包 `events` 模式的快照；不是这个形状就返回 null（调用方按"没有快照"处理）。 */
+function unwrapEventsSnapshot(raw: unknown): { atSeq: number; snapshot: unknown } | null {
   if (raw === null || typeof raw !== 'object') return null;
-  const atSeq = raw.__snapshotAtSeq;
-  if (!Number.isInteger(atSeq) || atSeq < 0 || !('snapshot' in raw)) return null;
-  return { atSeq, snapshot: raw.snapshot };
+  const candidate = raw as { __snapshotAtSeq?: unknown; snapshot?: unknown };
+  const atSeq = candidate.__snapshotAtSeq;
+  if (!Number.isInteger(atSeq) || (atSeq as number) < 0 || !('snapshot' in candidate)) return null;
+  return { atSeq: atSeq as number, snapshot: candidate.snapshot };
 }
 const { AskTimeoutError, MailboxFullError, ActorStoppedError, EscalationError, DefinitionError, PersistenceError } = require('./errors.ts');
 
 /** 消息类型（`msg.type`）；非对象或没写 type 就是 'unknown'（span 名与属性都用它）。 */
-function messageTypeOf(payload) {
-  if (payload !== null && typeof payload === 'object' && typeof payload.type === 'string') return payload.type;
+function messageTypeOf(payload: unknown): string {
+  if (payload !== null && typeof payload === 'object' && typeof (payload as { type?: unknown }).type === 'string') {
+    return (payload as { type: string }).type;
+  }
   return 'unknown';
 }
 const RestartStrategy = require('./restart-strategy.ts');
@@ -37,7 +40,7 @@ const RestartStrategy = require('./restart-strategy.ts');
  * 为什么不能直接用全局 `setTimeout`：注入了虚拟时钟之后，"等 100ms"必须能被 `clock.advance(100)`
  * 推进；继续用真实定时器会让测试要么真的等、要么永远等不到（两者都不可接受）。
  */
-const sleep = (clock, ms) =>
+const sleep = (clock: { setTimeout(cb: () => void, ms: number): unknown }, ms: number): Promise<void> =>
   new Promise((resolve) => {
     clock.setTimeout(resolve, Math.max(0, ms));
   });
@@ -53,8 +56,194 @@ const sleep = (clock, ms) =>
  *  - an actor that is stopped, or dies while a message is queued, always
  *    settles every pending `ask` instead of leaving it hanging.
  */
+/** Actor 的运行期计数器（指标与诊断读它）。 */
+interface ActorCounters {
+  received: number;
+  handled: number;
+  failed: number;
+  retries: number;
+  deadLettered: number;
+  crashed: number;
+  restarted: number;
+  recovered: number;
+  throttled: number;
+  batches: number;
+  totalLatencyMs: number;
+  maxLatencyMs: number;
+  [field: string]: number;
+}
+
+/** 信箱信封（mailbox.ts 的 MailboxEnvelope 结构）。 */
+interface CellEnvelope {
+  payload?: unknown;
+  /** 持久化邮箱里的消息 id（durable ack 用）。 */
+  __msgId?: string | undefined;
+  reply?: { resolve(value: unknown): void; reject(err: Error): void } | null;
+  sender?: { path?: string } | null;
+  retryCount?: number;
+  ts?: number;
+  trace?: unknown;
+  priority?: number;
+  system?: boolean;
+  onDropped?: () => void;
+  [key: string]: unknown;
+}
+
+/** cell 依赖的 system 视图（只列 cell 用到的成员）。 */
+interface CellSystem {
+  readonly name: string;
+  readonly actorDefaults: {
+    mailbox: { maxSize: number; overflow: string };
+    supervision: { strategy: string; maxRestarts: number; withinSeconds: number };
+    [key: string]: unknown;
+  };
+  readonly persistenceStore: unknown;
+  readonly mailboxStore: unknown;
+  readonly rateLimitPolicy: { capacity: number; rate: number } | null;
+  readonly clock: { now(): number; setTimeout(cb: () => void, ms: number, options?: { unref?: boolean }): { id: number }; clearTimeout(h: { id: number } | null): void };
+  readonly scheduler: { schedule(cell: unknown): void };
+  readonly shutdownTimeoutMs: number;
+  readonly cells: Map<string, unknown>;
+  readonly ownership?: unknown;
+  spanSink?: { onSpan(span: unknown): void } | null;
+  tracer?: { buildContext(parent: unknown): unknown; child(parent: unknown): unknown } | null;
+  _startSpan?(input: { name: string; trace?: unknown; attributes?: Record<string, string | number | boolean> }): Record<string, unknown> | null;
+  _endSpan?(span: Record<string, unknown> | null, outcome: Record<string, unknown>): void;
+  _log(event: string, meta?: Record<string, unknown>): void;
+  _deadLetter(cell: unknown, envelope: unknown, err: unknown): void;
+  _onMailboxRejected?(cell: unknown, envelope: unknown): void;
+  _onRootCrash(cell: unknown, reason: unknown): Promise<void>;
+  _onEscalation(cell: unknown, reason: unknown): Promise<void>;
+  _nextChildSeq(): number;
+  _register(cell: unknown): void;
+  _unregister(cell: unknown): void;
+  [key: string]: unknown;
+}
+
+/** Actor 定义（actor.ts 的 ActorDefinition 结构）。 */
+interface CellDefinition {
+  readonly name: string;
+  readonly kind: string;
+  readonly options: Record<string, unknown>;
+  readonly unknownKeys?: string[];
+  readonly modulePath?: string | null;
+  readonly exportName?: string;
+  create(): unknown;
+}
+
 class ActorCell {
-  constructor({ system, definition, id, parent = null, options = {} }) {
+  readonly system: CellSystem;
+  readonly definition: CellDefinition;
+  readonly id: string;
+  readonly parent:
+    | {
+        readonly path: string;
+        readonly children: Map<string, ActorCell>;
+        readonly childSupervisor: InstanceType<typeof ChildSupervisor>;
+        _onChildCrash(child: ActorCell, reason: unknown): Promise<void>;
+      }
+    | null;
+  readonly path: string;
+  readonly options: {
+    mailbox: { maxSize: number; overflow: string };
+    supervision: { strategy: string; maxRestarts: number; withinSeconds: number };
+    isolation?: string;
+    transferable?: boolean;
+    rateLimit?: { capacity: number; rate: number } | null;
+    retryBackoffMs?: number;
+    maxRetryBackoffMs?: number;
+    maxRetry?: number;
+    askTimeoutMs?: number;
+    persistence?: unknown;
+    failure?: string;
+    [key: string]: unknown;
+  };
+  readonly mailbox: InstanceType<typeof Mailbox>;
+  readonly children: Map<string, ActorCell>;
+  readonly childSupervisor: InstanceType<typeof ChildSupervisor>;
+  readonly persistence: {
+    mode: string;
+    /** 存储适配器（内核只调用这几个方法；具体后端由数据层决定）。 */
+    store: {
+      loadEvents?(id: string): Promise<unknown[]>;
+      appendEvent?(id: string, event: unknown, options?: { expectedVersion?: number }): Promise<void>;
+      appendEvents?(id: string, events: unknown[], options?: { expectedVersion?: number }): Promise<number>;
+      loadSnapshot?(id: string): Promise<unknown>;
+      saveSnapshot?(id: string, state: unknown): Promise<void>;
+      deleteSnapshot?(id: string): Promise<void>;
+      capabilities?(): { conditionalAppend: 'atomic' | 'in-process' | false; batchAppend: 'atomic' | 'in-process' | false };
+      [key: string]: unknown;
+    } | null;
+    /** 持久化邮箱的后端（内核只调用 append/load/ack）。 */
+    mailboxStore: {
+      append?(id: string, msg: unknown): Promise<{ __msgId?: string; [key: string]: unknown }>;
+      load?(id: string): Promise<unknown[]>;
+      ack?(id: string, msgIds: string | string[]): Promise<unknown>;
+      clear?(id: string): Promise<unknown>;
+      pendingCount?(id: string): Promise<number>;
+      [key: string]: unknown;
+    } | null;
+    events?: unknown;
+    /** events 模式的快照缓存策略：`{ every: N }` 或 null（不启用）。 */
+    snapshot?: { every: number } | null;
+    evolution?: Record<string, (...args: unknown[]) => unknown> | null;
+    [key: string]: unknown;
+  };
+  /** 事件日志的"已写入版本"（条件写用）；恢复前是 null。 */
+  _eventVersion: number | null;
+  _concurrencyWarned: boolean;
+  readonly isolation: string;
+  readonly transferable: boolean;
+  delegate: {
+    invoke(payload: unknown, senderPath: string | null, trace: unknown): Promise<unknown>;
+    stop(): Promise<void>;
+    getState?(timeoutMs?: number): Promise<unknown>;
+    readonly pid?: number | null;
+    start?(options?: { snapshot?: unknown }): Promise<unknown>;
+  } | null;
+  readonly bucket: InstanceType<typeof TokenBucket> | null;
+  currentTrace: unknown;
+  readonly _incarnationWaiters: (() => void)[];
+  readonly context: InstanceType<typeof ActorContext>;
+  instance: {
+    id?: string;
+    path?: string;
+    state?: unknown;
+    receive(msg: unknown, ctx: unknown): unknown;
+    preStart?(ctx: unknown): void | Promise<void>;
+    postRecover?(ctx: unknown): void | Promise<void>;
+    postStop?(ctx: unknown): void | Promise<void>;
+    preRestart?(reason: unknown, msg: unknown, ctx: unknown): void | Promise<void>;
+    applyEvent?(event: unknown): void;
+    [key: string]: unknown;
+  } | null;
+  started: boolean;
+  stopped: boolean;
+  crashing: boolean;
+  handling: boolean;
+  running: boolean;
+  currentSender: { path?: string } | null;
+  restarts: number;
+  readonly counters: ActorCounters;
+  readonly ref: InstanceType<typeof ActorRef>;
+  supervision?: unknown;
+  _snapshotDirty?: boolean;
+  _stopPromise?: Promise<void> | null;
+  _warned?: Set<string>;
+
+  constructor({
+    system,
+    definition,
+    id,
+    parent = null,
+    options = {},
+  }: {
+    system: CellSystem;
+    definition: CellDefinition;
+    id: string;
+    parent?: ActorCell['parent'];
+    options?: Record<string, unknown>;
+  }) {
     this.system = system;
     this.definition = definition;
     this.id = String(id);
@@ -98,7 +287,9 @@ class ActorCell {
     this._concurrencyWarned = false;
     // A durable mailbox is a system-level capability; fall back to it, and fail
     // loudly if the strategy cannot actually persist anything.
-    if (!this.persistence.mailboxStore) this.persistence.mailboxStore = system.mailboxStore || null;
+    if (this.persistence.mailboxStore === null) {
+      this.persistence.mailboxStore = (system.mailboxStore ?? null) as ActorCell['persistence']['mailboxStore'];
+    }
     if (this.persistence.mode === 'mailbox' && !this.persistence.mailboxStore) {
       throw new PersistenceError(
         `actor "${this.path}" uses persistence mode "mailbox" but no mailboxStore was configured ` +
@@ -182,8 +373,10 @@ class ActorCell {
       path: this.path,
       // Forward every argument: the sender and trace must survive the ref
       // boundary so the callee can see who sent the message.
-      tell: (msg, sender, trace) => this.tell(msg, sender, trace),
-      ask: (msg, timeoutMs, sender, trace) => this.ask(msg, timeoutMs, sender, trace),
+      tell: (msg: unknown, sender?: unknown, trace?: unknown) =>
+        this.tell(msg, sender as { path?: string } | null | undefined, trace),
+      ask: (msg: unknown, timeoutMs?: number, sender?: unknown, trace?: unknown) =>
+        this.ask(msg, timeoutMs, sender as { path?: string } | null | undefined, trace),
       stop: () => this.stop(),
       inspect: () => this.inspect(),
       state: () => this.fetchState(),
@@ -198,21 +391,22 @@ class ActorCell {
    * preStart runs first so it can establish initial state unconditionally;
    * a snapshot or replayed events are applied on top of it (see postRecover).
    */
-  async _init() {
+  async _init(): Promise<void> {
     this.stopped = false;
     this.context.restored = false;
     if (this.isolation === 'worker') return this._initWorker();
 
-    this.instance = this.definition.create();
-    if (!this.instance || typeof this.instance.receive !== 'function') {
+    this.instance = this.definition.create() as ActorCell['instance'];
+    if (this.instance === null || typeof this.instance.receive !== 'function') {
       throw new DefinitionError(`definition "${this.definition.name}" did not produce an actor with receive()`);
     }
     this.instance.id = this.id;
     this.instance.path = this.path;
-    await this.instance.preStart(this.context);
+    const instance = this.instance;
+    await instance.preStart?.(this.context);
     await this._restore();
-    if (typeof this.instance.postRecover === 'function') {
-      await this.instance.postRecover(this.context);
+    if (typeof instance.postRecover === 'function') {
+      await instance.postRecover(this.context);
     }
     this.started = true;
     this._markIncarnation();
@@ -222,7 +416,7 @@ class ActorCell {
    * Worker isolation: the actor's code lives in its own thread. The cell keeps
    * the mailbox, supervision and persistence; only execution is delegated.
    */
-  async _initWorker() {
+  async _initWorker(): Promise<void> {
     const { WorkerDelegate } = require('../worker/worker-delegate.ts');
     let snapshot;
     if (this.persistence.mode === 'snapshot' && this.persistence.store) {
@@ -240,21 +434,28 @@ class ActorCell {
     this._markIncarnation();
   }
 
-  async _restore() {
+  async _restore(): Promise<void> {
     const { mode, store, mailboxStore } = this.persistence;
-    if (mode === 'snapshot' && store) {
+    if (mode === 'snapshot' && store !== null) {
       const restoredState = await this._loadSnapshotForRestore();
       if (restoredState !== undefined) {
-        this.instance.state = typeof restoredState === 'object' && restoredState !== null ? { ...restoredState } : restoredState;
+        if (this.instance !== null) {
+          this.instance.state =
+            restoredState !== null && typeof restoredState === 'object'
+              ? { ...(restoredState as Record<string, unknown>) }
+              : restoredState;
+        }
         this.context.restored = true;
       }
-    } else if (mode === 'events' && store) {
-      const raw = await store.loadEvents(this.path);
+    } else if (mode === 'events' && store !== null) {
+      const loadEvents = store.loadEvents;
+      if (typeof loadEvents !== 'function') throw new PersistenceError('persistence store does not implement loadEvents()');
+      const raw = await loadEvents.call(store, this.path);
       // The log is the truth; a snapshot (if any) is only a cache that lets us skip
       // the prefix we already folded into the saved state. See _restoreSnapshotCache.
       const snapshotCacheEnabled = this.persistence.snapshot !== null;
       const cached = snapshotCacheEnabled ? await this._restoreSnapshotCache(raw.length > 0) : null;
-      const fromSeq = cached ? cached.atSeq + 1 : null;
+      const fromSeq = cached !== null ? cached.atSeq + 1 : null;
       // Structure evolution happens **on read**: the stored log is never rewritten,
       // so an upgrade is rollback-able and replays stay reproducible.
       // Prefer the batch hook: sequence continuity can only be checked when the
@@ -262,15 +463,20 @@ class ActorCell {
       const { events, lastVersion } = this._evolveLog(raw, fromSeq);
       this._eventVersion = lastVersion;
       this._warnIfConcurrencyUnsupported();
-      for (const event of events) this.instance.applyEvent(event);
+      for (const event of events) this.instance?.applyEvent?.(event);
       if (events.length > 0) this.context.restored = true;
       this.counters.recovered += events.length;
-    } else if (mode === 'mailbox' && mailboxStore) {
-      const records = await mailboxStore.load(this.path);
+    } else if (mode === 'mailbox' && mailboxStore !== null) {
+      const load = (mailboxStore as { load?(id: string): Promise<unknown[]> }).load;
+      if (typeof load !== 'function') throw new PersistenceError('mailboxStore does not implement load()');
+      const records = await load.call(mailboxStore, this.path);
       for (const record of records) {
-        const payload = record && Object.prototype.hasOwnProperty.call(record, 'payload') ? record.payload : record;
+        const payload =
+          record !== null && typeof record === 'object' && Object.prototype.hasOwnProperty.call(record, 'payload')
+            ? (record as { payload: unknown }).payload
+            : record;
         const envelope = this._envelope(payload, null);
-        envelope.__msgId = record.__msgId;
+        envelope.__msgId = (record as { __msgId?: string }).__msgId;
         this.mailbox.push(envelope);
       }
       this.counters.recovered += records.length;
@@ -283,16 +489,21 @@ class ActorCell {
     return Boolean(this.instance || this.delegate);
   }
 
-  _markIncarnation() {
+  _markIncarnation(): void {
     const waiters = this._incarnationWaiters.splice(0);
     for (const w of waiters) w();
   }
 
   /** 等新 incarnation 就位；已就位或已停止则立即返回。有界，避免永久挂起。 */
-  _awaitIncarnation(timeoutMs = this.system.shutdownTimeoutMs || 5000) {
+  _awaitIncarnation(timeoutMs: number = this.system.shutdownTimeoutMs || 5000): Promise<void> {
     if (this._hasIncarnation || this.stopped) return Promise.resolve();
-    return new Promise((resolve) => {
-      const timer = this.system.clock.setTimeout(
+    return new Promise<void>((resolve) => {
+      let timer: { id: number } | null = null;
+      const waiter = (): void => {
+        if (timer !== null) this.system.clock.clearTimeout(timer);
+        resolve();
+      };
+      timer = this.system.clock.setTimeout(
         () => {
           const idx = this._incarnationWaiters.indexOf(waiter);
           if (idx >= 0) this._incarnationWaiters.splice(idx, 1);
@@ -301,25 +512,21 @@ class ActorCell {
         timeoutMs,
         { unref: true },
       );
-      const waiter = () => {
-        this.system.clock.clearTimeout(timer);
-        resolve();
-      };
       this._incarnationWaiters.push(waiter);
     });
   }
 
   /** preRestart + postStop for the current incarnation (idempotent). */
-  async _teardown(reason, msg) {
+  async _teardown(reason: unknown, msg: unknown): Promise<void> {
     // Worker-isolated actors run their hooks inside the worker.
-    if (this.delegate) {
-      const delegate = this.delegate;
+    const delegate = this.delegate;
+    if (delegate !== null) {
       this.delegate = null;
       this.started = false;
       try {
         await delegate.stop();
       } catch (err) {
-        this.system._log('worker_stop_error', { path: this.path, err: err.message });
+        this.system._log('worker_stop_error', { path: this.path, err: err instanceof Error ? err.message : String(err) });
       }
       return;
     }
@@ -332,12 +539,12 @@ class ActorCell {
         await instance.preRestart(reason, msg, this.context);
       }
     } catch (err) {
-      this.system._log('actor_hook_error', { path: this.path, hook: 'preRestart', err: err.message });
+      this.system._log('actor_hook_error', { path: this.path, hook: 'preRestart', err: err instanceof Error ? err.message : String(err) });
     }
     try {
       if (typeof instance.postStop === 'function') await instance.postStop(this.context);
     } catch (err) {
-      this.system._log('actor_hook_error', { path: this.path, hook: 'postStop', err: err.message });
+      this.system._log('actor_hook_error', { path: this.path, hook: 'postStop', err: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -349,7 +556,7 @@ class ActorCell {
    * silently drop a child's state whenever a parent stops. Each child stop is
    * bounded so one stuck child cannot hang the parent's shutdown.
    */
-  async _stopChildren(graceful = true) {
+  async _stopChildren(graceful = true): Promise<void> {
     const children = [...this.children.values()];
     this.children.clear();
     for (const child of children) {
@@ -358,7 +565,7 @@ class ActorCell {
         if (graceful) await child.stop(this.system.shutdownTimeoutMs);
         else await child._terminate('parent');
       } catch (err) {
-        this.system._log('child_stop_error', { path: child.path, err: err.message });
+        this.system._log('child_stop_error', { path: child.path, err: err instanceof Error ? err.message : String(err) });
         await child._terminate('parent').catch(() => {});
       }
     }
@@ -366,7 +573,7 @@ class ActorCell {
 
   // --- messaging -----------------------------------------------------------
 
-  _envelope(payload, reply, sender = null, parentTrace = null) {
+  _envelope(payload: unknown, reply: CellEnvelope['reply'] = null, sender: { path?: string } | null = null, parentTrace: unknown = null): CellEnvelope {
     const trace = this.system.tracer && this.system.tracer.buildContext
       ? this.system.tracer.buildContext(parentTrace)
       : null;
@@ -374,7 +581,7 @@ class ActorCell {
   }
 
   /** Fire and forget. Returns false when the mailbox refused the message. */
-  tell(payload, sender = null, parentTrace = null) {
+  tell(payload: unknown, sender: { path?: string } | null = null, parentTrace: unknown = null): boolean {
     if (this.stopped) return false;
     if (payload === undefined) throw new TypeError('tell(payload): payload is required');
     const envelope = this._envelope(payload, null, sender, parentTrace);
@@ -382,20 +589,20 @@ class ActorCell {
   }
 
   /** Send and wait for the value returned by `receive`. */
-  ask(payload, timeoutMs, sender = null, parentTrace = null) {
+  ask(payload: unknown, timeoutMs?: number, sender: { path?: string } | null = null, parentTrace: unknown = null): Promise<unknown> {
     if (this.stopped) return Promise.reject(new ActorStoppedError(`actor ${this.path} is stopped`));
     if (payload === undefined) return Promise.reject(new TypeError('ask(payload): payload is required'));
-    const timeout = timeoutMs === undefined ? this.options.askTimeoutMs : timeoutMs;
+    const timeout = timeoutMs ?? this.options.askTimeoutMs ?? 5000;
 
     return new Promise((resolve, reject) => {
-      let timer = null;
+      let timer: { id: number } | null = null;
       const reply = {
-        resolve: (value) => {
-          if (timer) this.system.clock.clearTimeout(timer);
+        resolve: (value: unknown) => {
+          if (timer !== null) this.system.clock.clearTimeout(timer);
           resolve(value);
         },
-        reject: (err) => {
-          if (timer) this.system.clock.clearTimeout(timer);
+        reject: (err: Error) => {
+          if (timer !== null) this.system.clock.clearTimeout(timer);
           reject(err);
         },
       };
@@ -413,29 +620,34 @@ class ActorCell {
     });
   }
 
-  _enqueue(envelope) {
+  _enqueue(envelope: CellEnvelope): boolean {
     const accepted = this.mailbox.push(envelope);
     if (!accepted) {
       this.counters.failed += 0; // backpressure is reported through the return value / rejection
-      this.system._onMailboxRejected(this, envelope);
+      this.system._onMailboxRejected?.(this, envelope);
       return false;
     }
     if (this.persistence.mode === 'mailbox' && this.persistence.mailboxStore) {
       // Durability is best-effort at enqueue time: a failure here surfaces as
       // a rejection rather than losing the message silently.
-      this.persistence.mailboxStore
-        .append(this.path, { payload: envelope.payload })
-        .then((record) => {
-          envelope.__msgId = record.__msgId;
-        })
-        .catch((err) => this.system._log('durable_enqueue_failed', { path: this.path, err: err.message }));
+      const append = this.persistence.mailboxStore?.append;
+      if (typeof append === 'function') {
+        append
+          .call(this.persistence.mailboxStore, this.path, { payload: envelope.payload })
+          .then((record: { __msgId?: string }) => {
+            envelope.__msgId = record.__msgId;
+          })
+          .catch((err: unknown) =>
+            this.system._log('durable_enqueue_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) }),
+          );
+      }
     }
     this.system.scheduler.schedule(this);
     return true;
   }
 
   /** Process at most `max` messages, then yield to the scheduler. */
-  async _runTurn(max) {
+  async _runTurn(max: number): Promise<void> {
     // An actor must never process two messages at once. Without this guard a
     // message arriving while receive() is awaiting would start a second turn
     // and re-enter receive() concurrently — a data race on actor state.
@@ -472,7 +684,7 @@ class ActorCell {
     }
   }
 
-  async _handleMessage(envelope) {
+  async _handleMessage(envelope: CellEnvelope): Promise<void> {
     this.counters.received += 1;
     this.currentSender = envelope.sender || null;
     this.currentTrace = envelope.trace || null;
@@ -488,7 +700,7 @@ class ActorCell {
      */
     const span =
       typeof this.system._startSpan === 'function'
-        ? this.system._startSpan({
+        ? this.system._startSpan?.({
             name: `${this.path}:${messageTypeOf(envelope.payload)}`,
             trace: envelope.trace || null,
             attributes: {
@@ -501,8 +713,8 @@ class ActorCell {
     let spanError = null;
     try {
       const result = this.delegate
-        ? await this.delegate.invoke(envelope.payload, envelope.sender ? envelope.sender.path : null, envelope.trace)
-        : await this.instance.receive(envelope.payload, this.context);
+        ? await this.delegate.invoke(envelope.payload, envelope.sender ? (envelope.sender.path ?? null) : null, envelope.trace)
+        : await this.instance?.receive(envelope.payload, this.context);
       this.counters.handled += 1;
       await this._acknowledge(envelope);
       if (envelope.reply) envelope.reply.resolve(result);
@@ -518,18 +730,20 @@ class ActorCell {
       this.currentSender = null;
       this.currentTrace = null;
       if (span !== null) {
-        this.system._endSpan(span, { status: spanStatus, durationMs: elapsed, error: spanError, at: startedAt + elapsed });
+        this.system._endSpan?.(span, { status: spanStatus, durationMs: elapsed, error: spanError, at: startedAt + elapsed });
       }
     }
   }
 
-  async _acknowledge(envelope) {
+  async _acknowledge(envelope: CellEnvelope): Promise<void> {
     if (this.persistence.mode !== 'mailbox' || !this.persistence.mailboxStore) return;
     if (!envelope.__msgId) return;
+    const ack = this.persistence.mailboxStore?.ack;
+    if (typeof ack !== 'function') return;
     try {
-      await this.persistence.mailboxStore.ack(this.path, envelope.__msgId);
+      await ack.call(this.persistence.mailboxStore, this.path, envelope.__msgId ?? '');
     } catch (err) {
-      this.system._log('durable_ack_failed', { path: this.path, err: err.message });
+      this.system._log('durable_ack_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -540,15 +754,18 @@ class ActorCell {
    *  - 'retry': the message is retried with backoff and finally dead-lettered
    *    while the actor keeps running (durable mailbox / queue semantics).
    */
-  async _onFailure(err, envelope) {
+  async _onFailure(err: unknown, envelope: CellEnvelope): Promise<void> {
     this.counters.failed += 1;
-    const { failure, maxRetry, retryBackoffMs, maxRetryBackoffMs } = this.options;
+    const failure = this.options.failure ?? 'crash';
+    const maxRetry = this.options.maxRetry ?? 3;
+    const retryBackoffMs = this.options.retryBackoffMs ?? 50;
+    const maxRetryBackoffMs = this.options.maxRetryBackoffMs ?? 1000;
 
-    if (failure === 'retry' && (envelope.retryCount || 0) < maxRetry) {
-      envelope.retryCount = (envelope.retryCount || 0) + 1;
+    if (failure === 'retry' && (envelope.retryCount ?? 0) < maxRetry) {
+      envelope.retryCount = (envelope.retryCount ?? 0) + 1;
       this.counters.retries += 1;
       const backoff = Math.min(retryBackoffMs * 2 ** (envelope.retryCount - 1), maxRetryBackoffMs);
-      this.system._log('actor_message_retry', { path: this.path, attempt: envelope.retryCount, err: err.message });
+      this.system._log('actor_message_retry', { path: this.path, attempt: envelope.retryCount, err: err instanceof Error ? err.message : String(err) });
       if (backoff > 0) await sleep(this.system.clock, backoff);
       this.mailbox.pushFront(envelope);
       return;
@@ -558,23 +775,23 @@ class ActorCell {
       this.counters.deadLettered += 1;
       await this._acknowledge(envelope);
       this.system._deadLetter(this, envelope, err);
-      if (envelope.reply) envelope.reply.reject(err);
+      if (envelope.reply) envelope.reply.reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
 
     // Crash semantics: settle the caller, then fail the actor.
-    if (envelope.reply) envelope.reply.reject(err);
+    if (envelope.reply) envelope.reply.reject(err instanceof Error ? err : new Error(String(err)));
     await this._acknowledge(envelope);
     await this._crash(err, envelope.payload);
   }
 
   // --- failure / restart ---------------------------------------------------
 
-  async _crash(reason, msg) {
+  async _crash(reason: unknown, msg: unknown): Promise<void> {
     if (this.crashing || this.stopped) return;
     this.crashing = true;
     this.counters.crashed += 1;
-    this.system._log('actor_crash', { path: this.path, err: reason && reason.message });
+    this.system._log('actor_crash', { path: this.path, err: reason instanceof Error ? reason.message : String(reason) });
     try {
       await this._teardown(reason, msg);
       await this._stopChildren();
@@ -586,7 +803,7 @@ class ActorCell {
   }
 
   /** Bring a crashed (or whole-group-restarted) actor back up. */
-  async _restart(reason) {
+  async _restart(reason: unknown): Promise<void> {
     this.restarts += 1;
     this.counters.restarted += 1;
     await this._teardown(reason === undefined ? null : reason, undefined);
@@ -596,7 +813,7 @@ class ActorCell {
     if (this.mailbox.size > 0) this.system.scheduler.schedule(this);
   }
 
-  async _onChildCrash(child, reason) {
+  async _onChildCrash(child: ActorCell, reason: unknown): Promise<void> {
     const decision = this.childSupervisor.decide(child.id);
     if (decision.action === 'escalate') {
       this.system._log('supervisor_escalate', {
@@ -633,11 +850,11 @@ class ActorCell {
    * cannot pick up its stop envelope, and without the bound a single stuck
    * actor would hang `system.stop()` (i.e. the whole process shutdown).
    */
-  stop(timeoutMs = this.system.shutdownTimeoutMs) {
+  stop(timeoutMs: number = this.system.shutdownTimeoutMs): Promise<void> {
     if (this._stopPromise) return this._stopPromise;
 
-    let resolveStop;
-    this._stopPromise = new Promise((resolve) => {
+    let resolveStop: () => void = () => {};
+    this._stopPromise = new Promise<void>((resolve) => {
       resolveStop = resolve;
       this.mailbox.push({ kind: 'stop', resolve }, { system: true });
       this.system.scheduler.schedule(this);
@@ -656,7 +873,7 @@ class ActorCell {
       try {
         await this._terminate('stop_timeout');
       } catch (err) {
-        this.system._log('actor_terminate_failed', { path: this.path, err: err.message });
+        this.system._log('actor_terminate_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
       }
       resolveStop();
     }, bounded, { unref: true });
@@ -665,7 +882,7 @@ class ActorCell {
   }
 
   /** Stop without running the graceful path (parent already gone, or forced). */
-  async _terminate(reasonTag = 'forced') {
+  async _terminate(reasonTag = 'forced'): Promise<void> {
     if (this.stopped) return;
     this.system._log('actor_terminate', { path: this.path, reason: reasonTag });
     this._rejectPending();
@@ -674,7 +891,7 @@ class ActorCell {
     this._finishStop();
   }
 
-  async _handleStop(envelope) {
+  async _handleStop(envelope: CellEnvelope): Promise<void> {
     // Persist ourselves before taking the children down: a parent's snapshot is
     // usually what makes its children reconstructable at all.
     // `instance` is null for worker-isolated actors (the actor lives in the
@@ -692,17 +909,17 @@ class ActorCell {
       try {
         await this.saveSnapshot();
       } catch (err) {
-        this.system._log('snapshot_on_stop_failed', { path: this.path, err: err.message });
+        this.system._log('snapshot_on_stop_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
       }
     }
     // Graceful: children run postStop and persist their own snapshots.
     if (this.options.stopChildrenOnStop !== false) await this._stopChildren(true);
     await this._teardown(null, undefined);
     this._finishStop();
-    if (envelope.resolve) envelope.resolve();
+    if (typeof envelope.resolve === 'function') envelope.resolve();
   }
 
-  _finishStop() {
+  _finishStop(): void {
     const wasStopped = this.stopped;
     this.stopped = true;
     this.started = false;
@@ -720,7 +937,7 @@ class ActorCell {
   }
 
   /** Never leave an `ask` hanging because the actor went away. */
-  _rejectPending() {
+  _rejectPending(): void {
     const leftover = this.mailbox.drain();
     for (const envelope of leftover) {
       if (envelope.reply) envelope.reply.reject(new ActorStoppedError(`actor ${this.path} stopped before replying`));
@@ -729,7 +946,7 @@ class ActorCell {
 
   // --- children ------------------------------------------------------------
 
-  async spawnChild(definition, options = {}) {
+  async spawnChild(definition: unknown, options: Record<string, unknown> = {}): Promise<ActorCell> {
     if (this.stopped) throw new ActorStoppedError(`cannot spawn from stopped actor ${this.path}`);
     const defn = options.isolation === 'worker'
       ? require('../worker/worker-delegate.ts').defineWorkerActor(definition, options)
@@ -751,7 +968,7 @@ class ActorCell {
     try {
       await child._init();
     } catch (err) {
-      this.system._log('actor_init_failed', { path: child.path, err: err.message });
+      this.system._log('actor_init_failed', { path: child.path, err: err instanceof Error ? err.message : String(err) });
       const decision = this.childSupervisor.decide(id);
       if (decision.action === 'escalate') {
         this.system._log('supervisor_escalate', { path: this.path, child: child.path, reason: decision.reason });
@@ -763,7 +980,7 @@ class ActorCell {
         try {
           await target._restart(err);
         } catch (retryErr) {
-          this.system._log('actor_init_retry_failed', { path: target.path, err: retryErr.message });
+          this.system._log('actor_init_retry_failed', { path: target.path, err: retryErr instanceof Error ? retryErr.message : String(retryErr) });
         }
       }
       if (!child.started) throw err;
@@ -783,17 +1000,21 @@ class ActorCell {
    *     （doc 04 §4.2 规则 2：日志是真相，快照只是缓存）；没有日志可重建时**拒绝启动**
    *     （规则 3：宁可不启动，也不拿错结构凑合）。
    */
-  async _restoreSnapshotCache(hasEventLog) {
-    const { store } = this.persistence;
-    if (!store) return null;
-    const raw = await store.loadSnapshot(this.path);
+  async _restoreSnapshotCache(hasEventLog: boolean): Promise<{ atSeq: number } | null> {
+    const store = this.persistence.store;
+    if (store === null) return null;
+    const loadSnapshot = store.loadSnapshot;
+    if (typeof loadSnapshot !== 'function') return null;
+    const raw = await loadSnapshot.call(store, this.path);
     if (raw === undefined) return null;
     const cached = unwrapEventsSnapshot(raw);
     if (!cached) return null; // 旧数据 / 外来文件：当作没有缓存
     try {
       const state = this._decodeSnapshotPayload(cached.snapshot);
       if (state === undefined) return null;
-      this.instance.state = typeof state === 'object' && state !== null ? { ...state } : state;
+      if (this.instance !== null) {
+        this.instance.state = state !== null && typeof state === 'object' ? { ...(state as Record<string, unknown>) } : state;
+      }
       this.context.restored = true;
       return { atSeq: cached.atSeq };
     } catch (err) {
@@ -801,7 +1022,7 @@ class ActorCell {
       this.system._log('snapshot_unusable', {
         path: this.path,
         atSeq: cached.atSeq,
-        err: err.message,
+        err: err instanceof Error ? err.message : String(err),
         action: 'rebuild_from_events',
       });
       return null;
@@ -809,10 +1030,11 @@ class ActorCell {
   }
 
   /** 快照里那层用户状态：交给数据层的 decodeSnapshot（版本校验/迁移在这里）。 */
-  _decodeSnapshotPayload(payload) {
-    const { evolution } = this.persistence;
-    if (!evolution || !evolution.decodeSnapshot) return payload;
-    return callEvolution(evolution.decodeSnapshot, 'decodeSnapshot', payload);
+  _decodeSnapshotPayload(payload: unknown): unknown {
+    const evolution = this.persistence.evolution;
+    const decode = evolution?.decodeSnapshot;
+    if (decode === undefined) return payload;
+    return callEvolution(decode, 'decodeSnapshot', payload);
   }
 
   /**
@@ -824,12 +1046,18 @@ class ActorCell {
    *   - throw            → the actor **refuses to start** (a wrong structure is
    *                        never silently applied).
    */
-  async _loadSnapshotForRestore() {
-    const { store, evolution } = this.persistence;
-    const raw = await store.loadSnapshot(this.path);
-    if (raw === undefined) return undefined;
-    if (!evolution || !evolution.decodeSnapshot) return raw;
-    return callEvolution(evolution.decodeSnapshot, 'decodeSnapshot', raw);
+  async _loadSnapshotForRestore(): Promise<unknown> {
+    const store = this.persistence.store;
+    const evolution = this.persistence.evolution;
+    if (store === null) return undefined;
+    const loadSnapshot = store.loadSnapshot;
+    if (typeof loadSnapshot !== 'function') return undefined;
+    const raw = await loadSnapshot.call(store, this.path);
+    if (raw === undefined || raw === null) return undefined;
+    const decode = evolution?.decodeSnapshot;
+    // 交给数据层的 decodeSnapshot（版本校验/迁移在这里；抛错 = 拒绝启动）。
+    // 返回值就是"快照里那个值"：snapshot 模式是裸状态，events 模式是 { __snapshotAtSeq, snapshot }。
+    return decode === undefined ? raw : callEvolution(decode, 'decodeSnapshot', raw);
   }
 
   /**
@@ -839,31 +1067,31 @@ class ActorCell {
    * continuity — "no event was lost" — can only be established with the whole log
    * in hand. A data layer that only provides `upcast` keeps working unchanged.
    */
-  _evolveLog(raw, fromSeq = null) {
-    const { evolution } = this.persistence;
+  _evolveLog(raw: unknown, fromSeq: number | null = null): { events: unknown[]; lastVersion: number } {
+    const evolution = this.persistence.evolution;
+    const records = Array.isArray(raw) ? raw : [];
     // 没有批量 hook 的路径按**条数**切增量：内核记的 atSeq 就是"日志版本 = 条数"
-    const slice = (records) => (fromSeq === null ? records : records.slice(Math.max(0, fromSeq - 1)));
-    if (!evolution) return { events: slice(raw), lastVersion: raw.length };
-    if (evolution.readLog) {
-      const result = callEvolution(evolution.readLog, 'readLog', raw, fromSeq === null ? {} : { fromSeq });
-      if (!result || !Array.isArray(result.events)) {
-        throw new PersistenceError('persistence.evolution.readLog must return { events: [...] }');
-      }
-      const lastSeq = Number.isInteger(result.lastSeq) ? result.lastSeq : null;
-      // 数据层跟踪 seq 时以它为准；否则退回"记录条数"（后端只认条数，格式无关）
-      return { events: result.events, lastVersion: lastSeq === null ? raw.length : lastSeq };
+    const slice = (list: unknown[]): unknown[] => (fromSeq === null ? list : list.slice(Math.max(0, fromSeq - 1)));
+    const readLog = evolution?.readLog;
+    if (readLog === undefined) {
+      const upcast = evolution?.upcast;
+      if (upcast === undefined) return { events: slice(records), lastVersion: records.length };
+      return { events: slice(records).map((item) => callEvolution(upcast, 'upcast', item)), lastVersion: records.length };
     }
-    if (evolution.upcast) {
-      return {
-        events: slice(raw).map((item) => callEvolution(evolution.upcast, 'upcast', item)),
-        lastVersion: raw.length,
-      };
+    const result = callEvolution(readLog, 'readLog', records, fromSeq === null ? {} : { fromSeq }) as
+      | { events?: unknown; lastSeq?: unknown }
+      | null
+      | undefined;
+    if (result === null || result === undefined || !Array.isArray(result.events)) {
+      throw new PersistenceError('persistence.evolution.readLog must return { events: [...] }');
     }
-    return { events: slice(raw), lastVersion: raw.length };
+    const lastSeq = Number.isInteger(result.lastSeq) ? (result.lastSeq as number) : null;
+    // 数据层跟踪 seq 时以它为准；否则退回"记录条数"（后端只认条数，格式无关）
+    return { events: result.events, lastVersion: lastSeq ?? records.length };
   }
 
   /** 后端不支持条件写时说一次（而不是让用户"以为有乐观并发保护"）。 */
-  _warnIfConcurrencyUnsupported() {
+  _warnIfConcurrencyUnsupported(): void {
     if (this._concurrencyWarned || this.persistence.mode !== 'events') return;
     this._concurrencyWarned = true;
     if (this._conditionalAppend()) return;
@@ -874,7 +1102,7 @@ class ActorCell {
   }
 
   /** 后端是否支持条件写（'atomic' 或 'in-process' 都算；默认 false）。 */
-  _conditionalAppend() {
+  _conditionalAppend(): boolean {
     const store = this.persistence.store;
     if (!store || typeof store.capabilities !== 'function') return false;
     const capability = (store.capabilities() || {}).conditionalAppend;
@@ -888,12 +1116,12 @@ class ActorCell {
    * "第二条撞车时第一条已经落盘"——日志自洽，但一条命令只写了一半。后端不支持批量时
    * 退回逐条（并记一条日志，不假装原子）。
    */
-  async persistEvents(events) {
+  async persistEvents(events: unknown[]): Promise<number> {
     const list = [...events];
-    if (list.length === 0) return [];
+    if (list.length === 0) return 0;
     const { mode, store, evolution } = this.persistence;
 
-    if (mode === 'events' && store) {
+    if (mode === 'events' && store !== null) {
       const version = this._eventVersion;
       const canBatch = this._conditionalAppend() && this._batchAppend();
       if (list.length > 1 && !canBatch) {
@@ -903,15 +1131,19 @@ class ActorCell {
           hint: '该后端没有批量条件写：一条命令的多条事件会逐条写入（可能只写进去一半）',
         });
       }
-      if (canBatch && version !== null) {
-        await store.appendEvents(this.path, list, { expectedVersion: version });
+      const appendEvents = store.appendEvents;
+      const appendEvent = store.appendEvent;
+      if (canBatch && version !== null && typeof appendEvents === 'function') {
+        await appendEvents.call(store, this.path, list, { expectedVersion: version });
         this._eventVersion = version + list.length;
       } else {
+        if (typeof appendEvent !== 'function') {
+          throw new PersistenceError('persistence store does not implement appendEvent()');
+        }
         for (const event of list) {
           const current = this._eventVersion;
-          const options =
-            this._conditionalAppend() && current !== null ? { expectedVersion: current } : {};
-          await store.appendEvent(this.path, event, options);
+          const options = this._conditionalAppend() && current !== null ? { expectedVersion: current } : {};
+          await appendEvent.call(store, this.path, event, options);
           this._eventVersion = (current ?? 0) + 1;
         }
       }
@@ -919,22 +1151,24 @@ class ActorCell {
     if (mode === 'snapshot') this._snapshotDirty = true;
 
     // Apply **exactly what a replay would apply**（与 persistEvent 同一条管线）
+    const upcast = evolution?.upcast;
     for (const event of list) {
-      const applied = evolution && evolution.upcast ? callEvolution(evolution.upcast, 'upcast', event) : event;
-      if (this.instance) this.instance.applyEvent(applied);
+      const applied = upcast === undefined ? event : callEvolution(upcast, 'upcast', event);
+      this.instance?.applyEvent?.(applied);
     }
     // 状态已更新，这时存缓存才是安全的（见 _autoSnapshotIfDue）
     if (mode === 'events') await this._autoSnapshotIfDue();
-    return list;
+    return list.length;
   }
 
-  async persistEvent(event) {
+  /** 写一条事件；返回写入后的日志版本（= 条数）。 */
+  async persistEvent(event: unknown): Promise<number> {
     await this.persistEvents([event]);
-    return event;
+    return this._eventVersion ?? 0;
   }
 
   /** 后端是否支持**批量**条件写（能力默认 false）。 */
-  _batchAppend() {
+  _batchAppend(): boolean {
     const store = this.persistence.store;
     if (!store || typeof store.capabilities !== 'function') return false;
     const capability = (store.capabilities() || {}).batchAppend;
@@ -942,18 +1176,22 @@ class ActorCell {
   }
 
   /** 同一类日志只记一次（避免刷屏）。 */
-  _warnOnce(kind, event, meta) {
+  _warnOnce(kind: string, event: string, meta?: Record<string, unknown>): void {
     this._warned ??= new Set();
     if (this._warned.has(kind)) return;
     this._warned.add(kind);
     this.system._log(event, meta);
   }
 
-  async saveSnapshot() {
-    const { store, evolution, mode } = this.persistence;
-    if (!store) return undefined;
+  async saveSnapshot(): Promise<void> {
+    const store = this.persistence.store;
+    const evolution = this.persistence.evolution;
+    const mode = this.persistence.mode;
+    if (store === null) return;
+    const saveSnapshot = store.saveSnapshot;
+    if (typeof saveSnapshot !== 'function') return;
     const state = await this.fetchState();
-    if (state === undefined) return undefined;
+    if (state === undefined) return;
     // The caller gets the live state back; only what lands on disk goes through
     // encodeSnapshot (headers, version markers, …).
     const payload = evolution && evolution.encodeSnapshot
@@ -966,9 +1204,8 @@ class ActorCell {
       mode === 'events' && this.persistence.snapshot !== null
         ? wrapEventsSnapshot(this._eventVersion ?? 0, payload)
         : payload;
-    await store.saveSnapshot(this.path, stored);
+    await saveSnapshot.call(store, this.path, stored);
     this._snapshotDirty = false;
-    return state;
   }
 
   /**
@@ -977,15 +1214,16 @@ class ActorCell {
    * 时机很关键：必须在**事件应用到内存状态之后**调用，否则快照会记下"atSeq 已包含这条"
    * 却存着不含它的状态，恢复时就会丢状态。失败只记日志——事件已经 durable，快照只是缓存。
    */
-  async _autoSnapshotIfDue() {
-    const { mode, snapshot } = this.persistence;
-    if (mode !== 'events' || !snapshot || snapshot.every <= 0) return;
+  async _autoSnapshotIfDue(): Promise<void> {
+    const mode = this.persistence.mode;
+    const snapshot = this.persistence.snapshot;
+    if (mode !== 'events' || snapshot === null || snapshot === undefined || snapshot.every <= 0) return;
     if (!this.instance) return; // worker 隔离不支持 events 模式
     if ((this._eventVersion ?? 0) % snapshot.every !== 0) return;
     try {
       await this.saveSnapshot();
     } catch (err) {
-      this.system._log('snapshot_auto_failed', { path: this.path, err: err.message });
+      this.system._log('snapshot_auto_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -993,10 +1231,14 @@ class ActorCell {
    * The actor's current state: local for inline actors, fetched over the worker
    * protocol for isolated ones. Always a clone, never the live object.
    */
-  async fetchState() {
+  async fetchState(): Promise<unknown> {
     // 重启窗口内先等新 incarnation，别把"暂时没有"当成"没有状态"。
     if (!this._hasIncarnation && !this.stopped) await this._awaitIncarnation();
-    if (this.delegate) return this.delegate.getState();
+    const delegate = this.delegate;
+    if (delegate !== null) {
+      const getState = delegate.getState;
+      return typeof getState === 'function' ? getState.call(delegate) : undefined;
+    }
     if (!this.instance) return undefined;
     const state = this.instance.state;
     if (state === undefined) return undefined;
@@ -1008,7 +1250,7 @@ class ActorCell {
   }
 
   /** Synchronous best-effort view for inspect(); worker state is not fetched. */
-  _statePreview() {
+  _statePreview(): Record<string, unknown> {
     if (this.delegate) return { stateLocation: 'worker', state: '[isolated]' };
     const state = this.instance ? this.instance.state : undefined;
     try {
@@ -1020,7 +1262,7 @@ class ActorCell {
 
   // --- introspection -------------------------------------------------------
 
-  inspect() {
+  inspect(): Record<string, unknown> {
     const preview = this._statePreview();
     return {
       id: this.id,
