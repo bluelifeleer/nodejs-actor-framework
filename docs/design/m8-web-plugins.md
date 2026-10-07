@@ -292,6 +292,20 @@ export function runMailTransportContract(...): void;                      // 契
   插件端到端（401 带头且不暴露原因、服务端记明细、`ctx.user`、角色 403、cookie 来源（用 `node:http` 发原始请求 ——
   fetch 不允许设 cookie 头）、自定义 extractor、撤销、启动期拒短密钥）。
 
+### M8c2（已完成）：JWE（加密 JWT）
+
+- `packages/web/src/auth/jwe.ts`：只支持 `RSA-OAEP-256` + `A256GCM`（PEM 公钥加密/私钥解密，按 `kid` 轮换）
+  与 `dir` + `A256GCM`（32 字节共享密钥）；**其它组合一律显式拒绝并说清支持什么**（不假装支持）。
+  compact 五段；AAD = protected header（RFC 7516）；CEK 每条消息随机（`dir` 除外）；
+  解密失败（篡改密文/标签/IV/header、拿错密钥）一律 `decrypt_failed`；
+  `decryptToJws()` 一步解出内层 JWS 并校验它确实是三段。
+- 推荐用法是**嵌套 JWS-in-JWE**：`signJwt` → `encryptJwe` → `decryptToJws` → `verifyJwt`，两头都占。
+- 测试 5 条：dir 往返 + 密文里看不到明文（含 base64）+ header/密文/标签/IV 篡改全部拒绝；
+  32 字节校验 + `kid` 找不到明确报错；RSA-OAEP-256 往返 + 轮换 + 错密钥拒绝；
+  不支持组合（`RSA-OAEP`/`A256KW`/`none`/`A128GCM`/伪造 header）显式拒绝且信息里写清支持项；
+  嵌套端到端（内层被篡改 → 外层解开也验签失败；内层不是 JWS → 明确报错）。
+- 文档：指南 14 增加 JWE 一节（含**离线可跑** verify 块：签→加→解→验 + 不支持组合被拒）。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

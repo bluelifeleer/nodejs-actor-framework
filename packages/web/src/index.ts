@@ -150,3 +150,15 @@ export {
   type AuthPluginOptions,
   type AuthUser,
 } from './auth/plugin.ts';
+
+export {
+  JWE_ALGORITHMS,
+  JWE_ENCRYPTIONS,
+  JweError,
+  decryptJwe,
+  decryptToJws,
+  encryptJwe,
+  type JweContentEncryption,
+  type JweKey,
+  type JweKeyAlgorithm,
+} from './auth/jwe.ts';
