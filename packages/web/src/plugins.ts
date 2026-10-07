@@ -183,7 +183,7 @@ export function runWebPluginContract(options: {
     }
   });
 
-  test(`[web-plugin:${name}] context 钩子会被注册成服务（没写就不注册）`, () => {
+  test(`[web-plugin:${name}] context 钩子会被注册成服务（没写就不注册）`, async () => {
     const plugin = options.define();
     const shell = options.makeApp?.() ?? (() => {
       const services = new Map<string, unknown>();
@@ -200,7 +200,9 @@ export function runWebPluginContract(options: {
       assert.strictEqual(shell.services.get(WEB_CONTEXT_HOOKS_SERVICE), undefined);
       return;
     }
-    (plugin as { setup?: (app: unknown) => void }).setup?.(shell.app);
+    // setup 是 async（defineWebPlugin 会组合调用方的 setup 再注册钩子）→ **必须 await**，
+    // 否则断言跑在钩子注册之前（M8a 时在别处修过同一个坑，这里漏了）
+    await (plugin as { setup?: (app: unknown) => void | Promise<void> }).setup?.(shell.app);
     const hooks = shell.services.get(WEB_CONTEXT_HOOKS_SERVICE) as readonly unknown[] | undefined;
     assert.ok(Array.isArray(hooks) && hooks.includes(plugin.context), 'context 钩子应当被注册成服务');
   });

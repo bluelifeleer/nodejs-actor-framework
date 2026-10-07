@@ -14,6 +14,7 @@ import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
 import { migrate } from './commands/migrate.ts';
 import { addCapability } from './commands/add.ts';
+import { newPlugin } from './commands/new-plugin.ts';
 import { newApp } from './commands/new.ts';
 import { ProjectError } from './project/load.ts';
 
@@ -25,6 +26,8 @@ function usage(): string {
     '',
     '用法：',
     '  actor new app <dir> [--layout layered|flat] [--with redis,mail] [--web-plugins upload,auth,debug] [--dry-run] [--force]',
+    '  actor new plugin <name> --kind web|resource [--dir <父目录>] [--repo] [--dry-run] [--force]',
+    '                                              生成能自证合规的插件包骨架（自带已发布契约套件的测试）',
     '  actor add <capability> [--web-plugin <name>] [--dir <项目目录>] [--dry-run]',
     '                                              给已有项目增量加能力（非破坏性；不覆盖已有片段）',
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
@@ -43,7 +46,7 @@ function usage(): string {
 
 async function main(argv: readonly string[]): Promise<number> {
   const parsed = parseArgs(argv, {
-    commands: { new: ['app'], migrate: ['status', 'up', 'down'], doctor: [], add: [] },
+    commands: { new: ['app', 'plugin'], migrate: ['status', 'up', 'down'], doctor: [], add: [] },
   });
 
   if (parsed.flags.version === true) {
@@ -91,6 +94,23 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`已生成 ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
     for (const file of result.files) process.stdout.write(`  ${file}\n`);
     process.stdout.write(`\n下一步：\n${result.nextSteps.map((step) => `  ${step}`).join('\n')}\n`);
+    return 0;
+  }
+
+  if (first === 'new' && second === 'plugin') {
+    const result = await newPlugin(parsed.positionals[0] ?? '', {
+      ...(typeof parsed.flags.kind === 'string' ? { kind: parsed.flags.kind } : {}),
+      ...(typeof parsed.flags.dir === 'string' ? { dir: parsed.flags.dir } : {}),
+      ...(parsed.flags.force === true ? { force: true } : {}),
+      ...(parsed.flags['dry-run'] === true ? { dryRun: true } : {}),
+      ...(parsed.flags.repo === true ? { repo: true } : {}),
+    });
+    process.stdout.write(
+      `${result.dryRun ? '[dry-run] 计划生成' : '已生成'} ${result.kind} 插件 ${result.name} → ${path.relative(process.cwd(), result.dir) || '.'}\n`,
+    );
+    for (const file of result.files) process.stdout.write(`  ${file}\n`);
+    if (result.wiring.length > 0) process.stdout.write(`\n仓库内接线清单：\n${result.wiring.map((line) => `  - ${line}`).join('\n')}\n`);
+    process.stdout.write(`\n下一步：cd ${path.relative(process.cwd(), result.dir) || '.'} && npm install && npm test\n`);
     return 0;
   }
 

@@ -1,0 +1,14 @@
+{
+  "name": "__PLUGIN_NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-timeout=60000 'test/*.test.ts'"
+  },
+  "dependencies": {
+    "__PLUGIN_DEP__": "*"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

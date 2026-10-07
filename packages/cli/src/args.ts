@@ -32,11 +32,11 @@ export interface ParsedArgs {
  * 于是 `--web-plugin debug` 被解析成 `{ 'web-plugin': true, debug: true }` —— 插件名直接丢了。
  * 现在：当前选项在 `VALUE_FLAGS` 里，就**总是**把下一个词当值（除非它以 `--` 开头）。
  */
-const VALUE_FLAGS = new Set(['dir', 'data', 'to', 'port', 'layout', 'with', 'web-plugins', 'web-plugin']);
+const VALUE_FLAGS = new Set(['dir', 'data', 'to', 'port', 'layout', 'with', 'web-plugins', 'web-plugin', 'kind']);
 
 const KNOWN_FLAGS = new Set([
   'force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout', 'web-plugins',
-  'with', 'dry-run', 'web-plugin',
+  'with', 'dry-run', 'web-plugin', 'kind', 'repo',
 ]);
 
 /**
