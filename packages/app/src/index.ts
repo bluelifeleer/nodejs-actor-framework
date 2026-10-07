@@ -65,3 +65,5 @@ export {
 
 /** 应用层版本，便于启动日志与诊断。 */
 export const APP_LAYER_VERSION = '0.1.0';
+
+export { runApp, type RunAppOptions } from './run.ts';
