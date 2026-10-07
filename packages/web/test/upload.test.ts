@@ -8,6 +8,7 @@ import path from 'node:path';
 import { createApp, defineApp, defineModule } from '@actor/app';
 
 import { httpPlugin } from '../src/http.ts';
+import type { Middleware } from '../src/controller.ts';
 import { parseMultipart, parseBoundary } from '../src/upload/multipart.ts';
 import { diskChunkStore, memoryChunkStore, runChunkStoreContract } from '../src/upload/chunked.ts';
 import {
@@ -223,7 +224,7 @@ test('upload plugin: multipart 单/多文件上传 → 回读；超限时**全�
 
 test('upload plugin: 分片上传全流程 + **断点续传** + 整文件 sha256 校验（不符则拒绝并报期望/实际）', async () => {
   const dir = tmp();
-  const { app, base } = await startUploadApp({ dir, chunkDir: path.join(dir, 'chunks') });
+  const { app, base, storage } = await startUploadApp({ dir, chunkDir: path.join(dir, 'chunks') });
   const CHUNK = 5 * 1024 * 1024;
   try {
     const chunk0 = Buffer.alloc(CHUNK, 7);
@@ -299,9 +300,22 @@ test('upload plugin: 分片上传全流程 + **断点续传** + 整文件 sha256
     assert.strictEqual(bytes.length, whole.length);
     assert.strictEqual(sha(bytes), wholeSha);
 
-    // 会话在完成后被清理；再查是 404
-    const gone = await fetch(`${base}/uploads/chunked/${session.uploadId}`);
-    assert.strictEqual(gone.status, 404);
+    // 完成后**保留会话一段宽限期**（分片数据已释放）：于是 complete 可幂等重试、结果也能查回来
+    const after = await fetch(`${base}/uploads/chunked/${session.uploadId}`);
+    assert.strictEqual(after.status, 200);
+    const state2 = (await after.json()) as { completed: { key: string } | null; received: number[] };
+    assert.strictEqual(state2.completed?.key, finished.file.key, 'status 要能查回完成结果');
+    assert.deepStrictEqual(state2.received, [], '完成后分片数据应已释放');
+
+    // **幂等**：再 complete 一次 → 同一个 file，不重复写存储
+    const filesBefore = (await storage.list?.())?.length ?? 0;
+    const againRes = await fetch(`${base}/uploads/chunked/${session.uploadId}/complete`, { method: 'POST' });
+    const againText = await againRes.text();
+    assert.strictEqual(againRes.status, 200, againText);
+    const againPayload = JSON.parse(againText) as { file: { key: string }; reused: boolean };
+    assert.strictEqual(againPayload.file.key, finished.file.key, '重试 complete 必须拿到同一个 key');
+    assert.strictEqual(againPayload.reused, true);
+    assert.strictEqual((await storage.list?.())?.length ?? 0, filesBefore, '幂等重试不能多写一份文件');
   } finally {
     await app.stop({ timeoutMs: 5000 });
   }
@@ -334,3 +348,225 @@ test('upload plugin: 整文件 sha256 不符 → 拒绝并报出期望/实际（
   }
 });
 
+// --- M8b 加固：限额 / 归属 / 清理 / 逐片必须校验 -----------------------------
+
+/** 用一个测试用中间件模拟"有鉴权"：请求头 x-test-user 就是当前登录用户。 */
+const asUser: Middleware = async (ctx, next) => {
+  const who = ctx.header('x-test-user');
+  if (who !== undefined && who !== '') ctx.extend({ user: { sub: who, roles: [] } });
+  return next();
+};
+
+async function startHardenedApp(options: {
+  dir: string;
+  chunkDir: string;
+  maxChunkSize?: number;
+  maxUploadSize?: number;
+  maxActiveSessions?: number;
+  requireChunkSha256?: boolean;
+  ttlMs?: number;
+  purgeIntervalMs?: number;
+  auth?: { required?: boolean };
+}) {
+  const storage = localDiskStorage({ dir: options.dir });
+  const chunkStore = diskChunkStore({
+    dir: options.chunkDir,
+    ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+    ...(options.maxChunkSize === undefined ? {} : { maxChunkSize: options.maxChunkSize }),
+    ...(options.maxUploadSize === undefined ? {} : { maxUploadSize: options.maxUploadSize }),
+  });
+  const http = httpPlugin({ port: 0 });
+  const app = createApp(
+    defineApp({
+      name: 'upload-hardened',
+      modules: [defineModule({ name: 'app', routes: [] })],
+      middleware: [asUser],
+      plugins: [
+        uploadPlugin({
+          storage,
+          chunkStore,
+          ...(options.maxActiveSessions === undefined ? {} : { maxActiveSessions: options.maxActiveSessions }),
+          ...(options.requireChunkSha256 === undefined ? {} : { requireChunkSha256: options.requireChunkSha256 }),
+          ...(options.purgeIntervalMs === undefined ? {} : { purgeIntervalMs: options.purgeIntervalMs }),
+          ...(options.auth === undefined ? {} : { auth: options.auth }),
+        }),
+        http,
+      ],
+    }),
+    { configDir: null, env: {} },
+  );
+  await app.start();
+  return { app, base: `http://127.0.0.1:${(http.address()?.port as number)}`, storage };
+}
+
+const CHUNK = 5 * 1024 * 1024;
+
+test('upload plugin 加固: chunkSize 上限 / 上传总大小上限 / 会话数上限 都在 init 就挡住', async () => {
+  const dir = tmp();
+  const { app, base } = await startHardenedApp({
+    dir,
+    chunkDir: path.join(dir, 'chunks'),
+    maxChunkSize: 5 * 1024 * 1024,
+    maxUploadSize: 6 * 1024 * 1024,
+    maxActiveSessions: 1,
+  });
+  const init = (body: Record<string, unknown>): Promise<Response> =>
+    fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  try {
+    const tooBigChunk = await init({ filename: 'a', size: 10, chunkSize: 8 * 1024 * 1024, sha256: sha(Buffer.alloc(10)) });
+    const tooBigChunkText = await tooBigChunk.text(); // 只读一次（读两次会 Body is unusable）
+    assert.strictEqual(tooBigChunk.status, 413, tooBigChunkText);
+    assert.match(tooBigChunkText, /chunkSize 超过上限/);
+
+    const tooBigFile = await init({ filename: 'a', size: 7 * 1024 * 1024, chunkSize: CHUNK, sha256: sha(Buffer.alloc(10)) });
+    const tooBigFileText = await tooBigFile.text();
+    assert.strictEqual(tooBigFile.status, 413, tooBigFileText);
+    assert.match(tooBigFileText, /上传大小超过上限/);
+
+    // 会话数上限：第一个成功，第二个 429
+    const first = await init({ filename: 'a', size: 10, chunkSize: CHUNK, sha256: sha(Buffer.alloc(10)) });
+    assert.strictEqual(first.status, 201, await first.text());
+    const second = await init({ filename: 'b', size: 10, chunkSize: CHUNK, sha256: sha(Buffer.alloc(10)) });
+    assert.strictEqual(second.status, 429, await second.text());
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin 加固: **不强制鉴权** —— 匿名会话放行；有主会话只认本人（他人 404）', async () => {
+  const dir = tmp();
+  const { app, base } = await startHardenedApp({ dir, chunkDir: path.join(dir, 'chunks') });
+  const body = Buffer.alloc(11, 5);
+  try {
+    // ① 匿名（不带 x-test-user）：init/put/status/complete 全部放行
+    const anonInit = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'anon.bin', size: body.length, chunkSize: CHUNK, sha256: sha(body) }),
+    });
+    const anon = (await anonInit.json()) as { uploadId: string };
+    assert.strictEqual(anonInit.status, 201);
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${anon.uploadId}`)).status, 200, '匿名会话任何人都能查');
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${anon.uploadId}/0`, { method: 'PUT', body })).status, 200, '匿名会话任何人都能传');
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${anon.uploadId}/complete`, { method: 'POST' })).status, 201);
+
+    // ② 有主（alice）：本人可以，bob 一律 404（且不暴露存在性）
+    const aliceInit = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-user': 'alice' },
+      body: JSON.stringify({ filename: 'alice.bin', size: body.length, chunkSize: CHUNK, sha256: sha(body) }),
+    });
+    const owned = (await aliceInit.json()) as { uploadId: string };
+    assert.strictEqual(aliceInit.status, 201);
+
+    const bobStatus = await fetch(`${base}/uploads/chunked/${owned.uploadId}`, { headers: { 'x-test-user': 'bob' } });
+    assert.strictEqual(bobStatus.status, 404, '别人的会话要 404（不是 403：不暴露存在性）');
+    const bobPut = await fetch(`${base}/uploads/chunked/${owned.uploadId}/0`, { method: 'PUT', headers: { 'x-test-user': 'bob' }, body });
+    assert.strictEqual(bobPut.status, 404);
+    const bobComplete = await fetch(`${base}/uploads/chunked/${owned.uploadId}/complete`, { method: 'POST', headers: { 'x-test-user': 'bob' } });
+    assert.strictEqual(bobComplete.status, 404);
+    const bobAbort = await fetch(`${base}/uploads/chunked/${owned.uploadId}`, { method: 'DELETE', headers: { 'x-test-user': 'bob' } });
+    assert.strictEqual(bobAbort.status, 404, '别人连 abort 都不该看到这个会话（比 removed:false 更不泄露）');
+    const stillThere = await fetch(`${base}/uploads/chunked/${owned.uploadId}`, { headers: { 'x-test-user': 'alice' } });
+    assert.strictEqual(stillThere.status, 200, 'bob 不能删掉 alice 的会话');
+
+    const alicePut = await fetch(`${base}/uploads/chunked/${owned.uploadId}/0`, { method: 'PUT', headers: { 'x-test-user': 'alice' }, body });
+    assert.strictEqual(alicePut.status, 200);
+    const aliceDone = await fetch(`${base}/uploads/chunked/${owned.uploadId}/complete`, { method: 'POST', headers: { 'x-test-user': 'alice' } });
+    assert.strictEqual(aliceDone.status, 201, await aliceDone.text());
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin 加固: 过期会话/分片会被**定时清掉**（purgeExpired 真的删文件）', async () => {
+  const dir = tmp();
+  const chunkDir = path.join(dir, 'chunks');
+  const { app, base } = await startHardenedApp({ dir, chunkDir, ttlMs: 60, purgeIntervalMs: 40 });
+  const body = Buffer.alloc(13, 7);
+  try {
+    const init = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'expire.bin', size: body.length, chunkSize: CHUNK, sha256: sha(body) }),
+    });
+    const session = (await init.json()) as { uploadId: string };
+    await fetch(`${base}/uploads/chunked/${session.uploadId}/0`, { method: 'PUT', body });
+
+    const chunkFiles = (): string[] => {
+      const out: string[] = [];
+      const walk = (current: string): void => {
+        for (const name of fs.existsSync(current) ? fs.readdirSync(current) : []) {
+          const full = path.join(current, name);
+          if (fs.statSync(full).isDirectory()) walk(full);
+          else out.push(full);
+        }
+      };
+      walk(chunkDir);
+      return out;
+    };
+    assert.ok(chunkFiles().length > 0, '分片应当先落盘');
+
+    await new Promise((resolve) => setTimeout(resolve, 300)); // 等过期 + 至少一轮清理
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${session.uploadId}`)).status, 404, '过期会话要查不到');
+    assert.deepStrictEqual(chunkFiles(), [], `过期分片必须被清掉（否则磁盘只会涨）：${JSON.stringify(chunkFiles())}`);
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin 加固: requireChunkSha256 开启后，缺 x-chunk-sha256 直接 400', async () => {
+  const dir = tmp();
+  const { app, base } = await startHardenedApp({ dir, chunkDir: path.join(dir, 'chunks'), requireChunkSha256: true });
+  const body = Buffer.alloc(9, 1);
+  try {
+    const init = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'strict.bin', size: body.length, chunkSize: CHUNK, sha256: sha(body) }),
+    });
+    const session = (await init.json()) as { uploadId: string };
+    const without = await fetch(`${base}/uploads/chunked/${session.uploadId}/0`, { method: 'PUT', body });
+    assert.strictEqual(without.status, 400);
+    assert.match(await without.text(), /缺少 x-chunk-sha256/);
+    const withHash = await fetch(`${base}/uploads/chunked/${session.uploadId}/0`, {
+      method: 'PUT',
+      headers: { 'x-chunk-sha256': sha(body) },
+      body,
+    });
+    assert.strictEqual(withHash.status, 200, await withHash.text());
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin 加固: auth 声明只在显式配置时才写进控制器（没装 authPlugin 就是空声明）', async () => {
+  const dir = tmp();
+  const plain = await startHardenedApp({ dir, chunkDir: path.join(dir, 'chunks') });
+  const declared = await startHardenedApp({
+    dir: tmp(),
+    chunkDir: path.join(tmp(), 'chunks'),
+    auth: { required: true },
+  });
+  try {
+    // 直接看插件产出的路由控制器（app.routes 的聚合形状是应用层的内部细节，不该拿来当断言依据）
+    const specsOf = (plugin: { routes?: readonly unknown[] }): Array<Record<string, unknown>> =>
+      (plugin.routes ?? []).map((entry) => (entry as readonly unknown[])[2] as Record<string, unknown>);
+    assert.ok(specsOf(uploadPlugin({ storage: localDiskStorage({ dir: tmp() }) })).every((spec) => spec['auth'] === undefined), '默认不声明 auth');
+    assert.ok(
+      specsOf(uploadPlugin({ storage: localDiskStorage({ dir: tmp() }), auth: { required: true } })).every(
+        (spec) => (spec['auth'] as { required?: boolean } | undefined)?.required === true,
+      ),
+      '配置了就写进声明（由 authPlugin 解释；没装 authPlugin 时空声明不拦人）',
+    );
+    void plain;
+    void declared;
+  } finally {
+    await plain.app.stop({ timeoutMs: 5000 });
+    await declared.app.stop({ timeoutMs: 5000 });
+  }
+});

@@ -376,6 +376,30 @@ export function runMailTransportContract(...): void;                      // 契
   `smtpTransport` 用**假 nodemailer** 验证懒加载/选项映射/raw 投递（真发不发由 env 决定）、
   真服务投递与真服务契约套件（`ACTOR_TEST_SMTP_URL`，缺了**可见跳过**）。
 
+### M8b 加固（已完成）：补齐评审里发现的短板
+
+对 `@actor/web` 分片上传做了一次针对性加固（用户确认"需要"）：
+
+| 短板 | 处理 |
+|---|---|
+| 分片路径**没有任何容量上限**、`chunkSize` 无上限 | 新增 `maxChunkSize`（默认 64MiB）与 `maxUploadSize`（默认 5GiB），**都在 init 就 413** |
+| 分片内容整块进内存（`drain`）→ 大分片可 OOM | `diskChunkStore` 改为**流式写 + 边写边算 sha256**（临时文件 + 校验通过才 rename）；`readAll` 用 `createReadStream` 按 1MiB 读；`drain` 也带上限 |
+| 并发会话无上限 | `maxActiveSessions`（需要 `countActive()`；存储不支持就**启动期拒绝**，不静默失效） |
+| `complete` 不幂等、响应丢了就得整份重传 | 会话增加 `completed`；`markCompleted()` 保留结果 + 释放分片，`expiresAt` 设为宽限期；`complete` 幂等返回同一 file（`reused: true`） |
+| 上传路由默认不鉴权、会话不绑用户 | **不强制鉴权**（用户明确要求）：会话记录 `subject`，**有主会话**只认本人（他人 404），匿名会话放行；可选 `auth` 声明只写进控制器（由 authPlugin 解释） |
+| `purgeExpired` 是"公开但从未被调用/验证"的 API | 插件启动 + 定时（`purgeIntervalMs`，unref）调用；契约套件补上"真的删掉会话与分片"的用例 |
+| TTL 不滑动，大文件传过 24h 会中途失效 | 活动**滑动**续期（`refreshTtlOnActivity`），并新增绝对上限 `hardTtlMs`（默认 7 天）防止"一直 ping 的会话永不失效" |
+| 单目录堆几万个分片文件 | 磁盘分片按 `uploadId` 前两位**分桶** |
+| 上传路径没有事件/日志 | 路由用 `ctx.log`（自动带 requestId）记 `upload_init` / `upload_chunk` / `upload_completed` / `upload_complete_reused` / `upload_aborted` / 归属拒绝 |
+
+**仍然不做（有意欠缺，写进指南）**：秒传/去重、下载侧 Range 与流式响应、图片转码与杀毒、
+"分片存储即最终存储"（当前 complete 仍是整份再读+再写一遍 I/O）、Merkle 根替代"重读整份"校验。
+
+**自我修正**：加固过程中我自己的测试又犯了两类老毛病 —— 在断言消息里读 body（`Body is unusable`）、
+以及猜 `app.routes` 的聚合形状当断言依据（改成直接看插件产出的路由）；
+另有实现侧一处：完成后分片数据已释放，但记账里还留着 `received` —— 与"记账永不声称不存在的数据"这条
+原则冲突，已改成 `received: []`。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

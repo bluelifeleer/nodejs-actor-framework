@@ -36,7 +36,10 @@ test('jwt: HS256/384/512 往返；篡改任何一段都拒绝', async () => {
     assert.ok(Array.isArray(payload.roles) && payload.roles.includes('admin'));
 
     const [header, body, signature] = token.split('.') as [string, string, string];
-    await assert.rejects(() => verifyJwt(`${header}.${body}.${signature.slice(0, -2)}xx`, { keys: [hmacKey(algorithm)] }), /签名/);
+    // 注意 base64url 的**末位字符只有 2 位有效**（32 字节 → 43 字符），改末位解码后字节可能完全一样 →
+    // 必须改**首字符**（它决定第一个字节的高 6 位），否则"篡改"根本没生效（这正是这条测试先前会偶发通过的原因）
+    const flipped = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    await assert.rejects(() => verifyJwt(`${header}.${body}.${flipped}`, { keys: [hmacKey(algorithm)] }), /签名/);
     const tampered = Buffer.from(JSON.stringify({ sub: 'root', roles: ['admin'] })).toString('base64url');
     await assert.rejects(() => verifyJwt(`${header}.${tampered}.${signature}`, { keys: [hmacKey(algorithm)] }), /签名/);
   }

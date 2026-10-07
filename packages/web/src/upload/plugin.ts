@@ -1,3 +1,5 @@
+import { DbConfigError } from '@actor/resource';
+
 import { HttpError, reply } from '../context.ts';
 import { defineController } from '../controller.ts';
 import { defineRoutes, del, get, post, put, type Route } from '../routes.ts';
@@ -80,6 +82,24 @@ export interface UploadPluginOptions {
   /** 给了就强制白名单（否则只做基本校验）。 */
   allowedMimeTypes?: readonly string[];
   allowedExtensions?: readonly string[];
+  /** 单个分片上限（默认 64MiB；只看上限、不整片进内存）。 */
+  maxChunkSize?: number;
+  /** 整份上传大小上限（默认 5GiB）：init 就挡住，防止声明一个巨大会话慢慢填磁盘。 */
+  maxUploadSize?: number;
+  /** 并发会话上限（会话存储要支持 `countActive`，否则**启动期拒绝**）。 */
+  maxActiveSessions?: number;
+  /** 分片必须带 `x-chunk-sha256`（默认 false；**建议开启**，把损坏挡在写入时）。 */
+  requireChunkSha256?: boolean;
+  /**
+   * 可选的鉴权声明：只写进控制器（由 `authPlugin` 解释）。
+   *
+   * **不强制鉴权**：没装 authPlugin 时它就是个空声明、不拦任何人；
+   * 装了 authPlugin 时按 `required`/`roles` 生效。归属校验另有一套（见下），与它无关。
+   */
+  auth?: { readonly required?: boolean; readonly roles?: readonly string[] };
+  /** 过期会话清理间隔（默认 10 分钟；0 = 不自动清理）。 */
+  purgeIntervalMs?: number;
+  logger?: (event: string, meta?: Record<string, unknown>) => void;
 }
 
 /** 从文件名取扩展名（不带点，小写）。 */
@@ -102,9 +122,52 @@ function extensionOf(filename: string): string {
  */
 export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
   const prefix = (options.routePrefix ?? '/uploads').replace(/\/$/, '');
-  const chunkStore = options.chunkStore ?? memoryChunkStore();
+  const chunkStore =
+    options.chunkStore ??
+    memoryChunkStore({
+      ...(options.maxChunkSize === undefined ? {} : { maxChunkSize: options.maxChunkSize }),
+      ...(options.maxUploadSize === undefined ? {} : { maxUploadSize: options.maxUploadSize }),
+    });
+  // 配置了并发上限但存储不支持计数 → **启动期拒绝**（不静默失效）
+  if (options.maxActiveSessions !== undefined && typeof chunkStore.countActive !== 'function') {
+    throw new DbConfigError(
+      'uploadPlugin: 配置了 maxActiveSessions，但 chunkStore 没有实现 countActive() —— 请换实现或去掉该限制（本轮不静默放过）',
+    );
+  }
   const limits: MultipartLimits = { ...DEFAULT_MULTIPART_LIMITS, ...(options.limits ?? {}) };
   const streamPatterns = [prefix, `${prefix}/chunked/:uploadId/:index`];
+  const purgeIntervalMs = options.purgeIntervalMs ?? 10 * 60 * 1000;
+  let purgeTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** 当前请求的 subject（有鉴权才有；没有就是匿名）。 */
+  const subjectOf = (ctx: { extension<T = unknown>(key: string): T | undefined }): string | undefined =>
+    ctx.extension<{ sub?: string }>('user')?.sub;
+
+  /**
+   * **归属校验（不强制鉴权）**：
+   *   - 会话是匿名的（`subject === undefined`）→ 一律放行（很多场景没有鉴权，不能拦）；
+   *   - 会话有主 → 当前 subject 必须一致，否则返回 **404**（不暴露"这个会话存在"这件事）。
+   */
+  const assertOwnership = (
+    session: { uploadId: string; subject?: string },
+    ctx: { extension<T = unknown>(key: string): T | undefined; requestId: string; path: string },
+  ): void => {
+    if (session.subject === undefined) return;
+    if (subjectOf(ctx) === session.subject) return;
+    options.logger?.('upload_ownership_denied', {
+      requestId: ctx.requestId,
+      path: ctx.path,
+      uploadId: session.uploadId,
+    });
+    throw new HttpError(404, `上传会话不存在或已过期：${session.uploadId}`);
+  };
+
+  /** 事件日志：优先走请求级 ctx.log（自动带 requestId），否则退回插件 logger。 */
+  const note = (ctx: { log?: unknown }, event: string, meta?: Record<string, unknown>): void => {
+    const logger = ctx.log as { info?: (message: string, meta?: Record<string, unknown>) => void } | undefined;
+    if (typeof logger?.info === 'function') logger.info(event, meta);
+    else options.logger?.(event, meta);
+  };
 
   const checkWhitelist = (filename: string, mimeType: string): void => {
     if (options.allowedExtensions !== undefined) {
@@ -202,13 +265,23 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
           chunkSize: { type: 'number' },
           sha256: { type: 'string', min: 64, max: 64 },
         },
-        async handle(input): Promise<unknown> {
+        async handle(input, ctx): Promise<unknown> {
+          if (options.maxActiveSessions !== undefined) {
+            const active = (await chunkStore.countActive?.()) ?? 0;
+            if (active >= options.maxActiveSessions) {
+              options.logger?.('upload_sessions_limit_reached', { active, limit: options.maxActiveSessions });
+              throw new HttpError(429, '上传会话数已达上限，请稍后再试');
+            }
+          }
+          const subject = subjectOf(ctx);
           const session = await chunkStore.create({
             filename: String(input.filename),
             size: Number(input.size),
             chunkSize: Number(input.chunkSize),
             sha256: String(input.sha256).toLowerCase(),
+            ...(subject === undefined ? {} : { subject }),
           });
+          note(ctx, 'upload_init', { uploadId: session.uploadId, size: session.size, chunkSize: session.chunkSize, authenticated: subject !== undefined });
           return reply.json(
             {
               uploadId: session.uploadId,
@@ -231,12 +304,19 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
           const stream = (ctx as unknown as { stream?: AsyncIterable<Uint8Array> }).stream;
           if (stream === undefined) throw new HttpError(500, '分片路由没有拿到请求流（httpPlugin 未启用流式？）');
           const expected = ctx.header('x-chunk-sha256');
+          if (expected === undefined && options.requireChunkSha256 === true) {
+            throw new HttpError(400, '缺少 x-chunk-sha256（本插件配置为必须逐片校验）');
+          }
+          const existing = await chunkStore.get(String(input.uploadId));
+          if (existing === null) throw new HttpError(404, `上传会话不存在或已过期：${String(input.uploadId)}`);
+          assertOwnership(existing, ctx);
           const { session } = await chunkStore.putChunk(
             String(input.uploadId),
             Number(input.index),
             stream,
             expected === undefined ? undefined : expected.toLowerCase(),
           );
+          note(ctx, 'upload_chunk', { uploadId: session.uploadId, index: Number(input.index), received: session.received.length });
           return reply.json({
             uploadId: session.uploadId,
             received: session.received,
@@ -250,11 +330,13 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
       `${prefix}/chunked/:uploadId`,
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
-        async handle(input): Promise<unknown> {
+        async handle(input, ctx): Promise<unknown> {
           const session = await chunkStore.get(String(input.uploadId));
           if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${String(input.uploadId)}`);
+          assertOwnership(session, ctx);
           return {
             uploadId: session.uploadId,
+            completed: session.completed?.file ?? null,
             filename: session.filename,
             size: session.size,
             chunkSize: session.chunkSize,
@@ -272,10 +354,16 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
       `${prefix}/chunked/:uploadId/complete`,
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
-        async handle(input): Promise<unknown> {
+        async handle(input, ctx): Promise<unknown> {
           const uploadId = String(input.uploadId);
           const session = await chunkStore.get(uploadId);
           if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
+          assertOwnership(session, ctx);
+          // **幂等**：已完成过就直接把同一个结果还给他（响应丢了也能安全重试，不用整份重传）
+          if (session.completed !== undefined) {
+            note(ctx, 'upload_complete_reused', { uploadId });
+            return reply.json({ file: session.completed.file, reused: true });
+          }
           const missing = chunkStore.missingChunks(session);
           if (missing.length > 0) throw new HttpError(400, `还有分片没收到：${missing.join(',')}`);
 
@@ -293,7 +381,9 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
               actual: file.checksum,
             });
           }
-          await chunkStore.remove(uploadId);
+          // 保留会话（含结果）一段时间：complete 可幂等重试，客户端也能把结果查回来；分片数据此时已释放
+          await chunkStore.markCompleted(uploadId, file);
+          note(ctx, 'upload_completed', { uploadId, key: file.key, size: file.size });
           return reply.json({ file }, { status: 201 });
         },
       }),
@@ -303,27 +393,58 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
       `${prefix}/chunked/:uploadId`,
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
-        async handle(input): Promise<unknown> {
+        async handle(input, ctx): Promise<unknown> {
+          const session = await chunkStore.get(String(input.uploadId));
+          if (session !== null) assertOwnership(session, ctx);
           const removed = await chunkStore.remove(String(input.uploadId));
+          note(ctx, 'upload_aborted', { uploadId: String(input.uploadId), removed });
           return reply.json({ removed });
         },
       }),
     ),
   ]);
 
+  // 可选鉴权声明：只写进控制器（由 authPlugin 解释）；**没装 authPlugin 就是空声明、不拦任何人**
+  const declaredRoutes =
+    options.auth === undefined
+      ? routes
+      : (routes as readonly (readonly unknown[])[]).map((entry) => {
+          const [method, pattern, controller, middleware] = entry;
+          if (typeof controller !== 'object' || controller === null) return entry;
+          return [method, pattern, { ...(controller as object), auth: options.auth }, middleware];
+        });
+
   return defineWebPlugin({
     name: 'upload',
-    routes: routes as unknown as readonly Route[],
+    routes: declaredRoutes as unknown as readonly Route[],
     config: {
       maxFileSize: { type: 'number' as const, default: limits.maxFileSize },
       maxFiles: { type: 'number' as const, default: limits.maxFiles },
     },
     middleware: [],
+    onStopping: () => {
+      if (purgeTimer !== null) clearInterval(purgeTimer);
+      purgeTimer = null;
+    },
     // 把"要流式的路径"和存储注册成服务：httpPlugin 读前者决定不缓冲，别的模块可以读后者
     setup: (app: { provide?(name: string, value: unknown): void }) => {
       app.provide?.(STREAM_ROUTES_SERVICE, matcherFor(streamPatterns));
       app.provide?.(UPLOAD_STORAGE_SERVICE, options.storage);
       app.provide?.('upload', options.storage);
+      // 过期会话/分片必须有人清：启动一次 + 定时（unref，不拖住进程退出）
+      if (typeof chunkStore.purgeExpired === 'function' && purgeIntervalMs > 0) {
+        const sweep = (): void => {
+          void chunkStore
+            .purgeExpired?.()
+            .then((removed) => {
+              if (removed.length > 0) options.logger?.('upload_sessions_purged', { removed: removed.length });
+            })
+            .catch((err: unknown) => options.logger?.('upload_purge_failed', { error: err instanceof Error ? err.message : String(err) }));
+        };
+        sweep();
+        purgeTimer = setInterval(sweep, purgeIntervalMs);
+        (purgeTimer as unknown as { unref?: () => void }).unref?.();
+      }
     },
   });
 }

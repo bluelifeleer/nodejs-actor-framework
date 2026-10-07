@@ -38,6 +38,31 @@ export default defineApp({
 | POST | `/uploads/chunked/:uploadId/complete` | 合并 + **整文件 sha256 校验**（不符给出 expected/actual 并作废会话） |
 | DELETE | `/uploads/chunked/:uploadId` | 作废会话 |
 
+## 限额（分片路径也有，且都在 init 就挡住）
+
+| 选项 | 默认 | 作用 |
+|---|---|---|
+| `maxChunkSize` | 64MiB | 单分片上限（也决定内存安全边界：写入是**流式**的，不整片进内存） |
+| `maxUploadSize` | 5GiB | 整份上传上限（防"声明一个 10TB 会话慢慢填磁盘"） |
+| `maxActiveSessions` | 不限 | 并发会话上限（会话存储要实现 `countActive()`；不支持则**启动期拒绝**，不静默失效） |
+| `purgeIntervalMs` | 10 分钟 | 过期会话/分片清理间隔（`0` = 不自动清理）；启动时也会清一次 |
+| `requireChunkSha256` | `false` | 是否强制逐片 `x-chunk-sha256`（**建议开启**：把损坏挡在写入时） |
+| `ttlMs` / `hardTtlMs` | 24h / 7 天 | 活动**滑动**续期，但绝不越过绝对上限 |
+
+## 鉴权：**不强制**，有就验证、没有就放行
+
+- 会话会记录上传者（`ctx.user.sub`，装了 `authPlugin` 才有）；
+- **匿名会话**（没有鉴权）→ 一律放行 —— 很多场景就是没有登录体系，不能强制；
+- **有主会话** → 只有本人能查状态/传分片/完成/作废，别人一律 **404**（不暴露"这个会话存在"）；
+- 想额外要求鉴权（装了 authPlugin 时才生效）：`uploadPlugin({ auth: { required: true, roles: ['uploader'] } })`
+  —— 它只是**写进控制器声明**，没装 authPlugin 就是空声明、不拦任何人。
+
+## 完成后可以安全重试（幂等）
+
+`complete` 成功后**会话会保留一段宽限期**（默认 15 分钟，`completedGraceMs` 可调）并记住结果，分片数据同时释放。
+于是：响应在网络里丢了，客户端**再发一次 `complete`** 就能拿回同一个 `file`（返回 `reused: true`），
+不需要整份重传；`GET /uploads/chunked/:uploadId` 也能查回 `completed.file`。
+
 ## 默认就是安全的
 
 - **key 由服务端生成**（`uuid` + 白名单扩展名），客户端给的 `filename` **只当元数据**，且会被剥掉路径成分；

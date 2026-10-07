@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert';
@@ -7,6 +9,7 @@ import assert from 'node:assert';
 import { DbConfigError } from '@actor/resource';
 
 import { HttpError } from '../context.ts';
+import type { UploadedFile } from './storage.ts';
 
 /**
  * **分片上传 + 断点续传**：会话与分片数据由 `ChunkSessionStore` 管；两个内置实现
@@ -29,11 +32,24 @@ export interface ChunkSession {
   /** 已收到的分片下标（升序）。 */
   readonly received: readonly number[];
   readonly createdAt: string;
+  /** 活动滑动后的过期时间（最后一次活动 + ttlMs，且不超过 hardExpiresAt）。 */
   readonly expiresAt: string;
+  /** **绝对**上限：滑动也不能突破它（否则一个一直 ping 的会话永不失效）。 */
+  readonly hardExpiresAt: string;
+  /**
+   * 上传者的 subject（**有鉴权时才有**）。
+   *
+   * 语义：`undefined` = 匿名上传 —— 一律放行（很多场景没有鉴权，不能强制）；
+   * 有值时 = 该会话只属于这个 subject，别人拿到 uploadId 也读不到/改不了（返回 404，不暴露存在性）。
+   */
+  readonly subject?: string;
+  /** 完成后的结果。保留一段宽限期，于是 `complete` **幂等**、响应丢了也能再查回来。 */
+  readonly completed?: { readonly file: UploadedFile; readonly at: string };
 }
 
 export interface ChunkSessionStore {
-  create(input: { filename: string; size: number; chunkSize: number; sha256: string }): Promise<ChunkSession>;
+  /** `subject` 有值表示"这个会话有主"（见 `ChunkSession.subject`）。 */
+  create(input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string }): Promise<ChunkSession>;
   get(uploadId: string): Promise<ChunkSession | null>;
   /** 写入/覆盖一个分片；给 `expectedSha256` 时逐片校验（不符 → 400 且不记录）。 */
   putChunk(
@@ -45,7 +61,12 @@ export interface ChunkSessionStore {
   /** 按序读出所有分片（合并用）。 */
   readAll(uploadId: string): AsyncIterable<Uint8Array>;
   remove(uploadId: string): Promise<boolean>;
+  /** 标记完成（保留会话与结果、**释放分片数据**）→ `complete` 因此可幂等重试。 */
+  markCompleted(uploadId: string, file: UploadedFile): Promise<ChunkSession>;
+  /** 清理过期会话（及其分片），返回被清掉的 uploadId。 */
   purgeExpired(now?: number): Promise<string[]>;
+  /** 当前活跃会话数（用于 `maxActiveSessions` 限流）；不支持就别实现（插件会在启动期拒绝）。 */
+  countActive?(): Promise<number>;
   /** 总分片数。 */
   totalChunks(session: ChunkSession): number;
   /** 缺失分片下标（升序）。 */
@@ -53,13 +74,64 @@ export interface ChunkSessionStore {
 }
 
 export interface ChunkStoreOptions {
-  /** 会话有效期（默认 24h）。 */
+  /** 会话有效期（默认 24h；活动时滑动，见 `refreshTtlOnActivity`）。 */
   ttlMs?: number;
+  /** 绝对上限（默认 7 天）：滑动也不能突破。 */
+  hardTtlMs?: number;
+  /** 每次写入分片就续期（默认 true）—— 大文件传一整天不该中途失效。 */
+  refreshTtlOnActivity?: boolean;
+  /** 完成后再保留多久（默认 15 分钟）：让 `complete` 幂等、也能把结果查回来。 */
+  completedGraceMs?: number;
+  /** 单分片上限（默认 64MiB）：**这是内存安全的边界**，客户端声明超过就拒。 */
+  maxChunkSize?: number;
+  /** 整份上传大小上限（默认 5GiB）：防止声明一个 10TB 的会话慢慢填满磁盘。 */
+  maxUploadSize?: number;
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_HARD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_COMPLETED_GRACE_MS = 15 * 60 * 1000;
+const DEFAULT_MAX_CHUNK_SIZE = 64 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_SIZE = 5 * 1024 * 1024 * 1024;
 
-function validateInit(input: { filename: string; size: number; chunkSize: number; sha256: string }, ttlMs: number): ChunkSession {
+/** 上限（含默认值），init 与写入两侧都用它。 */
+interface Limits {
+  ttlMs: number;
+  hardTtlMs: number;
+  refreshTtlOnActivity: boolean;
+  completedGraceMs: number;
+  maxChunkSize: number;
+  maxUploadSize: number;
+}
+
+function limitsOf(options: ChunkStoreOptions): Limits {
+  return {
+    ttlMs: options.ttlMs ?? DEFAULT_TTL_MS,
+    hardTtlMs: options.hardTtlMs ?? DEFAULT_HARD_TTL_MS,
+    refreshTtlOnActivity: options.refreshTtlOnActivity !== false,
+    completedGraceMs: options.completedGraceMs ?? DEFAULT_COMPLETED_GRACE_MS,
+    maxChunkSize: options.maxChunkSize ?? DEFAULT_MAX_CHUNK_SIZE,
+    maxUploadSize: options.maxUploadSize ?? DEFAULT_MAX_UPLOAD_SIZE,
+  };
+}
+
+/** 活动续期（滑动 TTL），但永远不越过绝对上限。 */
+function slide(session: ChunkSession, limits: Limits, now = Date.now()): ChunkSession {
+  if (!limits.refreshTtlOnActivity) return session;
+  const next = Math.min(now + limits.ttlMs, Date.parse(session.hardExpiresAt));
+  if (next <= Date.parse(session.expiresAt)) return session;
+  return { ...session, expiresAt: new Date(next).toISOString() };
+}
+
+/** 过期判定：滑动窗口或绝对上限任一到期即失效。 */
+function expired(session: ChunkSession, now = Date.now()): boolean {
+  return Date.parse(session.expiresAt) < now || Date.parse(session.hardExpiresAt) < now;
+}
+
+function validateInit(
+  input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string },
+  limits: Limits,
+): ChunkSession {
   if (typeof input.filename !== 'string' || input.filename.trim() === '') throw new HttpError(400, 'init: filename 必填');
   if (!Number.isInteger(input.size) || input.size < 0) throw new HttpError(400, 'init: size 必须是非负整数');
   if (!Number.isInteger(input.chunkSize) || input.chunkSize <= 0) throw new HttpError(400, 'init: chunkSize 必须是正整数');
@@ -68,6 +140,13 @@ function validateInit(input: { filename: string; size: number; chunkSize: number
     throw new HttpError(400, `init: chunkSize 太小（最小 ${5 * 1024 * 1024} 字节）`);
   }
   if (!/^[0-9a-f]{64}$/.test(input.sha256)) throw new HttpError(400, 'init: sha256 必须是 64 位十六进制（整文件 sha256）');
+  // 上限必须在 init 就挡住：不然客户端可以声明一个巨大的会话慢慢填满磁盘
+  if (input.chunkSize > limits.maxChunkSize) {
+    throw new HttpError(413, `init: chunkSize 超过上限（maxChunkSize=${limits.maxChunkSize}）`);
+  }
+  if (input.size > limits.maxUploadSize) {
+    throw new HttpError(413, `init: 上传大小超过上限（maxUploadSize=${limits.maxUploadSize}）`);
+  }
   const now = Date.now();
   return {
     uploadId: randomUUID(),
@@ -77,7 +156,9 @@ function validateInit(input: { filename: string; size: number; chunkSize: number
     sha256: input.sha256,
     received: [],
     createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + ttlMs).toISOString(),
+    expiresAt: new Date(Math.min(now + limits.ttlMs, now + limits.hardTtlMs)).toISOString(),
+    hardExpiresAt: new Date(now + limits.hardTtlMs).toISOString(),
+    ...(input.subject === undefined ? {} : { subject: input.subject }),
   };
 }
 
@@ -96,57 +177,72 @@ const missingChunks = (session: ChunkSession): number[] => {
   return out;
 };
 
-async function drain(source: AsyncIterable<Uint8Array>): Promise<Buffer> {
+/** 带上限的读取：超过就立刻 413（不让它先把内存吃光再报错）。 */
+async function drain(source: AsyncIterable<Uint8Array>, maxBytes: number): Promise<Buffer> {
   const parts: Buffer[] = [];
-  for await (const chunk of source) parts.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let total = 0;
+  for await (const chunk of source) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.byteLength;
+    if (total > maxBytes) throw new HttpError(413, `分片超过上限（maxChunkSize=${maxBytes}）`);
+    parts.push(bytes);
+  }
   return Buffer.concat(parts);
+}
+
+/** 校验分片内容（大小 + 可选 sha256），返回 sha256。 */
+function checkChunk(index: number, bytes: Buffer, expectedSize: number, expectedSha256?: string): string {
+  if (bytes.byteLength !== expectedSize) {
+    throw new HttpError(400, `分片 ${index} 大小不符：期望 ${expectedSize}，实际 ${bytes.byteLength}`);
+  }
+  const chunkSha256 = createHash('sha256').update(bytes).digest('hex');
+  if (expectedSha256 !== undefined && expectedSha256.toLowerCase() !== chunkSha256) {
+    throw new HttpError(400, `分片 ${index} 的 sha256 不符`, { expected: expectedSha256.toLowerCase(), actual: chunkSha256 });
+  }
+  return chunkSha256;
 }
 
 /** 内存实现（单节点/测试）。⚠️ 多节点下语义不成立：分片只在收到它的那个进程里。 */
 export function memoryChunkStore(options: ChunkStoreOptions = {}): ChunkSessionStore {
-  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const limits = limitsOf(options);
   const sessions = new Map<string, ChunkSession>();
   const chunks = new Map<string, Map<number, Buffer>>();
 
-  const store: ChunkSessionStore = {
+  const get = async (uploadId: string): Promise<ChunkSession | null> => {
+    const session = sessions.get(uploadId);
+    if (session === undefined) return null;
+    if (expired(session)) {
+      sessions.delete(uploadId);
+      chunks.delete(uploadId);
+      return null;
+    }
+    return session;
+  };
+
+  return {
     totalChunks,
     missingChunks,
     async create(input) {
-      const session = validateInit(input, ttlMs);
+      const session = validateInit(input, limits);
       sessions.set(session.uploadId, session);
       chunks.set(session.uploadId, new Map());
       return session;
     },
-    async get(uploadId) {
-      const session = sessions.get(uploadId);
-      if (session === undefined) return null;
-      if (Date.parse(session.expiresAt) < Date.now()) {
-        sessions.delete(uploadId);
-        chunks.delete(uploadId);
-        return null;
-      }
-      return session;
-    },
+    get,
     async putChunk(uploadId, index, source, expectedSha256) {
-      const session = await store.get(uploadId);
+      const session = await get(uploadId);
       if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
       const expectedSize = expectedChunkSize(session, index);
-      const bytes = await drain(source);
-      if (bytes.byteLength !== expectedSize) {
-        throw new HttpError(400, `分片 ${index} 大小不符：期望 ${expectedSize}，实际 ${bytes.byteLength}`);
-      }
-      const chunkSha256 = createHash('sha256').update(bytes).digest('hex');
-      if (expectedSha256 !== undefined && expectedSha256.toLowerCase() !== chunkSha256) {
-        throw new HttpError(400, `分片 ${index} 的 sha256 不符`, { expected: expectedSha256.toLowerCase(), actual: chunkSha256 });
-      }
+      const bytes = await drain(source, limits.maxChunkSize);
+      const chunkSha256 = checkChunk(index, bytes, expectedSize, expectedSha256);
       chunks.get(uploadId)?.set(index, bytes);
       const received = [...new Set([...session.received, index])].sort((a, b) => a - b);
-      const updated: ChunkSession = { ...session, received };
+      const updated = slide({ ...session, received }, limits);
       sessions.set(uploadId, updated);
       return { session: updated, chunkSha256 };
     },
     async *readAll(uploadId) {
-      const session = await store.get(uploadId);
+      const session = await get(uploadId);
       if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
       const missing = missingChunks(session);
       if (missing.length > 0) throw new HttpError(400, `还有分片没收到：${missing.join(',')}`);
@@ -157,10 +253,30 @@ export function memoryChunkStore(options: ChunkStoreOptions = {}): ChunkSessionS
       chunks.delete(uploadId);
       return sessions.delete(uploadId);
     },
+    async markCompleted(uploadId, file) {
+      const session = await get(uploadId);
+      if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
+      const now = Date.now();
+      const next: ChunkSession = {
+        ...session,
+        completed: { file, at: new Date(now).toISOString() },
+        // 分片数据已释放 → 记账也不能再说"收过"（不声称不存在的数据）
+        received: [],
+        expiresAt: new Date(Math.min(now + limits.completedGraceMs, Date.parse(session.hardExpiresAt))).toISOString(),
+      };
+      sessions.set(uploadId, next);
+      chunks.delete(uploadId); // 完成即释放分片数据（结果留在会话里，于是 complete 可幂等重试）
+      return next;
+    },
+    async countActive() {
+      let count = 0;
+      for (const session of sessions.values()) if (!expired(session)) count += 1;
+      return count;
+    },
     async purgeExpired(now = Date.now()) {
       const removed: string[] = [];
       for (const [uploadId, session] of sessions) {
-        if (Date.parse(session.expiresAt) < now) {
+        if (expired(session, now)) {
           sessions.delete(uploadId);
           chunks.delete(uploadId);
           removed.push(uploadId);
@@ -169,40 +285,67 @@ export function memoryChunkStore(options: ChunkStoreOptions = {}): ChunkSessionS
       return removed;
     },
   };
-  return store;
 }
 
 /** 本地磁盘实现：会话元数据 + 分片都落盘 → **进程重启后仍可续传**。 */
-export function diskChunkStore(options: { dir: string; ttlMs?: number }): ChunkSessionStore {
-  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+export function diskChunkStore(options: { dir: string } & ChunkStoreOptions): ChunkSessionStore {
+  const limits = limitsOf(options);
   const root = path.resolve(options.dir);
   const safeId = (uploadId: string): string => {
     if (!/^[0-9a-f-]{36}$/i.test(uploadId)) throw new HttpError(400, `uploadId 不合法：${uploadId}`);
     return uploadId;
   };
-  const sessionPath = (uploadId: string): string => path.join(root, `${safeId(uploadId)}.session.json`);
-  const chunkPath = (uploadId: string, index: number): string => path.join(root, `${safeId(uploadId)}.${String(index)}.part`);
+  // 按前两位分桶：5MiB 分片 × 100GB = 2 万个文件，全堆一个目录会拖垮文件系统
+  const bucketOf = (uploadId: string): string => path.join(root, safeId(uploadId).slice(0, 2));
+  const sessionPath = (uploadId: string): string => path.join(bucketOf(uploadId), `${safeId(uploadId)}.session.json`);
+  const chunkPath = (uploadId: string, index: number): string => path.join(bucketOf(uploadId), `${safeId(uploadId)}.${index}.part`);
 
   const readSession = async (uploadId: string): Promise<ChunkSession | null> => {
     const file = sessionPath(uploadId); // 先校验 id（抛出的 HttpError 不能被下面的 catch 吞掉）
     try {
       const session = JSON.parse(await readFile(file, 'utf8')) as ChunkSession;
-      if (Date.parse(session.expiresAt) < Date.now()) return null;
-      return session;
+      return expired(session) ? null : session;
     } catch {
       return null;
     }
   };
   const writeSession = async (session: ChunkSession): Promise<void> => {
-    await mkdir(root, { recursive: true });
-    await writeFile(sessionPath(session.uploadId), JSON.stringify(session), 'utf8');
+    const file = sessionPath(session.uploadId);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(session), 'utf8');
+  };
+  const dropChunks = async (session: ChunkSession): Promise<void> => {
+    for (let index = 0; index < totalChunks(session); index += 1) {
+      await rm(chunkPath(session.uploadId, index), { force: true });
+    }
+  };
+  const listSessions = async (): Promise<string[]> => {
+    let buckets: string[] = [];
+    try {
+      buckets = await readdir(root);
+    } catch {
+      return [];
+    }
+    const ids: string[] = [];
+    for (const bucket of buckets) {
+      let names: string[] = [];
+      try {
+        names = await readdir(path.join(root, bucket));
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (name.endsWith('.session.json')) ids.push(name.slice(0, -'.session.json'.length));
+      }
+    }
+    return ids;
   };
 
   const store: ChunkSessionStore = {
     totalChunks,
     missingChunks,
     async create(input) {
-      const session = validateInit(input, ttlMs);
+      const session = validateInit(input, limits);
       await writeSession(session);
       return session;
     },
@@ -211,18 +354,39 @@ export function diskChunkStore(options: { dir: string; ttlMs?: number }): ChunkS
       const session = await readSession(uploadId);
       if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
       const expectedSize = expectedChunkSize(session, index);
-      const bytes = await drain(source);
-      if (bytes.byteLength !== expectedSize) {
-        throw new HttpError(400, `分片 ${index} 大小不符：期望 ${expectedSize}，实际 ${bytes.byteLength}`);
+      const target = chunkPath(uploadId, index);
+      await mkdir(path.dirname(target), { recursive: true });
+      const temp = `${target}.part`;
+      // **流式写入 + 边写边算 sha256**（不把整片 concat 进内存；分片再大也只看上限）
+      const hash = createHash('sha256');
+      let total = 0;
+      const sink = createWriteStream(temp);
+      try {
+        for await (const chunk of source) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += bytes.byteLength;
+          if (total > limits.maxChunkSize) throw new HttpError(413, `分片超过上限（maxChunkSize=${limits.maxChunkSize}）`);
+          hash.update(bytes);
+          if (!sink.write(bytes)) await once(sink, 'drain');
+        }
+        await new Promise<void>((resolve, reject) => sink.end((err?: Error | null) => (err == null ? resolve() : reject(err))));
+      } catch (err) {
+        sink.destroy();
+        await rm(temp, { force: true });
+        throw err;
       }
-      const chunkSha256 = createHash('sha256').update(bytes).digest('hex');
+      const chunkSha256 = hash.digest('hex');
+      if (total !== expectedSize) {
+        await rm(temp, { force: true });
+        throw new HttpError(400, `分片 ${index} 大小不符：期望 ${expectedSize}，实际 ${total}`);
+      }
       if (expectedSha256 !== undefined && expectedSha256.toLowerCase() !== chunkSha256) {
+        await rm(temp, { force: true });
         throw new HttpError(400, `分片 ${index} 的 sha256 不符`, { expected: expectedSha256.toLowerCase(), actual: chunkSha256 });
       }
-      await mkdir(root, { recursive: true });
-      await writeFile(chunkPath(uploadId, index), bytes); // 幂等：同分片重传即覆盖
+      await rename(temp, target); // 校验通过才就位（半截数据不会被当成收过的分片）
       const received = [...new Set([...session.received, index])].sort((a, b) => a - b);
-      const updated: ChunkSession = { ...session, received };
+      const updated = slide({ ...session, received }, limits);
       await writeSession(updated);
       return { session: updated, chunkSha256 };
     },
@@ -232,36 +396,58 @@ export function diskChunkStore(options: { dir: string; ttlMs?: number }): ChunkS
       const missing = missingChunks(session);
       if (missing.length > 0) throw new HttpError(400, `还有分片没收到：${missing.join(',')}`);
       for (let index = 0; index < totalChunks(session); index += 1) {
-        yield await readFile(chunkPath(uploadId, index)); // 分片大于内存也没关系：逐个读
+        // 用流按 1MiB 分片读：单个分片再大也不会整片进内存
+        for await (const slice of createReadStream(chunkPath(uploadId, index), { highWaterMark: 1024 * 1024 })) {
+          yield slice as Uint8Array;
+        }
       }
     },
     async remove(uploadId) {
       const session = await readSession(uploadId);
       if (session === null) return false;
-      for (let index = 0; index < totalChunks(session); index += 1) {
-        await rm(chunkPath(uploadId, index), { force: true });
-      }
+      await dropChunks(session);
       await rm(sessionPath(uploadId), { force: true });
       return true;
     },
-    async purgeExpired(now = Date.now()) {
-      let names: string[] = [];
-      try {
-        names = await readdir(root);
-      } catch {
-        return [];
+    async markCompleted(uploadId, file) {
+      const session = await readSession(uploadId);
+      if (session === null) throw new HttpError(404, `上传会话不存在或已过期：${uploadId}`);
+      const now = Date.now();
+      const next: ChunkSession = {
+        ...session,
+        completed: { file, at: new Date(now).toISOString() },
+        received: [],
+        expiresAt: new Date(Math.min(now + limits.completedGraceMs, Date.parse(session.hardExpiresAt))).toISOString(),
+      };
+      await writeSession(next);
+      await dropChunks(session); // 分片数据释放；结果留在会话里（complete 可幂等重试 / 查询）
+      return next;
+    },
+    async countActive() {
+      let count = 0;
+      for (const uploadId of await listSessions()) {
+        if ((await readSession(uploadId)) !== null) count += 1;
       }
+      return count;
+    },
+    async purgeExpired(now = Date.now()) {
       const removed: string[] = [];
-      for (const name of names) {
-        if (!name.endsWith('.session.json')) continue;
-        const uploadId = name.slice(0, -'.session.json'.length);
-        const session = await readSession(uploadId);
-        if (session === null) {
-          await store.remove(uploadId);
+      for (const uploadId of await listSessions()) {
+        const file = sessionPath(uploadId);
+        let session: ChunkSession;
+        try {
+          session = JSON.parse(await readFile(file, 'utf8')) as ChunkSession;
+        } catch {
+          await rm(file, { force: true });
+          removed.push(uploadId);
+          continue;
+        }
+        if (expired(session, now)) {
+          await dropChunks(session);
+          await rm(file, { force: true });
           removed.push(uploadId);
         }
       }
-      void now;
       return removed;
     },
   };
@@ -353,6 +539,65 @@ export function runChunkStoreContract(options: {
       assert.deepStrictEqual((reopened as ChunkSessionStore).missingChunks(state as ChunkSession), [1], '缺哪片也要算得出来');
     });
   }
+
+  test(`[chunk-store:${options.name}] 上限在 init 就挡住（chunkSize 与上传总大小）`, async () => {
+    const store = await options.make();
+    await assert.rejects(
+      () => store.create({ filename: 'a', size: 10, chunkSize: 128 * 1024 * 1024, sha256: 'a'.repeat(64) }),
+      /chunkSize 超过上限/,
+    );
+    await assert.rejects(
+      () => store.create({ filename: 'a', size: 6 * 1024 * 1024 * 1024, chunkSize: CHUNK, sha256: 'a'.repeat(64) }),
+      /上传大小超过上限/,
+    );
+  });
+
+  test(`[chunk-store:${options.name}] 活动会滑动 TTL，但绝不越过**绝对上限**`, async () => {
+    const store = await options.make();
+    const first = await store.create({ filename: 'a', size: CHUNK, chunkSize: CHUNK, sha256: 'a'.repeat(64) });
+    assert.ok(Date.parse(first.hardExpiresAt) >= Date.parse(first.expiresAt), '要有绝对上限');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const { session } = await store.putChunk(first.uploadId, 0, asStream(bytes(CHUNK, 1)));
+    assert.ok(Date.parse(session.expiresAt) > Date.parse(first.expiresAt), '传了分片就应当续期');
+    assert.ok(Date.parse(session.expiresAt) <= Date.parse(session.hardExpiresAt), '续期也不能越过绝对上限');
+  });
+
+  test(`[chunk-store:${options.name}] markCompleted：结果可查、不再声称"收过"、分片已释放`, async () => {
+    const store = await options.make();
+    const data = bytes(11, 9);
+    const before = (await store.countActive?.()) ?? 0; // 必须在 create **之前**取快照（套件共用一个目录）
+    const session = await store.create({ filename: 'c.bin', size: data.length, chunkSize: CHUNK, sha256: sha(data) });
+    await store.putChunk(session.uploadId, 0, asStream(data), sha(data));
+    assert.strictEqual((await store.countActive?.()) ?? 0, before + 1, 'countActive 要能数到新会话（套件里共享目录，所以看差值）');
+
+    const file = {
+      key: 'k1',
+      name: 'c.bin',
+      mimeType: 'application/octet-stream',
+      size: data.length,
+      checksum: sha(data),
+      uploadedAt: new Date().toISOString(),
+    };
+    const done = await store.markCompleted(session.uploadId, file);
+    assert.deepStrictEqual(done.completed?.file, file, '完成结果要留在会话里（complete 才能幂等重试）');
+    assert.deepStrictEqual(done.received, [], '分片数据已释放 → 不能再声称收过');
+    const iterator = store.readAll(session.uploadId)[Symbol.asyncIterator]();
+    await assert.rejects(() => iterator.next(), /还有分片没收到/);
+    assert.deepStrictEqual((await store.get(session.uploadId))?.completed?.file, file);
+    assert.strictEqual(await store.remove(session.uploadId), true);
+  });
+
+  test(`[chunk-store:${options.name}] purgeExpired 真的删掉会话与分片，并返回被清的 id`, async () => {
+    const store = await options.make();
+    const data = bytes(7, 3);
+    const session = await store.create({ filename: 'p.bin', size: data.length, chunkSize: CHUNK, sha256: sha(data) });
+    await store.putChunk(session.uploadId, 0, asStream(data), sha(data));
+    // 传入"足够远的未来"→ 跨过绝对上限（默认 7 天）才会被判过期（60s 这种是过不了 hardTtl 的）
+    const removed = await store.purgeExpired?.(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    assert.ok(removed?.includes(session.uploadId) === true, `要返回被清的 id：${JSON.stringify(removed)}`);
+    assert.strictEqual(await store.get(session.uploadId), null);
+    await assert.rejects(() => store.putChunk(session.uploadId, 0, asStream(data)), /不存在或已过期/);
+  });
 
   test(`[chunk-store:${options.name}] 未知 uploadId 是 404（不是 500）；不安全的 id 直接拒`, async () => {
     const store = await options.make();
