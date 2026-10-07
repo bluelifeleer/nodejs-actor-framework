@@ -80,12 +80,23 @@ await cache.close();            // 幂等；会等在途工作结束（drain）
 同一应用里可以起多个 Redis（缓存/队列/会话各一个），各自独立配置与生命周期：
 
 ```ts
-plugins: [
-  databaseAdapter(redisAdapter(), { name: 'cache' }),
-  databaseAdapter(redisAdapter({ driver: 'ioredis', prefix: 'queue:' }), { name: 'queue' }),
-]
-// 使用：ctx.get('cache') / ctx.get('queue')
+// app.ts
+import { databaseAdapter } from '@actor/db-core';
+import { redisAdapter } from '@actor/redis';
+
+export default defineApp({
+  modules: [myModule],
+  plugins: [
+    databaseAdapter(redisAdapter(), { name: 'cache' }),
+    databaseAdapter(redisAdapter({ driver: 'ioredis', prefix: 'queue:' }), { name: 'queue' }),
+  ],
+});
 ```
+
+每个实例是**一个插件名**：配置落 `plugins.cache.*` / `plugins.queue.*`（环境变量
+`APP_PLUGINS__CACHE__URL` / `APP_PLUGINS__QUEUE__URL`），客户端注册成同名服务 ——
+控制器里 `ctx.get('cache')` / `ctx.get('queue')` 直接拿到，停机时各自优雅关闭。
+连接后不健康、或连不上，都会**启动失败**（不会出现"应用起来了但 Redis 没连上"）。
 
 ## v1 明确不做
 

@@ -454,6 +454,21 @@ export const myDb = defineDatabaseAdapter({
    另外假 store 的 `LPUSH` 语义写错了（Redis 是逐个压入头部 `LPUSH l a b → [b,a]`），
    被键值层测试抓到 —— 已修。
 
+### M7c 追加：`databaseAdapter()`（多实例按 name 注册的落点）
+
+写指南时发现我用了**还不存在**的 API（`databaseAdapter(adapter, { name })`）—— "文档承诺了没实现的东西"
+必须补上，于是把 M7e 的这块先做了（约 90 行）：
+
+- `@actor/db-core` 新增 `databaseAdapter(adapter, { name, connection, pool, requireHealthy, logger, onEvent,
+  supervision })`：返回**结构化** PluginSpec（`name`/`config`/`onReady`/`onStopping`），**不依赖 `@actor/app`** ——
+  只认结构（`config.get` / `provide` / 生命周期钩子），所以 core 不需要依赖应用层，
+  **用户自装的适配器也能用同一套接线**。
+- 行为：`onReady` 建连接（连不上/不健康就**启动失败**）→ 注册 `<name>`（客户端）与 `<name>:resource`
+  （受管资源，便于 stats/显式关闭）；`onStopping` 优雅关闭（幂等）。
+- 一个实例 = 一个插件名 → 配置落 `plugins.<name>.*`，多实例就是多个 name 的插件。
+- 测试 6 条（用**假 app 对象**驱动生命周期，正说明它是结构化的）：生命周期与注册、默认名取 kind、
+  多实例各注册各的、连不上启动失败、不健康启动失败（错误信息点明实例名）、事件可接出去、空名字报错。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |

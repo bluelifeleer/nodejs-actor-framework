@@ -160,6 +160,34 @@ export declare function supervise<C = unknown, Conn extends BaseConnection = Bas
   options: SupervisionOptions<Conn>,
 ): ManagedResource<C>;
 
+// --- 接进应用（结构化 PluginSpec，不依赖 @actor/app）------------------------
+export interface AdapterPluginApp {
+  config: { get<T>(key: string): T };
+  provide?(name: string, value: unknown): void;
+  get?<T>(name: string): T;
+}
+export interface AdapterPluginSpec {
+  name: string;
+  config: Record<string, unknown>;
+  onReady(app: AdapterPluginApp): Promise<void>;
+  onStopping(app: AdapterPluginApp): Promise<void>;
+}
+export interface AdapterPluginOptions<Conn extends BaseConnection = BaseConnection> {
+  name?: string;
+  connection?: Conn;
+  pool?: SupervisionOptions<Conn>['pool'];
+  requireHealthy?: boolean;
+  logger?: (event: string, meta?: Record<string, unknown>) => void;
+  /** 生命周期事件 → 日志/指标。 */
+  onEvent?: (event: SupervisionEvent) => void;
+  supervision?: Omit<SupervisionOptions<Conn>, 'connection' | 'pool' | 'logger' | 'onEvent'>;
+}
+/** 把适配器包成一个应用插件（连接/注册服务/停机关闭都由它负责）。 */
+export declare function databaseAdapter<C = unknown, Conn extends BaseConnection = BaseConnection>(
+  adapter: DatabaseAdapter<C, Conn>,
+  options?: AdapterPluginOptions<Conn>,
+): AdapterPluginSpec;
+
 // --- 契约套件（测试工具）---------------------------------------------------
 export interface ContractResourceInput {
   onEvent: (event: SupervisionEvent) => void;

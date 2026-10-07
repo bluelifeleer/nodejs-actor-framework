@@ -46,6 +46,13 @@ export {
 } from './testing.ts';
 
 export {
+  databaseAdapter,
+  type AdapterPluginApp,
+  type AdapterPluginOptions,
+  type AdapterPluginSpec,
+} from './plugin.ts';
+
+export {
   supervise,
   type ManagedResource,
   type ManagedResourceStats,
