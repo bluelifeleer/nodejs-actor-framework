@@ -174,3 +174,20 @@ export {
   type RefreshTokenRecord,
   type RefreshTokenStore,
 } from './auth/refresh.ts';
+
+// --- 日志与诊断（M8d）-------------------------------------------------------
+export {
+  REDACTED,
+  REDACT_KEYWORDS,
+  createRequestLogger,
+  redactHeaders,
+  redactValue,
+  shouldRedact,
+  toStructuredLog,
+  type LogLevel,
+  type LogSink,
+  type RequestLogger,
+  type StructuredRequestEntry,
+} from './logging.ts';
+
+export { debugPlugin, type DebugPluginOptions } from './debug.ts';

@@ -97,6 +97,8 @@ export interface DispatchResult {
   status: number;
   /** 每个请求的追踪 id（由服务器回写到响应头，便于跨日志排查）。 */
   requestId: string;
+  /** 已认证用户的 subject（authPlugin 设置了 ctx.user 时才有）。 */
+  userId?: string;
   /** HEAD 命中 GET 路由：响应头照常，body 必须丢弃（由服务器实现处理）。 */
   headOnly?: true;
 }
@@ -202,12 +204,15 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
       return spec.handle(input, ctx);
     });
     const response = toResponse(result);
+    // 已认证用户（authPlugin 会在 auth 阶段 ctx.extend({ user })）：给访问日志/诊断用
+    const user = ctx.extension<{ sub?: string }>('user');
     return {
       matched: true,
       route,
       status: response.status,
       requestId,
       response,
+      ...(user?.sub === undefined ? {} : { userId: user.sub }),
       ...(match.headOnly ? { headOnly: true as const } : {}),
     };
   } catch (error) {

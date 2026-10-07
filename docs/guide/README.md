@@ -21,7 +21,8 @@
 | 12 | [Web 插件（自定义插件逻辑）](./12-web-plugin.md) | defineWebPlugin：路由/带阶段中间件/请求上下文扩展 + 契约套件 |
 | 13 | [文件上传（流式 / 分片 / 断点续传）](./13-upload.md) | uploadPlugin、UploadStorage 契约、分片 + sha256 校验、前端示例 |
 | 14 | [鉴权与 JWT（authPlugin）](./14-auth.md) | JWT 校验（HS/RS/ES）、算法白名单、角色、ctx.user、401/403 语义 |
-| 15 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
+| 15 | [日志与诊断（脱敏 / 采样 / __debug）](./15-observability.md) | 结构化访问日志、脱敏名单、慢请求、ctx.log、诊断路由三层门禁 |
+| 16 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
 
 ## 这些示例**真的会跑**
 

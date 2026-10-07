@@ -321,6 +321,38 @@ export function runMailTransportContract(...): void;                      // 契
 - 测试 10 条：内存 + redis 形状（假 KV 客户端**共享同一份存储** → `reopen` 语义是真验证）两套契约 +
   哈希存储断言 + 生产拒绝启动 + 重放留痕。
 
+### M8d（已完成）：日志与诊断
+
+- `packages/web/src/logging.ts`：**脱敏**（`REDACT_KEYWORDS` 覆盖 authorization/cookie/set-cookie/password/
+  secret/token/api-key/private-key/credential/session，按 key **子串**匹配、大小写不敏感、递归进对象与数组、
+  深度封顶）+ `createRequestLogger`（每条带 `requestId`，meta **自动脱敏**，`child()` 合并字段）+
+  `toStructuredLog`（结构化字段 + 慢请求标记）。
+- `requestLogPlugin` 升级：`sampleRate`（**慢请求不受采样影响** —— 排障时最需要的恰恰是它）、
+  `format: 'line' | 'json'`、`includeHeaders`（开了也自动脱敏）。
+- `httpPlugin`：新增 `logger` 选项 → `ctx.log` 是**请求级子日志**（每条带 requestId）；
+  `http:request` 事件补 `bytesIn`（**流式请求如实省略** —— 没缓冲就统计不到）/`bytesOut`/`userId`；
+  `dispatch` 结果补 `userId`（取 `ctx.user.sub`）。
+- `resourceAdapter` 新增**受管资源注册表**（`@actor/resource:registry`）：诊断路由据此发现所有受管资源，
+  不需要谁去登记。
+- `debugPlugin`：默认**关闭**（不贡献任何路由）；开启必须给 ≥16 字符 token（否则**定义期**报错）；
+  `NODE_ENV=production` 下**拒绝启动**（除非 `allowInProduction: true` 并留痕）；门禁中间件在 `pre` 阶段、
+  常量时间比较、`x-debug-token` 或 `?token=`；三个路由：`/__debug/routes`（路由表 + 中间件阶段）、
+  `/__debug/health`（受管资源 `stats()`，`?check=1` 再跑 `checkHealth()`）、`/__debug/config`
+  （走**有效配置** `config.all()`，只出 key/type，**值一律 `[redacted]`**，并如实标注"含 schema 默认值"）。
+- 测试 7 条：脱敏名单（含反例：`content-type`/`x-chunk-sha256` 不该被脱敏）、请求级 logger（requestId/child/
+  脱敏）、结构化条目、采样（0 时普通请求不记、慢请求必记）、事件字段（bytesIn/bytesOut/userId）+ `ctx.log`、
+  诊断路由三层门禁（默认关闭 / 缺 token 拒绝 / 生产拒绝启动）与三个路由的内容约定。
+
+**自我修正（本轮 4 处，都是"我的补丁没生效/期望写错"）**：
+1. 我加的 `log:` 选项被**同一对象字面量里硬编码的 `log: {console...}` 覆盖**（重复键，后者赢）→ `ctx.log`
+   一直是 console，测试抓出来后合并成一个键；
+2. 两次 python 替换**没匹配上却打印成功** → 现在这类替换都带 `assert s != before`，不再假装成功；
+3. `/__debug/health?check=1` 我读的是**校验后的 input**（没声明过的键不会在里面）→ 改成读 `ctx.qs`；
+4. `/__debug/config` 我按 `config.schema` 写，但 `LoadedConfig` 只有 `all()` → 改成走有效配置，
+   并如实标注"含 schema 默认值"（框架不保留"用户是否显式写过"的信息，就不假装知道）。
+另有三条测试期望是我自己写错的（`slowMs: 1` 把 2ms 请求也算"慢"、`get` 路由被 POST 请求、
+健康聚合返回的是**受管资源** stats（含 `state`+`driver`，比只看驱动更全）），已按真实行为修正。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

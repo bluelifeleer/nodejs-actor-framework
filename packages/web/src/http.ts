@@ -14,6 +14,7 @@ import type { Application, PluginSpec } from '@actor/app';
 import { dispatch } from './controller.ts';
 import type { Middleware } from './middleware.ts';
 import type { HeaderValue } from './context.ts';
+import { createRequestLogger, type LogSink } from './logging.ts';
 import { WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
 import { STREAM_ROUTES_SERVICE } from './upload/plugin.ts';
 import { buildRouteTable, type HttpMethod, type Route } from './routes.ts';
@@ -23,6 +24,8 @@ export interface HttpPluginOptions {
   port?: number;
   host?: string;
   maxBodyBytes?: number;
+  /** 日志出口（`(event, meta) => void`）；给了就把请求级子日志放进 `ctx.log`。 */
+  logger?: LogSink;
   /** 停止时等待在途请求的上限（毫秒）。 */
   shutdownTimeoutMs?: number;
   /** 是否记录访问日志（默认 true，也可由 plugins.http.accessLog 配置）。 */
@@ -152,7 +155,16 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               config: app.config,
               // 插件声明的 context 钩子（defineWebPlugin({ context }) → 服务）
               contextHooks: readContextHooks(app),
-              log: { info: console.info, warn: console.warn, error: console.error },
+              // 有 logger 就用**请求级子日志**（每条带 requestId）；否则退回 console
+              // （这里原来是硬编码的 console 对象 —— 与上面的 log 是重复键，会把子日志覆盖掉）
+              log:
+                options.logger === undefined
+                  ? { info: console.info, warn: console.warn, error: console.error }
+                  : createRequestLogger(options.logger, {
+                      requestId: String(req.headers['x-request-id'] ?? ''),
+                      method: req.method ?? 'GET',
+                      path: String(req.url ?? '/'),
+                    }),
               // 5xx 必须在服务端可见：转成应用事件（由使用者决定怎么记日志）
               onError: (error, info) => {
                 app.emit('http:error', {
@@ -181,6 +193,10 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               status: result.response.status,
               ms: Date.now() - startedAt,
               requestId: result.requestId,
+              // 结构化字段：流式请求的 bytesIn 无从直接统计（没缓冲）→ 如实省略
+              ...(isStreaming ? {} : { bytesIn: size }),
+              bytesOut: typeof result.response.body === 'string' ? Buffer.byteLength(result.response.body) : (result.response.body?.byteLength ?? 0),
+              ...(result.userId === undefined ? {} : { userId: result.userId }),
             });
 
             if (accessLog) {

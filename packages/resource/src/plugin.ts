@@ -104,6 +104,14 @@ export function resourceAdapter<C = unknown, Conn extends BaseConnection = BaseC
       }
       app.provide?.(name, await resource.acquire());
       app.provide?.(`${name}:resource`, resource);
+      // 注册表：诊断路由（/__debug/health）据此发现所有受管资源，不需要知道谁注册过
+      let registry: Array<{ name: string; resource: unknown }> = [];
+      try {
+        registry = app.get?.<Array<{ name: string; resource: unknown }>>('@actor/resource:registry') ?? [];
+      } catch {
+        registry = [];
+      }
+      app.provide?.('@actor/resource:registry', [...registry, { name, resource }]);
     },
 
     async onStopping(): Promise<void> {

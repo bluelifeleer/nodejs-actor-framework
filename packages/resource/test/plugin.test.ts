@@ -116,7 +116,13 @@ test('resourceAdapter: 名字默认取适配器 kind；多实例用不同 name �
   const b = resourceAdapter(adapter, { name: 'b' });
   await a.onReady(app2);
   await b.onReady(app2);
-  assert.deepStrictEqual([...services2.keys()].sort(), ['a', 'a:resource', 'b', 'b:resource']);
+  // 注册表是有意新增的（诊断路由 /__debug/health 据此发现所有受管资源）→ 期望里要有它
+  assert.deepStrictEqual(
+    [...services2.keys()].sort(),
+    ['@actor/resource:registry', 'a', 'a:resource', 'b', 'b:resource'],
+  );
+  const registry = services2.get('@actor/resource:registry') as Array<{ name: string }>;
+  assert.deepStrictEqual(registry.map((item) => item.name), ['a', 'b'], '两个实例都要进注册表');
   await a.onStopping(app2);
   await b.onStopping(app2);
 });
