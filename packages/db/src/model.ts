@@ -55,12 +55,30 @@ export interface Index {
   unique: boolean;
 }
 
+/** 关联声明：本轮只做"声明 + 查询构造"，不做级联写、不做 N+1 自动优化（见设计文档 §7）。 */
+export interface RelationSpec {
+  kind: 'hasMany' | 'belongsTo';
+  /** 目标 model 的名字（要在同一批注册过，`db.sync([...])` 会注册）。 */
+  model: string;
+  /** 关联用的列：hasMany 用**目标表**上的外键字段名；belongsTo 用**本表**上的外键字段名。 */
+  foreignKey: string;
+}
+
+export interface Relation {
+  name: string;
+  kind: 'hasMany' | 'belongsTo';
+  model: string;
+  foreignKey: string;
+}
+
 export interface ModelSpec {
   name: string;
   /** 表名（默认 = name）。 */
   table?: string;
   fields: Record<string, FieldSpec>;
   indexes?: readonly IndexSpec[];
+  /** 关联声明（hasMany / belongsTo）。 */
+  relations?: Record<string, RelationSpec>;
   /** 整行级的自定义映射（**用户可写**）：行 → 实体。 */
   parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
   /** 整行级的自定义映射（**用户可写**）：实体 → 行。 */
@@ -72,6 +90,7 @@ export interface Model {
   readonly table: string;
   readonly fields: readonly Field[];
   readonly indexes: readonly Index[];
+  readonly relations: readonly Relation[];
   readonly primaryKey: string;
   readonly versionField: string | null;
   readonly parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
@@ -226,11 +245,19 @@ export function defineModel(spec: ModelSpec): Model {
     };
   });
 
+  const relations: Relation[] = Object.entries(spec.relations ?? {}).map(([name, relation]) => {
+    if (relation.kind !== 'hasMany' && relation.kind !== 'belongsTo') {
+      throw new DbConfigError(`relation "${name}" of model "${spec.name}" needs kind 'hasMany' or 'belongsTo'`);
+    }
+    return { name, kind: relation.kind, model: String(relation.model), foreignKey: String(relation.foreignKey) };
+  });
+
   const model: Model = {
     name: spec.name,
     table,
     fields,
     indexes,
+    relations,
     primaryKey,
     versionField,
     ...(spec.parseRow === undefined ? {} : { parseRow: spec.parseRow }),

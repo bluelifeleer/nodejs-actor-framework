@@ -18,6 +18,7 @@ import { createSqliteDriver } from './drivers/sqlite.ts';
 import type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';
 import { checkDrift, inspectTable, syncModels, type DriftReport, type SyncReport, type SyncOptions, type TableInfo } from './schema.ts';
 import type { Model } from './model.ts';
+import { createRepository, type Repository, type RepositoryOptions } from './repository.ts';
 
 export interface DatabaseOptions {
   /** 方言；不写时按 connection.url 推断，字段式则默认 `pgsql`。 */
@@ -78,6 +79,13 @@ export interface Database {
   inspectTable(table: string): Promise<TableInfo>;
   /** 只比不改：model 与库里实况的差异。 */
   checkDrift(model: Model): Promise<DriftReport>;
+  /** 已注册的 model（`sync()` 会自动注册；关联解析也用它）。 */
+  models(): ReadonlyMap<string, Model>;
+  /** 取一个 model 的仓储（ORM 映射层：实体 ↔ 行、乐观锁、关联）。 */
+  repository<M extends Model>(
+    model: M,
+    options?: { models?: readonly Model[]; generateId?: () => string },
+  ): Repository<M>;
 }
 
 function defaultDriverFor(dialect: Dialect): DriverFactory {
@@ -123,6 +131,8 @@ export function createDatabase(options: DatabaseOptions): Database {
   let closed = false;
   let lastError: Error | null = null;
   let connected = false;
+  /** model 注册表：`sync()` 会注册，`repository()` 与关联解析用它。 */
+  const registry = new Map<string, Model>();
 
   const requirePool = (): DriverPool => {
     if (pool === null || !connected) throw new DbNotConnectedError(`database ${target}`);
@@ -220,6 +230,8 @@ export function createDatabase(options: DatabaseOptions): Database {
 
     async sync(models: readonly Model[] | Model, syncOptions: SyncOptions = {}): Promise<SyncReport> {
       const list = Array.isArray(models) ? models : [models as Model];
+      // 先注册：这样 sync 之后的 repository() 与关联解析都能按名字找到 model
+      for (const model of list) registry.set(model.name, model);
       return syncModels(dialect, requirePool(), list, {
         auto: syncOptions.auto ?? options.migrations?.auto === true,
         ...(syncOptions.logger === undefined ? (log === undefined ? {} : { logger: log }) : { logger: syncOptions.logger }),
@@ -233,6 +245,38 @@ export function createDatabase(options: DatabaseOptions): Database {
     async checkDrift(model: Model): Promise<DriftReport> {
       const info = await inspectTable(dialect, requirePool(), model.table);
       return checkDrift(dialect, model, info);
+    },
+
+    models(): ReadonlyMap<string, Model> {
+      return registry;
+    },
+
+    repository<M extends Model>(
+      model: M,
+      repositoryOptions: { models?: readonly Model[]; generateId?: () => string } = {},
+    ): Repository<M> {
+      for (const extra of repositoryOptions.models ?? []) registry.set(extra.name, extra);
+      registry.set(model.name, model);
+      /**
+       * 惰性 runner：`db.repository(M)` 可以在 `connect()` 之前拿（拿的时候不查库），
+       * 真发查询时才要求已连接（否则抛 DbNotConnectedError，而不是悄悄对着空池跑）。
+       */
+      const lazy: Runner = {
+        all: (sql, params) => requirePool().all(sql, params),
+        run: (sql, params) => requirePool().run(sql, params),
+        transaction: (fn) => {
+          const current = requirePool();
+          if (typeof current.transaction !== 'function') throw new DbConfigError(`driver ${driver.name} does not support transactions`);
+          return current.transaction(fn);
+        },
+      };
+      const repoOptions: RepositoryOptions = {
+        dialect,
+        runner: lazy,
+        models: registry,
+        ...(repositoryOptions.generateId === undefined ? {} : { generateId: repositoryOptions.generateId }),
+      };
+      return createRepository(model, repoOptions);
     },
   };
   return api;

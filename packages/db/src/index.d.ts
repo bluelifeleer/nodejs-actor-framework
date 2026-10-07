@@ -75,6 +75,15 @@ export declare class DbDriverMissingError extends DbError {
 export declare class DbConfigError extends DbError {}
 export declare class DbConnectionError extends DbError {}
 export declare class DbNotConnectedError extends DbError {}
+/** 乐观锁冲突（绝不静默覆盖）。 */
+export declare class DbConflictError extends DbError {
+  readonly id: string;
+  readonly expectedVersion: number | null;
+}
+/** 目标行不存在。 */
+export declare class DbNotFoundError extends DbError {
+  readonly id: string;
+}
 export declare class DbSchemaDriftError extends DbError {
   readonly drift: DriftReport;
 }
@@ -177,12 +186,29 @@ export interface Index {
   unique: boolean;
 }
 
+/** 关联声明：本轮只做"声明 + 查询构造"。 */
+export interface RelationSpec {
+  kind: 'hasMany' | 'belongsTo';
+  /** 目标 model 的名字（要在同一批注册过）。 */
+  model: string;
+  /** hasMany 用**目标表**上的外键字段名；belongsTo 用**本表**上的外键字段名。 */
+  foreignKey: string;
+}
+export interface Relation {
+  name: string;
+  kind: 'hasMany' | 'belongsTo';
+  model: string;
+  foreignKey: string;
+}
+
 export interface ModelSpec {
   name: string;
   /** 表名（默认 = name）。 */
   table?: string;
   fields: Record<string, FieldSpec>;
   indexes?: readonly IndexSpec[];
+  /** 关联声明（hasMany / belongsTo）。 */
+  relations?: Record<string, RelationSpec>;
   /** 整行级自定义映射（**用户可写**）：行 → 实体。 */
   parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
   /** 整行级自定义映射（**用户可写**）：实体 → 行。 */
@@ -194,6 +220,7 @@ export interface Model {
   readonly table: string;
   readonly fields: readonly Field[];
   readonly indexes: readonly Index[];
+  readonly relations: readonly Relation[];
   readonly primaryKey: string;
   readonly versionField: string | null;
   readonly parseRow?: (row: Record<string, unknown>) => Record<string, unknown>;
@@ -256,6 +283,59 @@ export declare function syncModels(
   options?: SyncOptions,
 ): Promise<SyncReport>;
 
+// --- ORM 映射层 + 仓储 -------------------------------------------------------
+
+export type Entity = Record<string, unknown>;
+
+/** 默认的"列值 → 领域值"（可被字段级 `parse` / 整行 `parseRow` 覆盖）。 */
+export declare function defaultParseValue(dialect: Dialect, field: Field, value: unknown): unknown;
+/** 默认的"领域值 → 列值"。 */
+export declare function defaultSerializeValue(dialect: Dialect, field: Field, value: unknown): unknown;
+/** 行 → 实体（字段级 parse → 整行 parseRow）。 */
+export declare function rowToEntity(dialect: Dialect, model: Model, row: Record<string, unknown>): Entity;
+/** 实体 → 行（只取 model 声明过的字段；`undefined` 不写）。 */
+export declare function entityToRow(
+  dialect: Dialect,
+  model: Model,
+  entity: Entity,
+  options?: { onlyProvided?: boolean },
+): Record<string, unknown>;
+
+export interface FindManyOptions {
+  /** 等值条件（AND）；键必须是 model 的**字段名**。 */
+  where?: Record<string, unknown>;
+  orderBy?: ReadonlyArray<{ field: string; direction?: 'asc' | 'desc' }>;
+  limit?: number;
+  offset?: number;
+}
+
+export interface UpdateOptions {
+  /** 乐观锁：与库里 version 不一致就抛 `DbConflictError`。 */
+  expectedVersion?: number;
+}
+
+export interface Repository<M extends Model = Model> {
+  readonly model: M;
+  insert(entity: Entity): Promise<Entity>;
+  findById(id: unknown): Promise<Entity | null>;
+  findMany(options?: FindManyOptions): Promise<Entity[]>;
+  update(id: unknown, patch: Entity, options?: UpdateOptions): Promise<Entity>;
+  delete(id: unknown): Promise<boolean>;
+  related(
+    entity: Entity,
+    name: string,
+  ): Promise<{ model: string; kind: 'hasMany' | 'belongsTo'; many(): Promise<Entity[]>; one(): Promise<Entity | null> }>;
+}
+
+export interface RepositoryOptions {
+  dialect: Dialect;
+  runner: Runner;
+  models: Map<string, Model>;
+  generateId?: () => string;
+}
+
+export declare function createRepository<M extends Model>(model: M, options: RepositoryOptions): Repository<M>;
+
 // --- 数据库句柄 -------------------------------------------------------------
 
 export interface DatabaseOptions {
@@ -299,6 +379,13 @@ export interface Database {
   inspectTable(table: string): Promise<TableInfo>;
   /** 只比不改：model 与库里实况的差异。 */
   checkDrift(model: Model): Promise<DriftReport>;
+  /** 已注册的 model（`sync()` 会自动注册）。 */
+  models(): ReadonlyMap<string, Model>;
+  /** 取一个 model 的仓储（实体 ↔ 行、乐观锁、关联）。 */
+  repository<M extends Model>(
+    model: M,
+    options?: { models?: readonly Model[]; generateId?: () => string },
+  ): Repository<M>;
 }
 
 /** 建一个数据库句柄（此刻还不连接）。 */

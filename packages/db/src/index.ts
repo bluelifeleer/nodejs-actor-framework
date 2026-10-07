@@ -23,6 +23,22 @@ export {
   type NormalizedConnection,
 } from './dialect.ts';
 
+export { DbConflictError, DbNotFoundError } from './errors.ts';
+export {
+  defaultParseValue,
+  defaultSerializeValue,
+  entityToRow,
+  rowToEntity,
+  type Row as MappedRow,
+} from './mapping.ts';
+export {
+  createRepository,
+  type Entity,
+  type FindManyOptions,
+  type Repository,
+  type RepositoryOptions,
+  type UpdateOptions,
+} from './repository.ts';
 export {
   DbConfigError,
   DbConnectionError,
@@ -40,7 +56,18 @@ export type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './driv
 export { createDatabase, defaultPortFor, DEFAULT_POOL, type Database, type DatabaseOptions, type HealthReport } from './database.ts';
 
 // --- model 层（用户写声明，框架生成 DDL / 做漂移检测）-------------------------
-export { defineModel, type Field, type FieldHooks, type FieldSpec, type Index, type IndexSpec, type Model, type ModelSpec } from './model.ts';
+export {
+  defineModel,
+  type Field,
+  type FieldHooks,
+  type FieldSpec,
+  type Index,
+  type IndexSpec,
+  type Model,
+  type ModelSpec,
+  type Relation,
+  type RelationSpec,
+} from './model.ts';
 
 // --- schema 层 ---------------------------------------------------------------
 export {

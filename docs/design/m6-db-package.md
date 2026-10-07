@@ -160,9 +160,32 @@ const Note = defineModel({
 ④ 假 mysql 内省没给列 → 被误判成"所有列都缺"；
 ⑤ 我的测试在**建表路径**上断言"必须查列内省"（那是浪费）→ 断言移到"表已存在"的路径。
 
+### Round 3（已完成）：ORM 映射层 + 仓储 + 关联
+
+- `src/mapping.ts`：**默认解析规则**（这三条是"同一逻辑类型在三方言物理表示不同"的解药）——
+  `json` 列字符串 → 对象；`boolean` 的 0/1 → true/false（pg 本来就是 boolean）；`timestamp` 的
+  ISO 文本/Date → Date；反向 `serialize` 时 pg 布尔用 boolean、mysql/sqlite 用 1/0，
+  sqlite 的时间戳统一存 ISO 串（字典序 == 时间序）。用户可以在**字段级**（`parse`/`serialize`）
+  或**整行级**（`parseRow`/`serializeRow`）覆盖，这两层就是"用户可以写自己代码"的地方。
+- `src/repository.ts`：`insert`（自动生成 uuid 主键、填 `auto:'create'` 时间戳、version=0）、
+  `findById` / `findMany`（where/orderBy/limit/offset，**字段名必须来自 model**，值全参数化）、
+  `update`（乐观锁：`WHERE pk AND version=?` + `version = version + 1`；0 行时多查一次把
+  "行不存在"与"版本过期"区分开，分别抛 `DbNotFoundError` / `DbConflictError`；`auto:'update'` 自动填）、
+  `delete`、`related`（hasMany 按目标表外键 / belongsTo 按本表外键，返回 `{ many(), one() }`）。
+- `Database.repository(Model, { models?, generateId? })` + model 注册表（`sync()` 自动注册）；
+  repository 用**惰性 runner**：可以在 `connect()` 之前拿，真发查询时才要求已连接。
+- 声明面同步（`DbConflictError`/`DbNotFoundError`、mapping、Repository、relations 全部声明）。
+- 测试 7 条（sqlite 真库）：insert/映射还原、乐观锁冲突与"行不存在"的区分、自定义字段钩子与整行映射、
+  findMany + 列名校验防注入、关联 hasMany/belongsTo + 目标未注册的报错、delete、拼错字段名报错。
+
+**这一轮我自己被抓住的两处**：
+① 断言 `updatedAt === undefined`，但库里那一列就是 NULL（DDL 没给默认值）→ 实体里应当是 `null`
+（如实反映库里的真相），改的是**测试的期望**；
+② `assertKnownFields` 把用户 `serializeRow` 产生的**虚拟字段**（`grade`）也当成拼写错误 ✗ ——
+规则改成"没有 `serializeRow` 才严格校验"（有用户映射层时允许虚拟字段），并补一条测试固定
+"没有映射层时拼错字段名必须报错"。
+
 ### 待做
 
-- **Round 3：ORM 映射层 + 仓储 + 关联** —— 实体↔行映射（列名/JSON/时间戳/version 乐观锁）、
-  `db.repository(Model)`、`hasMany/belongsTo` 声明与查询构造、错误类型（冲突/未找到）。
 - **Round 4：文档与门禁收尾** —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。
