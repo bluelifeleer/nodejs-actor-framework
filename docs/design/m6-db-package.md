@@ -288,6 +288,9 @@ const Note = defineModel({
   加方言必须回来改）。
 - 定位不变：**mssql 与 pg/mysql 都是契约级验证**（离线、未真连库），指南里写明。
 
+> **后续**：多数据库支持（Redis / MongoDB / 用户自装适配器 / 非 SQL 库的连接管控）已在
+> [m7-multi-database.md](./m7-multi-database.md) 定稿设计，会把本文的连接生命周期提炼成 `@actor/db-core`。
+
 ### 待做
  —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。
