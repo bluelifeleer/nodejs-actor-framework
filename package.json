@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/cli/test/*.test.ts' 'packages/testkit/test/*.test.ts' 'packages/core/test/*.test.js' 'packages/app/test/*.test.ts' 'packages/web/test/*.test.ts' 'packages/data/test/*.test.ts' 'packages/db-core/test/*.test.ts' 'packages/db/test/*.test.ts' 'test/*.test.js'",
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/cli/test/*.test.ts' 'packages/testkit/test/*.test.ts' 'packages/core/test/*.test.js' 'packages/app/test/*.test.ts' 'packages/web/test/*.test.ts' 'packages/data/test/*.test.ts' 'packages/db-core/test/*.test.ts' 'packages/db/test/*.test.ts' 'packages/redis/test/*.test.ts' 'test/*.test.js'",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.types.json",
     "ci": "npm run typecheck && npm test && npm run docs:build",
     "start": "node actor-main.js",

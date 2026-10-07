@@ -274,6 +274,7 @@ const PACKAGES = [
   { name: '@actor/data', entry: 'packages/data/src/index.ts', src: 'packages/data/src' },
   { name: '@actor/db-core', entry: 'packages/db-core/src/index.ts', src: 'packages/db-core/src' },
   { name: '@actor/db', entry: 'packages/db/src/index.ts', src: 'packages/db/src' },
+  { name: '@actor/redis', entry: 'packages/redis/src/index.ts', src: 'packages/redis/src' },
 ];
 
 /** 内核公开面来自手写的 .d.ts（内部实现文件仍有 @ts-nocheck，见"类型覆盖"一节）。 */

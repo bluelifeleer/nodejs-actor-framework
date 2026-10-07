@@ -19,6 +19,7 @@
     "packages/data/src/**/*.ts",
     "packages/db-core/src/**/*.ts",
     "packages/db/src/**/*.ts",
+    "packages/redis/src/**/*.ts",
     "packages/core/index.d.ts"
   ]
 }

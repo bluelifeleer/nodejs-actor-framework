@@ -151,10 +151,10 @@ export function runManagedConnectionContract(options: ManagedConnectionContractO
         setHealthy(false);
         await assert.rejects(() => resource.checkHealth());
         assert.strictEqual(resource.state, 'degraded', '健康检查失败后应当是 degraded（不是假装 ready）');
-        assert.ok(
-          events.some((event) => event.type === 'health_failed' && /超时|timeout|fail/i.test(String(event.error))),
-          `缺少 health_failed 事件：${JSON.stringify(events)}`,
-        );
+        const failure = events.find((event) => event.type === 'health_failed');
+        assert.ok(failure, `缺少 health_failed 事件：${JSON.stringify(events)}`);
+        // 只要求"带上原因"，**不规定措辞**（套件不该强迫别人用英文/某种文案）
+        assert.ok(String(failure.error ?? '').length > 0, 'health_failed 事件必须带上失败原因');
         // 恢复：回到 ready，且原因被清掉
         setHealthy(true);
         await resource.checkHealth();

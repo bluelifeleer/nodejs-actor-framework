@@ -1,0 +1,24 @@
+{
+  "name": "@actor/redis",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Redis 适配器（node-redis 与 ioredis 双驱动）—— 连接管控复用 @actor/db-core",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "actor",
+    "redis",
+    "ioredis",
+    "adapter"
+  ],
+  "dependencies": {
+    "@actor/db-core": "*"
+  }
+}

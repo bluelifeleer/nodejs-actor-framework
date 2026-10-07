@@ -425,6 +425,35 @@ export const myDb = defineDatabaseAdapter({
    `ACTOR_TEST_PG_URL` / `ACTOR_TEST_MYSQL_URL` / `ACTOR_TEST_MSSQL_URL` 环境开关 + `scripts/dev-databases.mjs`
    （docker 起库）；SQL 三家的真库用例跑**同一套契约断言**（适配器已就位，只差环境）。
 
+### M7c（已完成）：`@actor/redis`
+
+- 新增 `packages/redis`（`@actor/redis`，只依赖 `@actor/db-core`）：
+  - `src/client.ts`：**驱动无关**的键值层 `createKeyValueClient(handle, { prefix, serialize, parse })` ——
+    能力面 `get/set/setEx/del/exists/incr/expire/ttl/mGet/mSet/hGet/hSet/hGetAll/lPush/lRange/sAdd/sMembers/
+    scan/publish/subscribe/pipeline/getJson/setJson` + `command()`/`raw` 逃生通道；
+  - `src/adapters/{node-redis,ioredis}.ts` + `adapters/index.ts`：两个驱动的差异**只在这里**吸收
+    （建连方式、订阅必须 `duplicate()` 独立连接、重连事件名不同、超时字段名不同），
+    `resolveRedisDriver(name)` 是唯一的"按驱动名分支"位置（kind 门禁只豁免 `src/adapters/`）；
+  - `src/adapter.ts`：`redisAdapter({ driver, prefix, serialize, parse, clientOptions })` 返回
+    core 的 `DatabaseAdapter`；`parseRedisUrl`/`describeRedis`（免密）自己解析 `redis://`/`rediss://`
+    —— **不复用 SQL 的 `parseConnection`**（那是按"host + database 名"建模的，而 Redis 的 path 是数字库索引、
+    还多一个 TLS 维度，硬套会让语义含糊）。
+- 测试：两个驱动各跑一遍**同一套连接管理契约**（假驱动模块 + 内存版命令分发器）+ 9 条专属断言
+  （两驱动都能发命令、**订阅必然 duplicate 一条连接**、驱动事件只转发、前缀端到端、
+  装驱动的提示 `npm i redis`/`npm i ioredis`、未知驱动名报错、DSN 解析与免密描述…）；
+  真库开关用例（`ACTOR_TEST_REDIS_URL`/`ACTOR_TEST_IOREDIS_URL`）在本环境 **4 条显式跳过**。
+- 矩阵与门禁：进 `npm test` 工作区矩阵、`tsconfig.json` include、`tools/docs-site.mjs` PACKAGES；
+  自带公开面门禁（含证伪）；kind 门禁通过（kind 分支只在 `src/adapters/`）。
+- 文档：新增指南 `docs/guide/09-redis.md`（含**离线可跑**的 verify 块：DSN 解析 + 驱动注册表）。
+
+**过程中的自我修正（两处，都是"测试/假数据写错"）**：
+1. 契约套件里"健康失败"那条断言在**规定措辞**（`/超时|timeout|fail/i`）—— 中文"失败"直接不匹配，
+   等于强迫别人写英文文案。已改成"事件在 + 原因非空"，不规定措辞。
+2. 假 store 只**记录**驱动事件、从不**通知监听器** → "框架只转发驱动事件"永远测不到（假绿）。
+   补上监听器注册与投递后才真正验证到。
+   另外假 store 的 `LPUSH` 语义写错了（Redis 是逐个压入头部 `LPUSH l a b → [b,a]`），
+   被键值层测试抓到 —— 已修。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |

@@ -33,12 +33,29 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** 找出"按 kind 分支"的地方（比较/switch 到 kind 字面量）。 */
+/**
+ * 找出"按 kind 分支"的地方。
+ *
+ * 规则**故意收窄到 kind/driver 变量**（`kind`/`driver`/`adapterKind`/`driverName`）与 kind 字面量的
+ * 比较、以及 `switch (kind|driver)` 里的 `case '<kind>'`。为什么：
+ *   - `if (kind === 'redis')` ✅ 要抓（这就是"别处点名 kind"）；
+ *   - `if (scheme !== 'redis' && scheme !== 'rediss')` ❌ 不该抓 —— 那是 **URL scheme** 检查，
+ *     不是适配器分支（这条假阳性是 `parseRedisUrl` 触发的，已修规则而不是去改实现）；
+ *   - 已知局限：**查表式**分派（`{ redis: …, ioredis: … }[kind]`）抓不到 —— 门禁抓常见形态，
+ *     真正的保障是"review 时看它有没有待在 adapters/ 里"。
+ */
 export function findKindBranches(source: string, kinds: readonly string[] = KINDS): string[] {
+  const kindVar = '(?:kind|driver|adapterKind|driverName)';
   const hits: string[] = [];
   for (const kind of kinds) {
-    const pattern = new RegExp(`(===|!==)\\s*'${kind}'|'${kind}'\\s*(===|!==)|case\\s+'${kind}'`, 'g');
-    for (const match of source.matchAll(pattern)) hits.push(match[0]);
+    const patterns = [
+      new RegExp(`${kindVar}\\s*(?:===|!==)\\s*'${kind}'`, 'g'), // kind === 'redis'
+      new RegExp(`'${kind}'\\s*(?:===|!==)\\s*${kindVar}`, 'g'), // 'redis' === kind
+      new RegExp(`switch\\s*\\(\\s*${kindVar}\\s*\\)[\\s\\S]{0,200}?case\\s+'${kind}'`, 'g'), // switch (driver) { case 'ioredis': }
+    ];
+    for (const pattern of patterns) {
+      for (const match of source.matchAll(pattern)) hits.push(match[0].replace(/\\s+/g, ' '));
+    }
   }
   return hits;
 }
@@ -62,10 +79,15 @@ test('kind gate: adapters/ 之外不得按适配器 kind 分支', () => {
   );
 });
 
-test('kind gate: 门禁能证伪（喂坏代码必须被抓到，方言名不算 kind）', () => {
-  assert.deepStrictEqual(findKindBranches("if (kind === 'redis') return client;"), ["=== 'redis'"]);
-  assert.deepStrictEqual(findKindBranches("switch (kind) { case 'mongodb': break; }"), ["case 'mongodb'"]);
-  assert.deepStrictEqual(findKindBranches("const x = 'ioredis' === kind;"), ["'ioredis' ==="]);
+test('kind gate: 门禁能证伪（喂坏代码必须被抓到，方言名/URL scheme 不算 kind 分支）', () => {
+  assert.deepStrictEqual(findKindBranches("if (kind === 'redis') return client;"), ["kind === 'redis'"]);
+  assert.deepStrictEqual(findKindBranches("switch (kind) { case 'mongodb': break; }"), ["switch (kind) { case 'mongodb'"]);
+  assert.deepStrictEqual(findKindBranches("const x = 'ioredis' === driver;"), ["'ioredis' === driver"]);
   assert.deepStrictEqual(findKindBranches("if (dialect === 'mysql') return x;"), [], '方言名不是适配器 kind');
   assert.deepStrictEqual(findKindBranches("const text = 'redis://localhost';"), [], '普通字符串不算分支');
+  assert.deepStrictEqual(
+    findKindBranches("if (scheme !== 'redis' && scheme !== 'rediss') throw new Error('x');"),
+    [],
+    'URL scheme 检查不是适配器分支（这条曾经是假阳性）',
+  );
 });
