@@ -196,7 +196,7 @@ class ActorCell {
   readonly transferable: boolean;
   delegate: {
     invoke(payload: unknown, senderPath: string | null, trace: unknown): Promise<unknown>;
-    stop(): Promise<void>;
+    stop(timeoutMs?: number): Promise<void>;
     getState?(timeoutMs?: number): Promise<unknown>;
     readonly pid?: number | null;
     start?(options?: { snapshot?: unknown }): Promise<unknown>;

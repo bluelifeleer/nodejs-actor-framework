@@ -58,6 +58,11 @@ interface PubSubApi {
 function pubsub(options: PubSubOptions = {}) {
   void options;
   const topics = new Map<string, Set<string>>(); // topic -> Set<path>
+  /**
+   * 审计 F14：setup 时挂在 gossip 上的 3 个监听器必须在 teardown 摘掉。
+   * 监听器的闭包在 setup 里，所以这里存一个"注销函数"给 teardown 用。
+   */
+  let detachGossipListeners: () => void = () => {};
   const remoteSubs = new Map<string, Record<string, string[]>>(); // nodeId -> { topic: [paths] }
 
   const exportSubscriptions = (): Record<string, string[]> => {
@@ -92,6 +97,15 @@ function pubsub(options: PubSubOptions = {}) {
         gossip.on('registry_update', onUpdate);
         gossip.on('registry_delete', onDelete);
         gossip.on('node_timeout', onNodeTimeout);
+        detachGossipListeners = () => {
+          const target = gossip as { off?: (...args: unknown[]) => void };
+          if (typeof target.off !== 'function') return;
+          target.off('registry_update', onUpdate);
+          target.off('registry_delete', onDelete);
+          target.off('node_timeout', onNodeTimeout);
+        };
+      } else {
+        detachGossipListeners = () => {};
       }
 
       const pathOf = (target: string | SubscribableTarget): string => {
@@ -172,6 +186,8 @@ function pubsub(options: PubSubOptions = {}) {
     },
 
     teardown(system: PubSubSystem | null) {
+      detachGossipListeners(); // 审计 F14
+      detachGossipListeners = () => {};
       topics.clear();
       remoteSubs.clear();
       if (system) system.pubsub = null;

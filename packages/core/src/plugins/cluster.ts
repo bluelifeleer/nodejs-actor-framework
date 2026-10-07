@@ -638,7 +638,8 @@ function cluster(options: ClusterPluginOptions = {}) {
       gossip.on('registry_update', onUpdate);
       gossip.on('registry_delete', onDelete);
       gossip.on('node_timeout', onNodeTimeout);
-      gossip.on('auth_error', ((reason: unknown) => system._log('cluster_auth_error', { reason })) as (...args: never[]) => void);
+      const onAuthError = ((reason: unknown) => system._log('cluster_auth_error', { reason })) as (...args: never[]) => void;
+      gossip.on('auth_error', onAuthError);
 
       await gossip.start();
       onListening(); // announce whatever already exists
@@ -871,6 +872,18 @@ function cluster(options: ClusterPluginOptions = {}) {
           system.off('actor_registered', onRegistered);
           system.off('actor_stopped', onStopped);
           system.off('listening', onListening);
+          /**
+           * 审计 F14：这 4 个 gossip 监听器过去从不清（`grep "gossip.off"` 全仓库 0 命中）。
+           * 单实例用法下有界，但同一个插件实例被装到两个 system 时，第一个 system 上的监听器
+           * 永远不会被摘掉，而 teardown 又依赖 `system.cluster`（"最后一次 setup"写的）。
+           */
+          const gossip = (system as { cluster?: { gossip?: { off?: (...args: unknown[]) => void } } | null }).cluster?.gossip;
+          if (gossip && typeof gossip.off === 'function') {
+            gossip.off('registry_update', onUpdate);
+            gossip.off('registry_delete', onDelete);
+            gossip.off('node_timeout', onNodeTimeout);
+            gossip.off('auth_error', onAuthError);
+          }
         },
       };
     },

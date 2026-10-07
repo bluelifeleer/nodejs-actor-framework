@@ -25,6 +25,8 @@ export interface RequestLogPluginOptions {
 }
 
 export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginSpec {
+  /** 审计 F14：http:request 的退订句柄（原来订阅函数的返回值被直接丢弃）。 */
+  let detach: () => void = () => {};
   return {
     name: 'requestLog',
     config: {
@@ -43,9 +45,19 @@ export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginS
               `rid=${entry.requestId}${slow}`,
           );
         });
-      app.on('http:request', (entry: never) => {
+      const onRequest = (entry: never): void => {
         if (enabled) sink(entry as unknown as RequestLogEntry);
-      });
+      };
+      app.on('http:request', onRequest);
+      // 审计 F14：把退订句柄存下来，teardown 时摘掉（原来直接丢弃）
+      detach = () => {
+        (app as { off?: (event: string, fn: (entry: never) => void) => void }).off?.('http:request', onRequest);
+      };
+    },
+
+    teardown() {
+      detach();
+      detach = () => {};
     },
   };
 }

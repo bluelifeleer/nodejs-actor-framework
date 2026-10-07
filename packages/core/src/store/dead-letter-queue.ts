@@ -19,6 +19,8 @@ interface DeadLetterQueueOptions {
   baseDir?: string;
   filePath?: string;
   maxEntries?: number;
+  /** 字节上限（审计 S10），默认 64 MiB。 */
+  maxBytes?: number;
 }
 
 /** 一条死信：原始消息、重试次数与失败原因（原因截断到 2000 字符）。 */
@@ -34,6 +36,10 @@ class DeadLetterQueue {
   readonly baseDir: string;
   readonly filePath: string;
   readonly maxEntries: number;
+  /** 字节上限（审计 S10）。 */
+  readonly maxBytes: number;
+  /** `{ lines, bytes }` 的内存视图；null 表示"还不知道，需要读一次"。 */
+  _size: { lines: number; bytes: number } | null;
   _ready: Promise<unknown> | null;
   /** 立刻可用的加载 promise（构造时确定，便于类型收窄）。 */
   _writeChain: Promise<unknown>;
@@ -42,6 +48,12 @@ class DeadLetterQueue {
     this.baseDir = options.baseDir || config.dataDir;
     this.filePath = options.filePath || path.join(this.baseDir, 'dlq.jsonl');
     this.maxEntries = options.maxEntries || 10000;
+    /**
+     * 审计 S10：原来只有"条数"上限、没有"字节"上限，而每条消息最大可到 8 MiB ——
+     * 1 万条的上限意味着理论上 80 GB 磁盘占用。类注释却写着 "cannot fill the disk"。
+     */
+    this.maxBytes = options.maxBytes ?? 64 * 1024 * 1024;
+    this._size = null; // { lines, bytes }：已知就增量维护，避免每次 enqueue 都全量读文件
     this._ready = null;
     this._writeChain = Promise.resolve();
     fs.mkdirSync(this.baseDir, { recursive: true });
@@ -66,19 +78,44 @@ class DeadLetterQueue {
       msg: entry.msg ?? null,
     };
     this._writeChain = this._writeChain.then(async () => {
-      await fsp.appendFile(this.filePath, `${JSON.stringify(rec)}\n`);
-      await this._enforceLimit();
+      const line = `${JSON.stringify(rec)}\n`;
+      await fsp.appendFile(this.filePath, line);
+      // 增量记账：把刚写进去的字节数交给上限检查，避免每次都全量读文件
+      await this._enforceLimit(Buffer.byteLength(line, 'utf8'));
     }).catch(() => {});
     return this._writeChain;
   }
 
-  async _enforceLimit(): Promise<void> {
-    if (!this.maxEntries) return;
+  /**
+   * 审计 S10：条数**与字节**双上限，并且不再"每次 enqueue 都全量读文件"。
+   *
+   * 记账是增量的：`enqueue` 写成功后更新 `_size`；只有第一次（或裁剪后）才读盘对齐。
+   */
+  async _enforceLimit(addedBytes = 0): Promise<void> {
+    if (!this.maxEntries && !this.maxBytes) return;
+    if (this._size === null) {
+      const raw = await fsp.readFile(this.filePath, 'utf8').catch(() => '');
+      const lines = raw.split('\n').filter((line: string) => line.trim() !== '');
+      this._size = { lines: lines.length, bytes: Buffer.byteLength(raw, 'utf8') };
+    } else if (addedBytes > 0) {
+      this._size = { lines: this._size.lines + 1, bytes: this._size.bytes + addedBytes };
+    }
+    const overEntries = this.maxEntries > 0 && this._size.lines > this.maxEntries;
+    const overBytes = this.maxBytes > 0 && this._size.bytes > this.maxBytes;
+    if (!overEntries && !overBytes) return;
+
     const raw = await fsp.readFile(this.filePath, 'utf8').catch(() => '');
     const lines = raw.split('\n').filter((line: string) => line.trim() !== '');
-    if (lines.length <= this.maxEntries) return;
-    const kept = lines.slice(lines.length - this.maxEntries);
-    await fsp.writeFile(this.filePath, `${kept.join('\n')}\n`);
+    // 先从最老的开始丢，直到同时满足条数与字节两条上限
+    let kept = lines;
+    const fits = (candidate: string[]): boolean => {
+      const bytes = candidate.reduce((sum, line) => sum + Buffer.byteLength(line, 'utf8') + 1, 0);
+      return (this.maxEntries <= 0 || candidate.length <= this.maxEntries) && (this.maxBytes <= 0 || bytes <= this.maxBytes);
+    };
+    while (kept.length > 0 && !fits(kept)) kept = kept.slice(1);
+    const text = kept.length > 0 ? `${kept.join('\n')}\n` : '';
+    await fsp.writeFile(this.filePath, text);
+    this._size = { lines: kept.length, bytes: Buffer.byteLength(text, 'utf8') };
   }
 
   /** Parse defensively; unreadable lines are skipped and counted. */

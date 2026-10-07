@@ -82,6 +82,17 @@ function metrics(options: MetricsPluginOptions = {}) {
         for (const path of [...state.last.keys()]) {
           if (!system.cells.has(path)) state.last.delete(path);
         }
+        /**
+         * 审计 F8：上面只清了 `state.last`，**指标本体**（`Metrics.data`，按 actor 路径建键）从来不清 ——
+         * actor id 动态时（`session-<n>`、用户 id）它会随 churn 无界增长，Prometheus 输出里也一直有已死 actor。
+         * `Metrics.reset()` 早就存在，只是没有任何调用方。
+         */
+        const metricsData = (instance as { data?: Map<string, unknown> }).data;
+        if (metricsData instanceof Map) {
+          for (const path of [...metricsData.keys()]) {
+            if (!system.cells.has(path)) instance.reset(path);
+          }
+        }
       };
 
       system.metrics = instance;

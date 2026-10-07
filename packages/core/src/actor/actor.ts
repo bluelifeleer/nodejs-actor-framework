@@ -96,7 +96,18 @@ class Actor {
 
   /** Apply a persisted event to `this.state` (events persistence). */
   applyEvent(event: unknown): void {
-    if (event && typeof event === 'object') Object.assign(this.state, event);
+    if (event && typeof event === 'object') {
+      /**
+       * 审计 S14：事件来自磁盘事件日志的 `JSON.parse`，而 `JSON.parse` 会把 `"__proto__"`
+       * 变成**自有属性**；`Object.assign` 走 `[[Set]]` → 触发 `Object.prototype.__proto__` setter →
+       * 改写该 state 实例的原型（`state.polluted` 会"凭空出现"，且不是自有属性）。
+       * 只影响这一个 state，不是全局污染，但没有理由让磁盘内容决定原型。
+       */
+      for (const [key, value] of Object.entries(event)) {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+        (this.state as Record<string, unknown>)[key] = value;
+      }
+    }
   }
 }
 

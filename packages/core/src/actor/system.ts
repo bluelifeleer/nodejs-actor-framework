@@ -61,7 +61,7 @@ interface CellLike {
   readonly isolation?: string;
   readonly supervisor: { remove(childId: string): void };
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(timeoutMs?: number): Promise<void>;
   _runTurn(messagesPerTurn: number): Promise<void>;
   setParent(parent: unknown): void;
   _restart(reason: unknown): Promise<void>;
@@ -705,7 +705,15 @@ class ActorSystem extends EventEmitter {
   // --- shutdown ------------------------------------------------------------
 
   /** Stop every actor gracefully and wait for the scheduler to settle. */
-  async stop(): Promise<void> {
+  /**
+   * 优雅停机。
+   *
+   * 审计 F12：`@actor/app` 的 `Application.stop({ timeoutMs })` 会传给这里，但本方法**不接受参数**，
+   * 于是调用方请求 10s、实际用的是 `config.actor.shutdownTimeoutMs`（默认 2s）—— 静默降级正是
+   * 这个仓库反复强调要避免的。现在接受并按"每个 Actor 的停机预算"应用它。
+   */
+  async stop(options: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : this.shutdownTimeoutMs;
     if (this.stopped) {
       await this.scheduler.drain();
       return;
@@ -715,13 +723,13 @@ class ActorSystem extends EventEmitter {
     // unregisters the cell, so it would be invisible afterwards.
     const wasBusy = [...this.cells.values()].filter((cell) => cell.running).map((cell) => cell.path);
     const cells = [...this.cells.values()].filter((cell) => !cell.parent);
-    await Promise.all(cells.map((cell) => cell.stop().catch(() => {})));
+    await Promise.all(cells.map((cell) => cell.stop(timeoutMs).catch(() => {})));
 
     // Bounded: a handler that never resolves must not make shutdown hang.
-    const drainResult = await this.scheduler.drain(this.shutdownTimeoutMs);
+    const drainResult = await this.scheduler.drain(timeoutMs);
     if (drainResult.timedOut || wasBusy.length > 0) {
       this._log('system_stop_timeout', {
-        timeoutMs: this.shutdownTimeoutMs,
+        timeoutMs,
         timedOut: drainResult.timedOut,
         busyActors: wasBusy,
         hint: 'these actors were still inside a handler; shutdown continued anyway',

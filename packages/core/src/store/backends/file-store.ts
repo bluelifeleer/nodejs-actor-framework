@@ -40,6 +40,8 @@ const { Manifest } = require('./manifest.ts');
 const HEADER_BYTES = 8;
 
 interface FileStoreOptions {
+  /** 进程内 actor 缓存上限（审计 F9），默认 1024。 */
+  maxTrackedActors?: number;
   baseDir?: string;
   compactionThresholdBytes?: number;
   maxFileBytes?: number;
@@ -70,6 +72,8 @@ class FileStore {
   readonly index: Map<string, ActorState>;
   /** actor id -> 写入串行化（同一 actor 的写不并发）。 */
   readonly chain: Map<string, Promise<unknown>>;
+  /** 进程内缓存的 actor 数上限（审计 F9）：超过就按最久未用淘汰。 */
+  readonly maxTrackedActors: number;
   /** 恢复时跳过的损坏记录数（诊断用：损坏必须可见，而不是静默丢数据）。 */
   skippedRecords: number;
   /** 从旧格式迁移过来的 actor 数。 */
@@ -83,6 +87,7 @@ class FileStore {
     this.manifest = options.manifest ?? new Manifest(this.baseDir);
     this.index = new Map();
     this.chain = new Map();
+    this.maxTrackedActors = (options.maxTrackedActors as number | undefined) ?? 1024;
     this.skippedRecords = 0;
     this.migrated = 0;
   }
@@ -97,10 +102,26 @@ class FileStore {
 
   _state(actorId: string): ActorState {
     const key = String(actorId);
-    let state = this.index.get(key);
-    if (state === undefined) {
-      state = { records: new Map(), liveBytes: 0, fileBytes: 0, loaded: false };
-      this.index.set(key, state);
+    const cached = this.index.get(key);
+    if (cached !== undefined) {
+      // 触一下 LRU 顺序（Map 保持插入序）：淘汰时丢的是最久没用的那个
+      this.index.delete(key);
+      this.index.set(key, cached);
+      return cached;
+    }
+    const state: ActorState = { records: new Map(), liveBytes: 0, fileBytes: 0, loaded: false };
+    this.index.set(key, state);
+    /**
+     * 审计 F9：`index` 以 actor 路径为键、只增不减 —— actor id 动态时每个出现过的 id
+     * 永久占一份内存（records + 两个计数器）。
+     *
+     * 淘汰是**安全**的：`_state` 给出的 state 带 `loaded: false`，下一次访问会由
+     * `_loadInto()` 从盘上重放重建（见 append/load 的分支）。所以这里只需要一个上界。
+     */
+    while (this.index.size > this.maxTrackedActors) {
+      const oldest = this.index.keys().next();
+      if (oldest.done === true || oldest.value === key) break;
+      this.index.delete(oldest.value);
     }
     return state;
   }
@@ -110,7 +131,12 @@ class FileStore {
     const key = String(actorId);
     const prev = this.chain.get(key) ?? Promise.resolve();
     const next: Promise<T> = prev.then(fn, fn) as Promise<T>;
-    this.chain.set(key, next.catch(() => undefined));
+    const tail = next.catch(() => undefined);
+    this.chain.set(key, tail);
+    // 审计 F9：链一 settle 就摘掉（否则每个用过的 actor id 永久留一个已 settle 的 Promise）
+    void tail.then(() => {
+      if (this.chain.get(key) === tail) this.chain.delete(key);
+    });
     return next;
   }
 

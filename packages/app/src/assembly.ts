@@ -204,6 +204,8 @@ export class Application {
   private readonly actorDefinitions = new Map<string, { definition: unknown; options: Record<string, unknown> }>();
   private readonly providerValues = new Map<string, unknown>();
   private readonly handles = new Map<string, ActorHandle>();
+  /** 审计 F14：`listening` 监听器的句柄，停机时注销（原来只 on 不 off）。 */
+  _recreateInstaller: (() => void) | null = null;
   private readonly modules: ModuleSpec[] = [];
   private readonly pluginSpecs: PluginSpec[] = [];
   private readonly routeSpecs: unknown[] = [];
@@ -368,6 +370,8 @@ export class Application {
       if (ownership) ownership.recreate = (path: string) => this.actorDefinitions.get(String(path)) ?? null;
     };
     installRecreate();
+    // 审计 F14：记下句柄，停机时注销（原来只 on 不 off）
+    this._recreateInstaller = installRecreate;
     (this.system as { on?: (event: string, fn: () => void) => void }).on?.('listening', installRecreate);
     for (const [name, actorSpec] of this.actorSpecs) {
       this.handles.set(name, await this.spawnActor(system, name, actorSpec));
@@ -385,6 +389,11 @@ export class Application {
   }
 
   async stop(options: { timeoutMs?: number } = {}): Promise<void> {
+    // 审计 F14：把 listening 监听器摘掉（同一个 Application 实例重用时不会叠加）
+    if (this._recreateInstaller !== null) {
+      (this.system as { off?: (event: string, fn: () => void) => void } | null)?.off?.('listening', this._recreateInstaller);
+      this._recreateInstaller = null;
+    }
     if (this.stopped) return; // 幂等
     this.stopped = true;
 

@@ -696,11 +696,18 @@ class ClientConnection extends EventEmitter {
       return Promise.reject(new Error(`websocket is closed (code ${this._closed ? this._closed.code : 'unknown'})`));
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket message')), timeoutMs);
-      this.once('message', (data: unknown, isBinary: boolean) => {
+      // 审计 F13：超时必须**移除**这个 once 监听器 —— 否则反复超时会一直累积，
+      // 最终触发 MaxListenersExceededWarning（并且每次超时都留下一个闭包）。
+      const onEvent = (data: unknown, isBinary: boolean): void => {
         clearTimeout(timer);
+        this.off('message', onEvent);
         resolve({ data, isBinary });
-      });
+      };
+      const timer = setTimeout(() => {
+        this.off('message', onEvent);
+        reject(new Error('timed out waiting for a websocket message'));
+      }, timeoutMs);
+      this.once('message', onEvent);
     });
   }
 
@@ -708,11 +715,18 @@ class ClientConnection extends EventEmitter {
   nextPing(timeoutMs = 5000) {
     if (this._pingInbox.length > 0) return Promise.resolve(this._pingInbox.shift());
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket ping')), timeoutMs);
-      this.once('ping', (payload: Buffer) => {
+      // 审计 F13：超时必须**移除**这个 once 监听器 —— 否则反复超时会一直累积，
+      // 最终触发 MaxListenersExceededWarning（并且每次超时都留下一个闭包）。
+      const onEvent = (payload: Buffer): void => {
         clearTimeout(timer);
+        this.off('ping', onEvent);
         resolve(payload);
-      });
+      };
+      const timer = setTimeout(() => {
+        this.off('ping', onEvent);
+        reject(new Error('timed out waiting for a websocket ping'));
+      }, timeoutMs);
+      this.once('ping', onEvent);
     });
   }
 
@@ -720,11 +734,18 @@ class ClientConnection extends EventEmitter {
   nextPong(timeoutMs = 5000) {
     if (this._pongInbox.length > 0) return Promise.resolve(this._pongInbox.shift());
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('timed out waiting for a websocket pong')), timeoutMs);
-      this.once('pong', (payload: Buffer) => {
+      // 审计 F13：超时必须**移除**这个 once 监听器 —— 否则反复超时会一直累积，
+      // 最终触发 MaxListenersExceededWarning（并且每次超时都留下一个闭包）。
+      const onEvent = (payload: Buffer): void => {
         clearTimeout(timer);
+        this.off('pong', onEvent);
         resolve(payload);
-      });
+      };
+      const timer = setTimeout(() => {
+        this.off('pong', onEvent);
+        reject(new Error('timed out waiting for a websocket pong'));
+      }, timeoutMs);
+      this.once('pong', onEvent);
     });
   }
 
