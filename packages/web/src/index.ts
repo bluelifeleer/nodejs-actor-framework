@@ -162,3 +162,15 @@ export {
   type JweKey,
   type JweKeyAlgorithm,
 } from './auth/jwe.ts';
+
+export {
+  memoryRefreshStore,
+  redisRefreshStore,
+  runRefreshStoreContract,
+  type IssuedRefreshToken,
+  type RefreshConsumeResult,
+  type RefreshKeyValueClient,
+  type RefreshStoreOptions,
+  type RefreshTokenRecord,
+  type RefreshTokenStore,
+} from './auth/refresh.ts';

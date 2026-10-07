@@ -131,9 +131,57 @@ try {
 }
 ```
 
+## refresh token（轮换 + 重放即整族撤销）
+
+access token 短命、refresh token 长命且**必须能撤销** —— 所以它是**不透明随机串**（不是 JWT）。
+两条安全不变量：**每次使用都换发新 token**（轮换）；**旧 token 再被用一次 = 重放攻击 → 整族撤销**
+（连同刚换发的那把一起失效）。
+
+```js verify
+import { memoryRefreshStore } from '@actor/web';
+
+const store = memoryRefreshStore();               // 单节点/测试；生产请用 redisRefreshStore（下面说明）
+const issued = await store.issue({ subject: 'u1' });
+console.log('token 长度 =', issued.token.length, '| family =', issued.family);
+if (issued.token.includes('.')) throw new Error('refresh token 不能是 JWT（必须可撤销）');
+
+// 第一次消费 → 换发新 token
+const first = await store.consume(issued.token);
+if (!first.ok) throw new Error('第一次消费应当成功');
+console.log('轮换出新 token：', first.issued.token !== issued.token);
+
+// 攻击者拿旧 token 再来一次 → 重放 → **整族撤销**
+const replay = await store.consume(issued.token);
+console.log('重放结果 →', replay.ok, replay.ok ? '' : replay.reason);
+if (replay.ok || replay.reason !== 'replay') throw new Error('重放必须被识别');
+
+// 关键：刚换发的那把也失效了（这就是整族撤销的意义）
+const afterReplay = await store.consume(first.issued.token);
+console.log('轮换后的 token 现在也 →', afterReplay.ok ? '可用（不对！）' : afterReplay.reason);
+if (afterReplay.ok) throw new Error('整族应当被撤销');
+```
+
+多节点部署用共享存储（把 `@actor/redis` 的客户端传进来即可，**不引入依赖**）：
+
+```ts
+import { redisRefreshStore } from '@actor/web';
+
+const store = redisRefreshStore(kv, { prefix: 'auth:refresh:', ttlMs: 30 * 24 * 3600 * 1000 });
+```
+
+> ⚠️ `memoryRefreshStore()` 是**单节点**语义：多实例部署时，A 实例发的 token 到 B 实例就"没见过"
+> （表现为随机登出），重放检测也会被绕过 —— 所以 `NODE_ENV=production` 下它**默认拒绝启动**，
+> 要用必须显式 `{ allowInMemoryInProduction: true }` 并留痕。
+
+自己写存储（数据库/其它 KV）先跑契约套件：
+
+```ts
+runRefreshStoreContract({ name: 'my-store', make: () => myStore, reopen: () => myStoreOnSameData, expiryReportsAs: 'unknown' });
+```
+
 ## 逃生通道与后续
 
 - `ctx.user = { sub, roles, scopes, claims }`（`claims` 是原始声明 ✓ **claims 是声明，不是授权**：真正授权看 `roles`/`scopes` 或你自己的策略）；
 - 撤销/黑名单：`verifyExtra` 里查（配合 `@actor/redis`），框架不内建；
 - JWE 见上一节（`encryptJwe`/`decryptJwe`/`decryptToJws`）；
-- refresh token（不透明串 + 轮换 + 重放即整族撤销）在 M8c3 提供。
+- refresh token 见上一节；登录/刷新端点的 HTTP 形状由你的应用决定（框架只提供存储与不变量）。

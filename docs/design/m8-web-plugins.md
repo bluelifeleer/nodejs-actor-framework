@@ -306,6 +306,21 @@ export function runMailTransportContract(...): void;                      // 契
   嵌套端到端（内层被篡改 → 外层解开也验签失败；内层不是 JWS → 明确报错）。
 - 文档：指南 14 增加 JWE 一节（含**离线可跑** verify 块：签→加→解→验 + 不支持组合被拒）。
 
+### M8c3（已完成）：refresh token（轮换 + 重放即整族撤销）
+
+- `packages/web/src/auth/refresh.ts`：`RefreshTokenStore` 契约 + `memoryRefreshStore` +
+  **`redisRefreshStore`**（只要求一个最小 KV 客户端形状 —— `@actor/redis` 的客户端满足它，
+  **不引入依赖**）+ **`runRefreshStoreContract`** 契约套件。
+- 不变量（都写进契约套件）：token 是**不透明随机串**（不是 JWT，必须可撤销）；**每次消费都轮换**；
+  **旧 token 再用一次 = 重放 → 整族撤销**（连刚换发的那把也失效，有断言）；
+  未知/过期/撤销明确区分；`revokeFamily` 不影响别族；存储里只放 **token 的 sha256**（不放原文，有断言）。
+- **多节点诚实边界**：`memoryRefreshStore` 是单节点语义（跨实例表现为随机登出、重放检测会被绕过），
+  所以 `NODE_ENV=production` 下**默认拒绝启动**，要用必须显式 `{ allowInMemoryInProduction: true }` 并留日志。
+- 契约套件新增 `expiryReportsAs`：KV 型存储到期键直接消失，只能报 `unknown` ——
+  **这是诚实答案，不是缺陷**，所以显式声明而不是把断言放松掉。
+- 测试 10 条：内存 + redis 形状（假 KV 客户端**共享同一份存储** → `reopen` 语义是真验证）两套契约 +
+  哈希存储断言 + 生产拒绝启动 + 重放留痕。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |
