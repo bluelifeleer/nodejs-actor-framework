@@ -381,6 +381,26 @@ export const myDb = defineDatabaseAdapter({
   适配器 kind 分支（redis/ioredis/mongodb），带证伪用例 —— 与既有"方言门禁"同构的对偶门禁。
 - **验证**：全量 **742/742**、typecheck 0、文档站 41 页。
 
+### M7b（已完成）：真库测试基础设施
+
+- **跳过必须可见**：core 的 `testing.ts` 提供 `realDatabaseUrl(envVar)` 与
+  `testWithDatabase(envVar, name, fn)` —— 没设变量时用 `test(name, { skip })` 注册**显式跳过**。
+  这条性质本身有测试证明（子进程跑夹具，断言输出里有 `skipped 1`；设了变量则断言真的执行）。
+  过程中踩到并修掉一个 Node 细节：子进程里跑 `node --test` 必须**剥掉 `NODE_TEST*` 环境变量**，
+  否则判定"递归调用测试运行器"并跳过所有文件（只留一句 warning）。
+- `scripts/dev-databases.mjs` + `scripts/databases.compose.yml`：`up/down/status/env` 子命令，
+  docker 起 pg/mysql/mssql/redis/mongo（端口刻意避开默认值），`env` 打印可直接 `eval` 的
+  `ACTOR_TEST_*_URL`；**没有 docker 时退出码 2 并明确说明**（不静默跳过）。
+  离线可测的部分有契约测试：变量覆盖面、**每个 SQL URL 必须被 `dialectFromUrl` 认出**、
+  **URL 端口必须与 compose 文件一致**、`env` 输出、未知子命令退出码、无 docker 报错。
+  写这条测试时当场发现一个真 bug：`SCHEME_TO_DIALECT` 里**没有 mssql**（加 mssql 方言时漏了，
+  之前的用例都用字段式连接所以没暴露）—— 已修，并把 scheme 归属也改成由方言描述符派生
+  （新增 `DialectSpec.urlSchemes`），顺带交叉校验"没有两个方言抢同一个 scheme"。
+- `packages/db/test/real-sql-databases.test.ts`：pg/mysql/mssql 各自用 `ACTOR_TEST_*_URL` 开关，
+  设了就**用同一套契约断言**跑 SQL 适配器（真库）+ 建表/CRUD/乐观锁/漂移/清理往返（唯一表名）；
+  没设就注册可见跳过。本环境离线无 docker → 这里必然 6 条 skip（`ℹ skipped 6`、0 pass 0 fail）。
+- 指南新增"怎么跑真库测试"一节。
+
 ### M7a 第二部分（已完成）：SQL 接到 `supervise()` 上
 
 - 新增 `packages/db/src/sql-adapter.ts`：`createSqlAdapter({ dialect, driver })` 把既有的 `DriverFactory`

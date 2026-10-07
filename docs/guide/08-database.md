@@ -468,6 +468,29 @@ APP_PLUGINS__DB__URL='pgsql://user:pass@host:5432/appdb' node main.ts
 
 完整可跑示例：[`examples/app-db`](../../examples/app-db/README.md)。
 
+## 怎么跑真库测试（可选的"真验"）
+
+上面的 PG/MySQL/SQL Server 目前是**契约级验证**（离线、不引驱动）。想真连库：
+
+```bash
+node scripts/dev-databases.mjs up               # docker 起 pg/mysql/mssql/redis/mongo
+eval "$(node scripts/dev-databases.mjs env)"    # 导出 ACTOR_TEST_*_URL
+npm test                                        # 真库用例这时才真的跑
+node scripts/dev-databases.mjs down             # 收工（-v 一起清数据卷）
+```
+
+没设变量时那些用例会**显式跳过** —— `npm test` 的输出里能看到 `skipped N`，跳过原因写明是哪个变量没设，
+**不会静默变绿**（静默绿灯会让人以为真库验过了）。
+
+不想用 docker 就直接指向你自己的库：
+
+```bash
+ACTOR_TEST_PG_URL='pgsql://user:pass@your-host:5432/db' npm test
+```
+
+真库用例跑的是**同一套**连接管理契约断言（`@actor/db-core` 的 `runManagedConnectionContract`），
+不是另写一套宽松断言 —— 这样"契约级"与"真库"说的是一回事。
+
 ## 诚实的边界（请先读这段）
 
 - **SQLite 是"真库验证"**：本仓库的测试用 Node 内置 `node:sqlite` 跑真实 SQL（建表、漂移、乐观锁、关联、事务）。

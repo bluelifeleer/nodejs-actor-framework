@@ -64,6 +64,7 @@ function quote(name: string): string {
 
 export const pgsql: DialectSpec = {
   name: 'pgsql',
+  urlSchemes: ['pgsql', 'postgres', 'postgresql'],
   driverPackage: 'pg',
   driver: () => createPgDriver(),
   defaultPort: DEFAULT_PORT,

@@ -73,13 +73,14 @@ export function assertDialect(value: unknown): Dialect {
   throw new DbConfigError(`unknown dialect "${String(value)}": expected one of ${DIALECTS.join(', ')}`);
 }
 
-const SCHEME_TO_DIALECT: Record<string, Dialect> = {
-  pgsql: 'pgsql',
-  postgres: 'pgsql',
-  postgresql: 'pgsql',
-  mysql: 'mysql',
-  sqlite: 'sqlite',
-};
+/** DSN scheme → 方言：**由方言描述符派生**（每个方言自己声明认哪些 scheme，别再在别处点名）。 */
+const SCHEME_TO_DIALECT: Record<string, Dialect> = (() => {
+  const map: Record<string, Dialect> = {};
+  for (const [dialect, spec] of Object.entries(DIALECT_SPECS)) {
+    for (const scheme of spec.urlSchemes) map[scheme] = dialect as Dialect;
+  }
+  return map;
+})();
 
 /** 从 DSN 猜方言（不认识就报错，不猜）。 */
 export function dialectFromUrl(url: string): Dialect {

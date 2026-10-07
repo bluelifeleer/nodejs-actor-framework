@@ -1,7 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { columnTypeFor, defineModel, DIALECTS, dialectSpec, placeholderFor, quoteIdentifier } from '../src/index.ts';
+import {
+  columnTypeFor,
+  defineModel,
+  DIALECTS,
+  dialectFromUrl,
+  dialectSpec,
+  parseConnection,
+  placeholderFor,
+  quoteIdentifier,
+} from '../src/index.ts';
 
 /**
  * 第 4 个方言：SQL Server（T-SQL）—— 用来检验"加方言 checklist"是否真的够用。
@@ -183,4 +192,27 @@ test('mssql: 连接形状与值表示', () => {
   assert.strictEqual(spec.serializeBoolean(true), 1);
   const when = new Date('2026-10-07T13:45:06.000Z');
   assert.strictEqual(spec.serializeTimestamp(when), when);
+});
+
+test('mssql: DSN 也能推断方言（此前 scheme 映射漏了 mssql —— 真库脚本 URL 一跑就暴露）', () => {
+  const spec = dialectSpec('mssql' as never);
+  assert.deepStrictEqual([...spec.urlSchemes].sort(), ['mssql', 'sqlserver'], 'mssql 的 URL scheme 要能被认出');
+  assert.strictEqual(dialectFromUrl('mssql://sa:pw@db:1433/app'), 'mssql');
+  assert.strictEqual(dialectFromUrl('sqlserver://sa:pw@db:1433/app'), 'mssql', 'sqlserver 是常见别名');
+  const parsed = parseConnection({ url: 'mssql://sa:pw@db:1433/app' });
+  assert.strictEqual(parsed.dialect, 'mssql');
+  assert.strictEqual(parsed.host, 'db');
+  assert.strictEqual(parsed.database, 'app');
+  // 每个方言都要声明 scheme，且互相不冲突（否则 DSN 会被推成别的方言）
+  const seen = new Map<string, string>();
+  for (const dialect of DIALECTS) {
+    const schemes = dialectSpec(dialect).urlSchemes;
+    assert.ok(schemes.length > 0, `${dialect} 没声明 urlSchemes`);
+    for (const scheme of schemes) {
+      const owner = seen.get(scheme);
+      assert.strictEqual(owner, undefined, `scheme "${scheme}" 同时属于 ${String(owner)} 与 ${dialect}`);
+      seen.set(scheme, dialect);
+      assert.strictEqual(dialectFromUrl(`${scheme}://user:pw@host:1/db`), dialect, `${scheme} 推断错了`);
+    }
+  }
 });

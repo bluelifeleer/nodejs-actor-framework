@@ -179,3 +179,7 @@ export interface ManagedConnectionContractOptions {
 }
 /** 跑一遍连接管理契约（用例注册在调用方的测试文件里）。 */
 export declare function runManagedConnectionContract(options: ManagedConnectionContractOptions): void;
+/** 读真库测试变量；没设（或空串）返回 undefined。 */
+export declare function realDatabaseUrl(envVar: string): string | undefined;
+/** 注册一个"有真库才跑"的用例；没配就注册**显式跳过**（输出里能看到 skipped）。 */
+export declare function testWithDatabase(envVar: string, name: string, fn: () => void | Promise<void>): void;

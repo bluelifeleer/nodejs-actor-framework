@@ -37,7 +37,9 @@ export {
 
 // 契约套件（测试工具）：适配器包与**用户自装适配器**都用它自证合规
 export {
+  realDatabaseUrl,
   runManagedConnectionContract,
+  testWithDatabase,
   type ContractResourceFactory,
   type ContractResourceInput,
   type ManagedConnectionContractOptions,

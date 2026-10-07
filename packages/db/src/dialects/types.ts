@@ -173,6 +173,8 @@ export interface DialectSpec {
   readonly name: Dialect;
   /** 懒加载的驱动包名（sqlite 是内置模块，不需要安装）。 */
   readonly driverPackage: string;
+  /** 这个方言认哪些 DSN scheme（`postgres`/`postgresql` 这类别名也算）。 */
+  readonly urlSchemes: readonly string[];
   /**
    * 这个方言用哪个驱动（把"方言 → 驱动"的绑定也放进描述符）。
    *

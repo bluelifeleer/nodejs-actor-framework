@@ -57,6 +57,30 @@ export interface ManagedConnectionContractOptions {
   setHealthy?: (healthy: boolean) => void;
 }
 
+/**
+ * 真库测试开关（约定：环境变量存在才跑，否则**显式跳过**）。
+ *
+ * 变量清单（见 `scripts/dev-databases.mjs`）：
+ * `ACTOR_TEST_PG_URL` / `ACTOR_TEST_MYSQL_URL` / `ACTOR_TEST_MSSQL_URL` /
+ * `ACTOR_TEST_REDIS_URL` / `ACTOR_TEST_IOREDIS_URL` / `ACTOR_TEST_MONGO_URL`。
+ *
+ * 为什么"跳过必须可见"：静默绿灯会让人以为真库验过了 —— 这里用 `test(name, { skip })`，
+ * 测试输出里能直接看到 `skipped N`。
+ */
+export function realDatabaseUrl(envVar: string): string | undefined {
+  const value = process.env[envVar];
+  return value === undefined || value.trim() === '' ? undefined : value;
+}
+
+/** 注册一个"有真库才跑"的用例；没配就注册显式跳过（不是不注册）。 */
+export function testWithDatabase(envVar: string, name: string, fn: () => void | Promise<void>): void {
+  if (realDatabaseUrl(envVar) === undefined) {
+    test(name, { skip: `${envVar} not set（真库用例：先 node scripts/dev-databases.mjs up）` }, () => {});
+    return;
+  }
+  test(name, fn);
+}
+
 /** 跑一遍连接管理契约。用例注册在调用方所在的测试文件里。 */
 export function runManagedConnectionContract(options: ManagedConnectionContractOptions): void {
   const { name } = options;

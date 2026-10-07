@@ -92,6 +92,7 @@ function extendedProperty(table: string, column: string | undefined, value: stri
  */
 export const mssql: DialectSpec = {
   name: 'mssql',
+  urlSchemes: ['mssql', 'sqlserver'],
   driverPackage: 'mssql',
   driver: () => createMssqlDriver(),
   defaultPort: DEFAULT_PORT,

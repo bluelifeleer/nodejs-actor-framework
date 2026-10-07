@@ -75,6 +75,7 @@ function quote(name: string): string {
 
 export const mysql: DialectSpec = {
   name: 'mysql',
+  urlSchemes: ['mysql'],
   driverPackage: 'mysql2',
   driver: () => createMysqlDriver(),
   defaultPort: DEFAULT_PORT,

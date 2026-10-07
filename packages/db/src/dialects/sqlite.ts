@@ -48,6 +48,7 @@ function quote(name: string): string {
 
 export const sqlite: DialectSpec = {
   name: 'sqlite',
+  urlSchemes: ['sqlite'],
   driverPackage: 'node:sqlite', // 内置模块，不需要安装
   driver: () => createSqliteDriver(),
   defaultPort: null,
