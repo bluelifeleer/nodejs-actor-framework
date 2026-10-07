@@ -50,3 +50,22 @@ test('cli args: 命令表驱动 —— migrate 的动作词、doctor 无子命�
   assert.deepStrictEqual(parseArgs(['doctor', '--json'], words).command, ['doctor']);
   assert.deepStrictEqual(parseArgs(['migrate', 'down', '--to', '3'], words).flags, { to: '3' });
 });
+
+test('args: 带值选项吃掉下一个词——即使它看起来像已知开关（--web-plugin debug / --with debug）', () => {
+  const commands = { add: [] as string[], new: ['app'] };
+  const one = parseArgs(['add', '--web-plugin', 'debug'], { commands });
+  assert.strictEqual(one.flags['web-plugin'], 'debug', '`debug` 是已知开关名，但它在这里是**值**');
+  assert.strictEqual(one.flags['debug'], undefined, '不该同时把它当成开关');
+
+  const two = parseArgs(['add', '--with', 'debug'], { commands });
+  assert.strictEqual(two.flags['with'], 'debug');
+
+  // 纯开关仍然正常
+  const three = parseArgs(['add', '--dry-run', '--force'], { commands });
+  assert.strictEqual(three.flags['dry-run'], true);
+  assert.strictEqual(three.flags['force'], true);
+
+  // `=` 形式也仍然正常
+  const four = parseArgs(['add', '--web-plugin=upload,auth'], { commands });
+  assert.strictEqual(four.flags['web-plugin'], 'upload,auth');
+});

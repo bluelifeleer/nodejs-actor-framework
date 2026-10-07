@@ -25,9 +25,18 @@ export interface ParsedArgs {
 }
 
 /** 已知的开关（有这些才算 flag，其余 `--x` 会报错——错拼一个选项不该被静默忽略）。 */
+/**
+ * **带值**的选项（`--with redis`）与纯开关（`--force`）要区分开。
+ *
+ * 踩过的坑：`--web-plugin debug` 里的 `debug` 恰好也是已知开关名，早先的规则是"下一个词不是已知开关才当值"，
+ * 于是 `--web-plugin debug` 被解析成 `{ 'web-plugin': true, debug: true }` —— 插件名直接丢了。
+ * 现在：当前选项在 `VALUE_FLAGS` 里，就**总是**把下一个词当值（除非它以 `--` 开头）。
+ */
+const VALUE_FLAGS = new Set(['dir', 'data', 'to', 'port', 'layout', 'with', 'web-plugins', 'web-plugin']);
+
 const KNOWN_FLAGS = new Set([
   'force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout', 'web-plugins',
-  'with',
+  'with', 'dry-run', 'web-plugin',
 ]);
 
 /**
@@ -73,8 +82,9 @@ export function parseArgs(argv: readonly string[], options: { commands: Record<s
       continue;
     }
     const next = argv[index + 1];
-    if (next !== undefined && !next.startsWith('--') && !KNOWN_FLAGS.has(next)) {
-      // `--dir src` 这种形式：值不是另一个已知开关
+    const known = next === undefined ? true : next.startsWith('--') || (KNOWN_FLAGS.has(next) && !VALUE_FLAGS.has(name));
+    if (next !== undefined && !known) {
+      // `--dir src` / `--web-plugin debug`：带值选项总是吃掉下一个词（即使它看起来像开关名）
       flags[name] = next;
       index += 1;
       continue;

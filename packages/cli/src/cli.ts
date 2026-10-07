@@ -13,6 +13,7 @@ import type { Capability, WebPlugin } from './capabilities.ts';
 import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
 import { migrate } from './commands/migrate.ts';
+import { addCapability } from './commands/add.ts';
 import { newApp } from './commands/new.ts';
 import { ProjectError } from './project/load.ts';
 
@@ -23,7 +24,9 @@ function usage(): string {
     'actor —— actor 框架的命令行工具',
     '',
     '用法：',
-    '  actor new app <dir> [--layout layered|flat] [--with redis,mail] [--web-plugins upload,auth,debug] [--force]',
+    '  actor new app <dir> [--layout layered|flat] [--with redis,mail] [--web-plugins upload,auth,debug] [--dry-run] [--force]',
+    '  actor add <capability> [--web-plugin <name>] [--dir <项目目录>] [--dry-run]',
+    '                                              给已有项目增量加能力（非破坏性；不覆盖已有片段）',
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
     '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
@@ -40,7 +43,7 @@ function usage(): string {
 
 async function main(argv: readonly string[]): Promise<number> {
   const parsed = parseArgs(argv, {
-    commands: { new: ['app'], migrate: ['status', 'up', 'down'], doctor: [] },
+    commands: { new: ['app'], migrate: ['status', 'up', 'down'], doctor: [], add: [] },
   });
 
   if (parsed.flags.version === true) {
@@ -83,6 +86,7 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(layout === undefined ? {} : { layout }),
       ...(webPlugins === undefined ? {} : { webPlugins }),
       ...(capabilities === undefined ? {} : { capabilities }),
+      ...(parsed.flags['dry-run'] === true ? { dryRun: true } : {}),
     });
     process.stdout.write(`已生成 ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
     for (const file of result.files) process.stdout.write(`  ${file}\n`);
@@ -99,6 +103,36 @@ async function main(argv: readonly string[]): Promise<number> {
   const projectDir = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : process.cwd();
   const data = typeof parsed.flags.data === 'string' ? parsed.flags.data : undefined;
   const asJson = parsed.flags.json === true;
+
+  if (first === 'add') {
+    const projectDir = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : process.cwd();
+    const capabilities =
+      typeof parsed.flags['with'] === 'string'
+        ? (parsed.flags['with'].split(',').map((name) => name.trim()).filter((name) => name !== '') as Capability[])
+        : [];
+    // `--web-plugin auth` 与 `--with redis` 是两类东西（前者是 web 的插件选项）
+    const webPlugins =
+      typeof parsed.flags['web-plugin'] === 'string'
+        ? (parsed.flags['web-plugin'].split(',').map((name) => name.trim()).filter((name) => name !== '') as WebPlugin[])
+        : [];
+    const result = await addCapability(projectDir, {
+      capabilities,
+      webPlugins,
+      ...(parsed.flags.force === true ? { force: true } : {}),
+      ...(parsed.flags['dry-run'] === true ? { dryRun: true } : {}),
+    });
+    process.stdout.write(
+      `${result.dryRun ? '[dry-run] 计划' : '已增量添加'}到 ${path.relative(process.cwd(), result.dir) || '.'}\n`,
+    );
+    if (result.added.length > 0) process.stdout.write(`  新增片段：${result.added.join(', ')}\n`);
+    if (result.skipped.length > 0) process.stdout.write(`  已有片段（跳过，不覆盖）：${result.skipped.join(', ')}\n`);
+    process.stdout.write(`  依赖：${result.packages.join(', ')}\n`);
+    process.stdout.write(`  文件：\n${result.files.map((file) => `    ${file}`).join('\n')}\n`);
+    if (result.manualSteps.length > 0) {
+      process.stdout.write(`\n需要你确认/配置：\n${result.manualSteps.map((step) => `  - ${step}`).join('\n')}\n`);
+    }
+    return 0;
+  }
 
   if (first === 'migrate') {
     const action = second ?? parsed.positionals[0] ?? 'status';

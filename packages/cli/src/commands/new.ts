@@ -57,6 +57,8 @@ export async function newApp(
     capabilities?: readonly Capability[];
     /** 依赖图（测试注入；默认用固化数据）。 */
     graph?: ReturnType<typeof graphOf>;
+    /** 只打印计划，一个字节都不写。 */
+    dryRun?: boolean;
   } = {},
 ): Promise<NewAppResult> {
   if (target === undefined || String(target).trim() === '') {
@@ -129,10 +131,12 @@ export async function newApp(
     templates.push({ relative: 'src/plugin/index.ts', content: pluginBarrel(fragments) });
   }
 
-  for (const file of templates) {
-    const destination = path.join(dir, file.relative);
-    await fs.mkdir(path.dirname(destination), { recursive: true });
-    await fs.writeFile(destination, file.content, 'utf8');
+  if (options.dryRun !== true) {
+    for (const file of templates) {
+      const destination = path.join(dir, file.relative);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.writeFile(destination, file.content, 'utf8');
+    }
   }
 
   return {
