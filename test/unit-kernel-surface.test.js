@@ -119,7 +119,9 @@ test('kernel surface: 用户文档代码块里用到的内核成员都必须在 
   const docs = files.map((file) => ({ file, text: fs.readFileSync(path.join(ROOT, file), 'utf8') }));
   const declaration = fs.readFileSync(path.join(ROOT, KERNEL_DECLARATION_FILE), 'utf8');
 
-  const missing = checkDocumentedMembers(docs, declaration);
+  // web 的请求上下文也叫 ctx（与内核 actor 上下文重名）→ 把它的成员也算"已声明"
+  const webRequestContext = fs.readFileSync(path.join(ROOT, 'packages/web/src/context.ts'), 'utf8');
+  const missing = checkDocumentedMembers(docs, declaration, { extraDeclared: webRequestContext });
   assert.deepStrictEqual(
     missing,
     [],
@@ -129,6 +131,6 @@ test('kernel surface: 用户文档代码块里用到的内核成员都必须在 
   // 可证伪：把 ctx.sleep 的声明删掉，门禁必须报出来
   const tampered = declaration.replace(/\n\s*sleep\(ms: number\): Promise<void>;/, '');
   assert.notStrictEqual(tampered, declaration, '证伪用的锚点没匹配上（测试自己失效了）');
-  const caught = checkDocumentedMembers(docs, tampered).map((m) => m.member);
+  const caught = checkDocumentedMembers(docs, tampered, { extraDeclared: webRequestContext }).map((m) => m.member);
   assert.ok(caught.includes('sleep'), `删掉声明后门禁没有抓到：${JSON.stringify(caught)}`);
 });

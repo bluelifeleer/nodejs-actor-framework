@@ -295,8 +295,13 @@ export const ws = (
   ['WS', pattern, controller, middleware];
 
 /** 声明一组路由（在 `defineModule({ routes })` 里使用）。 */
-export function defineRoutes(
-  entries: readonly (readonly [HttpMethod, string, Route['controller']])[],
-): readonly (readonly [HttpMethod, string, Route['controller']])[] {
+/**
+ * 声明一组路由（运行时是恒等的）。
+ *
+ * 注意它必须接受**助手函数的产出形状**：`get/post/put/...` 返回的是
+ * `[method, pattern, controller, middleware?]`（第 4 位可选）。早先这里只接受 3 元组，
+ * 于是 `defineRoutes([get(...)])` 是类型错误 —— 而示例没进 typecheck 矩阵，一直没暴露。
+ */
+export function defineRoutes<T extends readonly (readonly unknown[])[]>(entries: T): T {
   return entries;
 }

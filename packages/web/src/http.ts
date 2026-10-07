@@ -15,6 +15,7 @@ import { dispatch } from './controller.ts';
 import type { Middleware } from './middleware.ts';
 import type { HeaderValue } from './context.ts';
 import { WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
+import { STREAM_ROUTES_SERVICE } from './upload/plugin.ts';
 import { buildRouteTable, type HttpMethod, type Route } from './routes.ts';
 import { flattenRoutes } from './router.ts';
 
@@ -44,6 +45,16 @@ function readSchema() {
     accessLog: { type: 'boolean' as const, default: true },
     slowMs: { type: 'number' as const, default: 500, min: 0 },
   };
+}
+
+/** 读插件注册的"流式路径"匹配器（没有就 null）。 */
+function readStreamMatcher(app: { get?<T>(name: string): T }): ((method: string, path: string) => boolean) | null {
+  try {
+    const matcher = app.get?.<((method: string, path: string) => boolean) | undefined>(STREAM_ROUTES_SERVICE);
+    return typeof matcher === 'function' ? matcher : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 读插件注册的 context 钩子（没有就空数组；服务不存在不是错误）。 */
@@ -97,9 +108,13 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
         };
         void (async () => {
           try {
+            // 流式路由（上传/分片）：**不缓冲**，把原始流交给 handler 自己消费
+            const pathOnly = String(req.url ?? '/').split('?')[0] ?? '/';
+            const isStreaming = readStreamMatcher(app)?.(req.method ?? 'GET', pathOnly) === true;
+
             const chunks: Buffer[] = [];
             let size = 0;
-            for await (const chunk of req) {
+            for await (const chunk of (isStreaming ? [] : req)) {
               const buf = chunk as Buffer;
               size += buf.length;
               if (size > maxBodyBytes) {
@@ -109,7 +124,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               }
               chunks.push(buf);
             }
-            const raw = Buffer.concat(chunks).toString('utf8');
+            const raw = isStreaming ? '' : Buffer.concat(chunks).toString('utf8');
             const contentType = String(req.headers['content-type'] ?? '');
             let body: unknown = raw.length > 0 ? raw : undefined;
             if (raw.length > 0 && contentType.includes('application/json')) {
@@ -125,6 +140,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             const result = await dispatch({
               routes,
               middleware: app.middleware as readonly Middleware[],
+              ...(isStreaming ? { stream: req as unknown as AsyncIterable<Uint8Array> } : {}),
               request: {
                 method: req.method ?? 'GET',
                 url: req.url ?? '/',

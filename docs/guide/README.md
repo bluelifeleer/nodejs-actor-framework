@@ -19,7 +19,8 @@
 | 10 | [MongoDB（@actor/mongodb）](./10-mongodb.md) | 连接与池映射、defineCollection（$jsonSchema/索引/sync 漂移）、诚实边界 |
 | 11 | [自装适配器 / 受管资源](./11-custom-adapter.md) | defineDatabaseAdapter、databaseAdapter 多实例、用契约套件自证合规、逃生通道 |
 | 12 | [Web 插件（自定义插件逻辑）](./12-web-plugin.md) | defineWebPlugin：路由/带阶段中间件/请求上下文扩展 + 契约套件 |
-| 13 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
+| 13 | [文件上传（流式 / 分片 / 断点续传）](./13-upload.md) | uploadPlugin、UploadStorage 契约、分片 + sha256 校验、前端示例 |
+| 14 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
 
 ## 这些示例**真的会跑**
 

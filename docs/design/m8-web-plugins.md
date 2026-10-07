@@ -238,6 +238,41 @@ export function runMailTransportContract(...): void;                      // 契
 - 本期已收尾：`examples/app-plugin`（自定义 web 插件 + 冒烟门禁通过）+ 指南 `docs/guide/12-web-plugin.md`
   （含**离线可跑**的 verify 块：`defineWebPlugin` 校验 + `orderMiddleware` 阶段顺序真实执行验证）。
 
+### M8b（已完成）：上传（流式 + 分片 + 断点续传 + sha256）
+
+- `packages/web/src/upload/`：
+  - `storage.ts`：`UploadStorage` 契约（`put(stream)` 边写边算 sha256 / get / stat / delete / list?）+
+    `localDiskStorage`（临时名写入→rename、元数据先落、key 由服务端生成、**纯流式**）+
+    `memoryUploadStorage` + `defineUploadStorage` + **`runUploadStorageContract`**（契约套件，含证伪）；
+  - `multipart.ts`：**零依赖流式 multipart 解析**（边读边写、超限**立刻** 413、畸形 400、
+    文件名剥路径、跨块边界安全刷出）；
+  - `chunked.ts`：`ChunkSessionStore` 契约 + `memoryChunkStore` + **`diskChunkStore`（重启后仍能续传）** +
+    `runChunkStoreContract`（含 reopen 用例：换实例后仍看得到已收分片）；
+  - `plugin.ts`：`uploadPlugin()` —— 7 条路由（multipart 上传/回读/init/PUT 分片/状态/complete/abort），
+    分片逐片 sha256、整文件 sha256（不符 → 400 + expected/actual + **作废会话** + 删文件）、
+    幂等重传、精确分片大小校验、默认安全（服务端 key、白名单、5MiB 下限）。
+- `httpPlugin` 支持**流式路由**：插件把"需要流式 body 的路径"注册成 `@actor/web:streamRoutes` 服务，
+  httpPlugin 命中就**不缓冲**、把原始流通过 `ctx.stream` 交给 handler。
+- `ControllerSpec` 补上 `body?: readonly string[]`（路由校验一直在用、类型里却漏了 ——
+  实施时我据此误判并删掉声明，启动期报错才暴露）。
+- `defineRoutes` 放宽为接受助手产出的元组形状（`get/post/put` 返回带可选中间件的 4 元组，
+  早先只接受 3 元组 → `defineRoutes([get(...)])` 是类型错误；示例没进 typecheck 所以一直没暴露）。
+- 测试 27 条全绿：存储契约（本地磁盘/内存 × 4 条 + 证伪）、分片契约（内存/磁盘 × 5 条，含**重启续传**）、
+  multipart 边界（跨块、多文件、剥路径、超限、畸形）、插件端到端（真 HTTP：单/多文件 + 回读 +
+  **超限全回滚** + 分片全流程 + **断点续传（先查 missing 再补）** + 分片 sha256 不符 +
+  整文件 sha256 不符报期望/实际且不留文件）。
+- 示例 `examples/app-upload`（自带**前端页面**：分片/并发/退避重试/断点续传/WebCrypto sha256）+ 冒烟门禁；
+  指南 `docs/guide/13-upload.md`（含**离线可跑** verify 块：本地磁盘存储 + 分片会话）。
+
+**自我修正（本轮抓到 4 个真 bug，都是我的）**：
+1. `defineWebPlugin` **覆盖**而不是组合调用方的 `setup` → 插件注册的服务（流式路由表、存储）全丢，
+   表现为运行期 500 与测试挂起；
+2. `dispatch` 没把 `options.stream` 交给 ctx → 上传路由拿不到请求流；
+3. multipart 起始边界多拼了一个 CRLF → 所有请求都被判"起始边界不符"；
+4. 字段 part 的**尾块被丢**（数据出口只处理文件 sink）→ 表单字段值被截断。
+   另外两处是我的**测试写法**错：在断言消息里读 body（`Body has already been read`）、
+   用 `app.get('http')` 取端口（服务名不是 `http`，且失败后 `stop()` 会挂）。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

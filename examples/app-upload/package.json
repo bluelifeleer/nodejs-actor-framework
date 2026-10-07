@@ -1,0 +1,8 @@
+{
+  "name": "example-app-upload",
+  "private": true,
+  "type": "module",
+  "description": "示例：文件上传（流式单/多文件 + 大文件分片 + 断点续传 + sha256 校验）+ 自带前端页面",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@actor/app": "*", "@actor/resource": "*", "@actor/web": "*" }
+}

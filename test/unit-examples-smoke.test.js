@@ -161,3 +161,15 @@ test('examples: app-plugin 能启动（自定义 web 插件 + 优雅停）', asy
   assert.match(result.stdout, /listening on http:\/\//, `app-plugin 没起来：\n${result.stdout.slice(0, 400)}`);
   assert.match(result.stdout, /stopped gracefully/, 'app-plugin 没有走优雅停机');
 });
+
+test('examples: app-upload 能启动（上传插件 + 优雅停）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-app-upload-'));
+  const result = await runExample(['examples/app-upload/main.ts'], {
+    env: { APP_UPLOAD_DIR: dir },
+    readyMs: 6000,
+  });
+  assertNoCrash('examples/app-upload', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-upload 没起来：\n${result.stdout.slice(0, 400)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-upload 没有走优雅停机');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

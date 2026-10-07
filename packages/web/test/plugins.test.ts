@@ -105,7 +105,8 @@ test('web plugin: context 钩子注册成服务，并被 httpPlugin 每请求执
     provide: (name: string, value: unknown) => void services.set(name, value),
     get: <T>(name: string): T => services.get(name) as T,
   };
-  (withContext as { setup?: (app: unknown) => void }).setup?.(shell);
+  // setup 现在是 async（会先跑插件自己的 setup 再注册 context 钩子）→ 必须 await
+  await (withContext as { setup?: (app: unknown) => void | Promise<void> }).setup?.(shell);
   const hooks = services.get(WEB_CONTEXT_HOOKS_SERVICE) as readonly unknown[] | undefined;
   assert.ok(Array.isArray(hooks) && hooks.length === 1, 'context 钩子应当被注册成服务');
 

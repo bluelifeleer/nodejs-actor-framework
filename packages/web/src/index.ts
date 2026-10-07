@@ -94,3 +94,37 @@ export {
   type RouteMethod,
   type RouteIssue,
 } from './routes.ts';
+
+// --- 文件上传（M8b）--------------------------------------------------------
+export {
+  diskChunkStore,
+  memoryChunkStore,
+  runChunkStoreContract,
+  type ChunkSession,
+  type ChunkSessionStore,
+} from './upload/chunked.ts';
+
+export {
+  defineUploadStorage,
+  localDiskStorage,
+  memoryUploadStorage,
+  runUploadStorageContract,
+  type UploadStorage,
+  type UploadedFile,
+} from './upload/storage.ts';
+
+export {
+  DEFAULT_MULTIPART_LIMITS,
+  parseBoundary,
+  parseMultipart,
+  type MultipartLimits,
+  type MultipartPart,
+  type MultipartSink,
+} from './upload/multipart.ts';
+
+export {
+  STREAM_ROUTES_SERVICE,
+  UPLOAD_STORAGE_SERVICE,
+  uploadPlugin,
+  type UploadPluginOptions,
+} from './upload/plugin.ts';

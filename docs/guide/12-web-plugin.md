@@ -64,14 +64,15 @@ export const myPlugin = defineWebPlugin({
       phase: 'auth',
       handler: async (ctx, next) => {
         const who = ctx.header('x-who') ?? 'anonymous';
-        ctx.extend({ who });            // → 控制器里 ctx.who
+        ctx.extend({ who });            // 控制器里可以直接读到这个派生值
         return next();
       },
     },
   ],
 
   // ③ 路由（前缀自动套上）
-  routes: [get('/hello', defineController({ async handle(_input, ctx) { return { who: ctx.who }; } }))],
+  // 读插件自己挂的值：用 extension<T>()（带类型，比直接读 ctx 上的临时属性更好）
+  routes: [get('/hello', defineController({ async handle(_input, ctx) { return { who: ctx.extension('who') }; } }))],
 });
 ```
 

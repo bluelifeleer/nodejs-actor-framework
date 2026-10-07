@@ -26,7 +26,15 @@ export interface ControllerSpec {
   deps?: readonly string[];
   /** 控制器级中间件（在全局与路由级之后）。 */
   middleware?: readonly Middleware[];
-  /** 输入校验：复用应用层的字段描述符。键必须来自路径参数或已声明的查询参数。 */
+  /**
+   * 输入里来自**请求体**的键。
+   *
+   * 路由表校验会检查：`input` 的每个键必须是路径参数、查询参数，或者出现在这里。
+   * （这个字段一直在被 httpPlugin 使用与校验，但**类型里漏了** —— M8b 实施时我据此误判
+   * "body 是静默无效的"并删掉了它，结果启动期直接报错，才把类型补齐。）
+   */
+  body?: readonly string[];
+  /** 输入校验：复用应用层的字段描述符。键必须来自路径参数、已声明的查询参数或 `body`。 */
   input?: ConfigSchema;
   handle: (input: Record<string, unknown>, ctx: RequestContext) => unknown | Promise<unknown>;
 }
@@ -72,6 +80,8 @@ export interface DispatchOptions {
    * 每个请求在中间件之前执行，用来挂 `ctx.log` 这类派生值。
    */
   contextHooks?: readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[];
+  /** 流式路由的原始请求体（`stream: true` 的路由才有；httpPlugin 不做缓冲）。 */
+  stream?: AsyncIterable<Uint8Array>;
 }
 
 /** 派发结果：响应 + 匹配信息（后者便于 httpPlugin 写访问日志）。 */
@@ -153,6 +163,8 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     ...(options.get === undefined ? {} : { get: options.get }),
     ...(options.config === undefined ? {} : { config: options.config }),
     ...(options.log === undefined ? {} : { log: options.log }),
+    // 流式路由：把原始请求流交给 ctx（httpPlugin 对这些路由不做缓冲）
+    ...(options.stream === undefined ? {} : { stream: options.stream }),
   });
 
   // 插件贡献的上下文（每个请求执行一次；失败即 500，不静默）

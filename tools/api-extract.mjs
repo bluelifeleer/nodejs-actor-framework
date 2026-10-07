@@ -392,7 +392,14 @@ export function declaredMemberNames(declarationText) {
  */
 export function checkDocumentedMembers(docs, declarationText, options = {}) {
   const receivers = options.receivers ?? DOC_RECEIVERS;
-  const declared = declaredMemberNames(declarationText);
+  // `extraDeclared`：同名的**非内核**成员所在包的声明文本。
+  // 典型场景：文档里的 `ctx` 既可能是内核的 actor 上下文（`ctx.sleep`），
+  // 也可能是 web 的请求上下文（`ctx.header`/`ctx.extend`）—— 后者声明在 @actor/web 里，
+  // 不应该被当成"内核成员缺声明"。
+  const declared = new Set([
+    ...declaredMemberNames(declarationText),
+    ...(options.extraDeclared === undefined ? [] : declaredMemberNames(options.extraDeclared)),
+  ]);
   const missing = [];
   for (const doc of docs) {
     const codeText = doc.codeOnly === false ? doc.text : codeBlocksOf(doc.text);

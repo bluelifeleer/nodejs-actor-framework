@@ -44,6 +44,8 @@ const CORE_CONTEXT_KEYS = new Set([
 ]);
 
 export interface RequestContextInit {
+  /** 流式路由的原始请求体。 */
+  stream?: AsyncIterable<Uint8Array>;
   method: string;
   path: string;
   requestId: string;
@@ -82,6 +84,8 @@ export interface RequestContext {
   extend(values: Record<string, unknown>): void;
   /** 读扩展值（带泛型；没有就是 undefined）。 */
   extension<T = unknown>(key: string): T | undefined;
+  /** 流式路由的原始请求体（仅 `stream: true` 的路由有）。 */
+  stream?: AsyncIterable<Uint8Array>;
   /** 约定字段：由 authPlugin 写入（M8c）。 */
   user?: unknown;
   /** 约定字段：由 uploadPlugin 写入（M8b）。 */
@@ -113,6 +117,7 @@ export function createRequestContext(init: RequestContextInit): RequestContext {
     get: (init.get as RequestContext['get']) ?? (notWired('ctx.get') as RequestContext['get']),
     config: init.config ?? null,
     log: init.log ?? console,
+    ...(init.stream === undefined ? {} : { stream: init.stream }),
     state: {},
     extend(values: Record<string, unknown>): void {
       for (const [key, value] of Object.entries(values)) {

@@ -40,6 +40,8 @@ export interface WebPluginSpec {
   middleware?: readonly PhasedMiddleware[];
   /** 请求上下文扩展钩子（每个请求创建 ctx 后执行）。 */
   context?: (ctx: Record<string, unknown>) => Record<string, unknown>;
+  /** `defineWebPlugin` 内部会包一层（注册 context 钩子服务）；也可以自己写。 */
+  setup?: (app: { provide?(name: string, value: unknown): void; get?<T>(name: string): T; config: { get<T>(key: string): T } }) => void | Promise<void>;
   onReady?: (app: { provide?(name: string, value: unknown): void; get?<T>(name: string): T; config: { get<T>(key: string): T } }) => void | Promise<void>;
   onStopping?: () => void | Promise<void>;
   teardown?: () => void | Promise<void>;
@@ -95,7 +97,11 @@ export function defineWebPlugin(spec: WebPluginSpec): WebPluginSpec {
     ...spec,
     ...(routes.length === 0 ? {} : { routes }),
     // 把 context 钩子注册成服务：Web 层每请求读一次（应用层不需要知道 web 细节）
-    setup: (app: { provide?(name: string, value: unknown): void; get?<T>(name: string): T; config: { get<T>(key: string): T } }) => {
+    //
+    // ⚠️ 必须**组合**调用方自己的 `setup`，而不是覆盖它 —— 早先这里直接写了新的 setup，
+    // 于是插件（例如 uploadPlugin）自己注册的服务全部丢失，表现为运行期 500/挂起。
+    setup: async (app: { provide?(name: string, value: unknown): void; get?<T>(name: string): T; config: { get<T>(key: string): T } }) => {
+      await spec.setup?.(app);
       if (spec.context === undefined) return undefined;
       // 服务可能还没注册（app.get 对未注册的服务是**严格报错**的）→ 读不到就当空
       let existing: readonly ((ctx: Record<string, unknown>) => Record<string, unknown>)[] = [];
