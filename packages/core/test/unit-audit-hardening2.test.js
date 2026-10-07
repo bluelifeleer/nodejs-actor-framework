@@ -107,3 +107,65 @@ test('audit/framing: 分帧读取不得对每个 chunk 做 Buffer.concat（O(n²
     'framing 仍在对每个 chunk 做 Buffer.concat 累加（单帧 O(n²) 拷贝）',
   );
 });
+
+test('audit/console: 无 token 的控制台必须显式 opt-in；认证失败要有退避', async () => {
+  const net = require('node:net');
+  const { TelnetConsole } = require('../src/ops/telnet-console.ts');
+  const stubSystem = {
+    resolve: () => null,
+    spawn: async () => ({ path: 'x', id: 'x' }),
+    stats: () => ({}),
+    listActors: () => [],
+    inspect: () => ({}),
+    stop: async () => {},
+    readDeadLetters: async () => [],
+    clearDeadLetters: async () => 0,
+    connect: async () => ({}),
+  };
+
+  // 1) 回环 + 无 token：不显式 opt-in 就不许启动
+  const bare = new TelnetConsole({ host: '127.0.0.1', port: 0, token: '', context: { system: stubSystem } });
+  await assert.rejects(() => bare.listen(), /without a token|allowUnauthenticated/i);
+
+  // 2) 正确 token 必须**永远**能用（退避只惩罚失败，不能把运维一起锁在门外）
+  const console_ = new TelnetConsole({
+    host: '127.0.0.1',
+    port: 0,
+    token: 'secret-token',
+    maxAuthFailures: 2,
+    context: { system: stubSystem },
+  });
+  const port = await console_.listen();
+  const attempt = (line) =>
+    new Promise((resolve) => {
+      const socket = net.connect(port, '127.0.0.1', () => socket.write(`${line}\n`));
+      let out = '';
+      const finish = () => {
+        socket.destroy(); // 认证成功那一轮会话保持打开，不销毁会让 close() 一直等它
+        resolve(out);
+      };
+      const timer = setTimeout(finish, 5_000);
+      const done = () => {
+        clearTimeout(timer);
+        finish();
+      };
+      socket.on('data', (d) => {
+        out += d;
+        if (/authenticated/.test(out)) done(); // 成功：拿到标记就收
+      });
+      socket.on('close', done); // 失败：服务端会 end()
+      socket.on('error', done);
+    });
+  try {
+    assert.match(await attempt('auth wrong'), /authentication required/i);
+    assert.match(await attempt('auth also-wrong'), /authentication required/i);
+    // 连续失败之后，正确的 token 仍然必须被接受
+    assert.match(
+      await attempt('auth secret-token'),
+      /authenticated/,
+      '失败退避把正确的 token 也挡住了（攻击者可以借此锁死运维）',
+    );
+  } finally {
+    await console_.close().catch(() => {});
+  }
+});

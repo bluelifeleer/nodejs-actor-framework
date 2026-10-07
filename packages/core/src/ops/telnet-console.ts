@@ -136,6 +136,15 @@ interface TelnetConsoleOptions {
   host?: string;
   port?: number;
   token?: string | null;
+  /**
+   * 审计 S6：无 token 的控制台（回环地址）过去**默认就能用**，而它能在节点进程里
+   * `require()` root 内任意模块并 spawn Actor —— 同机任意进程都能借它执行代码。
+   * 现在无 token 必须显式写这一句，把"我知道这是本机信任边界"变成**写出来的决定**。
+   */
+  allowUnauthenticated?: boolean;
+  /** 认证失败几次后临时拒绝该来源（审计 S13 的退避建议），默认 5 次 / 30 秒。 */
+  maxAuthFailures?: number;
+  authLockoutMs?: number;
   maxLineBytes?: number;
   maxConnections?: number;
   context?: ConsoleContext;
@@ -152,6 +161,11 @@ class TelnetConsole {
   readonly host: string;
   port: number;
   readonly token: string | null;
+  readonly allowUnauthenticated: boolean;
+  readonly maxAuthFailures: number;
+  readonly authLockoutMs: number;
+  /** 远端地址 -> { failures, until }（认证失败退避） */
+  readonly _authFailures: Map<string, { failures: number; until: number }>;
   readonly maxLineBytes: number;
   readonly maxConnections: number;
   readonly ctx: ConsoleContext;
@@ -165,6 +179,11 @@ class TelnetConsole {
     this.host = options.host ?? (config.telnet.host as string);
     this.port = options.port === undefined ? (config.telnet.port as number) : options.port;
     this.token = options.token ?? (config.telnet.token as string | null);
+    this.allowUnauthenticated =
+      options.allowUnauthenticated === true || (config.telnet.allowUnauthenticated as boolean) === true;
+    this.maxAuthFailures = options.maxAuthFailures ?? 5;
+    this.authLockoutMs = options.authLockoutMs ?? 30_000;
+    this._authFailures = new Map();
     this.maxLineBytes = options.maxLineBytes ?? (config.telnet.maxLineBytes as number);
     this.maxConnections = options.maxConnections ?? (config.telnet.maxConnections as number);
     this.ctx = options.context ?? {};
@@ -183,13 +202,27 @@ class TelnetConsole {
     return this.ctx.system;
   }
 
-  /** 非回环地址必须配 token（控制台能 spawn/stop Actor）。 */
+  /**
+   * 非回环必须配 token；**回环上无 token 也需要显式 opt-in**（审计 S6）。
+   *
+   * 为什么连回环也要：控制台的 `spawn <path> <module>` 会在节点进程里 `require()` 该模块，
+   * 也就是"同机任意用户/进程都能在节点进程内加载代码"。回环是唯一的信任边界，那么这条边界
+   * 应当是**写出来的决定**（`allowUnauthenticated: true`），而不是默认值。
+   */
   assertSafeBinding(): void {
     const isLoopback = this.host === '127.0.0.1' || this.host === '::1' || this.host === 'localhost';
-    if (!isLoopback && !this.token) {
+    if (!this.token && !isLoopback) {
       throw new Error(
         `refusing to expose the console on ${this.host} without ACTOR_TELNET_TOKEN ` +
           '(the console can spawn and stop actors)',
+      );
+    }
+    if (!this.token && !this.allowUnauthenticated) {
+      throw new Error(
+        'refusing to start the console without a token on ' +
+          this.host +
+          ': it can require() and spawn actors inside this process. Set ACTOR_TELNET_TOKEN, ' +
+          'or pass allowUnauthenticated: true if this loopback-only console is intended.',
       );
     }
   }
@@ -251,11 +284,28 @@ class TelnetConsole {
 
     if (!session.authed) {
       const [cmd, ...rest] = trimmed.split(/\s+/);
-      if (cmd !== 'auth' || !tokenEquals(rest.join(' ').trim(), this.token)) {
-        logEvent(this.logger, 'telnet_auth_failed');
+      /**
+       * 审计 S13：认证失败只 `socket.end()`，但可以高速重连暴力尝试。这里按来源地址计数，
+       * 连续失败超过阈值就临时拒绝（退避窗口过后自动放行）。
+       */
+      const remote = String(socket.remoteAddress ?? 'unknown');
+      const correctlyAuthed = cmd === 'auth' && tokenEquals(rest.join(' ').trim(), this.token);
+      if (!correctlyAuthed) {
+        /**
+         * 审计 S13：认证失败要有退避。**但正确 token 永远放行** ——
+         * 我第一版做成"失败到阈值就临时封禁来源地址"，结果连管理员一起挡住（攻击者只要
+         * 故意失败几次就能把运维锁在门外）。所以这里改成"只惩罚失败：按失败次数增加延迟"，
+         * 合法认证路径完全不受影响。
+         */
+        const failures = (this._authFailures.get(remote)?.failures ?? 0) + 1;
+        this._authFailures.set(remote, { failures, until: 0 });
+        const delayMs = Math.min(failures * 200, 2000);
+        logEvent(this.logger, 'telnet_auth_failed', { remote, failures, delayMs });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
         socket.end('ERR: authentication required (auth <token>)\n');
         return;
       }
+      this._authFailures.delete(remote); // 成功即清零
       session.authed = true;
       socket.write('authenticated\n> ');
       return;

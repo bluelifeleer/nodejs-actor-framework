@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, waitFor } = _helpers;
+// 审计说明：ws-server/token 不在内核公开面，刻意深引用（本用例测的是接入层参考实现）
 import _ws_server from '../packages/core/src/ops/ws-server.ts';
 const { connect } = _ws_server;
 import _token from '../packages/core/src/ops/token.ts';

@@ -107,6 +107,8 @@ function build(overrides: ConfigOverrides = {}) {
 
     // --- Telnet debug console --------------------------------------------
     telnet: {
+      // 审计 S6：无 token 的控制台（回环）必须显式许可，见 ops/telnet-console.ts
+      allowUnauthenticated: readBoolean('ACTOR_TELNET_ALLOW_UNAUTHENTICATED', false),
       enabled: readBoolean('ACTOR_TELNET_ENABLED', true),
       // Loopback by default: the console can hot-replace actor code.
       host: readString('ACTOR_TELNET_HOST', '127.0.0.1'),

@@ -8,6 +8,7 @@ import assert from 'node:assert';
 import http from 'node:http';
 import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, waitFor } = _helpers;
+// 审计说明：MetricsExporter 不在内核公开面（属于内部实现），所以这里刻意深引用
 import MetricsExporter from '../packages/core/src/obs/metrics-exporter.ts';
 import _metrics_exporter from '../packages/core/src/obs/metrics-exporter.ts';
 const { renderFamilies, escapeLabelValue, formatValue } = _metrics_exporter;

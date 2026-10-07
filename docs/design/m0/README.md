@@ -106,3 +106,14 @@ M0.1 工具链
 | 子路径导出 | `@actor/core/ops`、`@actor/core/obs` 等（现在类型测试用显式 `src/...js` 路径绕开） |
 | 加载面瘦身（M0.4） | 当前 `require('nodejs-actor-framework')` 仍加载 **32** 个模块（含全部插件/cluster/obs），目标 ≤ 15 |
 | 插件拆包（M1） | `plugins/**` 目前仍在 core 包内 |
+
+## 审计后的如实记录（2026-10-07）
+
+审计实测：`require('nodejs-actor-framework')` 之后仍会加载 **37 个** core 模块（E4 的目标是 ≤15）——
+第 ① 项"公共面瘦身"（`index.ts` 里 eager `require('./plugins/index.ts')`）**尚未完成**，③④⑤⑥
+（中间件 / schema 校验 / 可换调度器·邮箱·监督策略注册表 / readiness·liveness）也**没做**。
+
+为什么没有在修复轮里直接做：这几项都是**对外行为的 breaking 变更**（改导出方式、改加载面、
+新增原语），设计文档自己也写着"需要单独确认"（`docs/design/06-roadmap-and-nongoals.md`）。
+按"先审计、别顺手改架构"的原则，这里**如实记为待排期**，并给出验收方式（E4：`require` 后模块数 ≤15
+的自动化门禁；E5：隐藏 `node_modules` 后只装 core 跑单测）。

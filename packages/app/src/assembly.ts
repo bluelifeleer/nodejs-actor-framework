@@ -69,6 +69,17 @@ export interface ActorSpec {
 
 export interface PluginSpec {
   name: string;
+  /**
+   * 依赖的**插件能力名**（`name` 或别的插件 `provides` 出来的名字）。
+   *
+   * 审计（里程碑 M1）：`definePlugin` 一直没有 `requires`/`provides`，于是"插件依赖成环时启动失败
+   * 并打印环"这条验收根本没实现（当时只有 **provider/DI** 级的环检测）。现在两者都有。
+   */
+  requires?: readonly string[];
+  /** 除 `name` 之外额外提供的能力名（给"同一实现提供多个能力"留口子）。 */
+  provides?: readonly string[];
+  /** 依赖该插件的其它插件必须先于它 setup；声明顺序不再重要（会被拓扑排序）。 */
+  description?: string;
   /** 插件自己的配置 schema：会被合并进应用配置的 `plugins.<name>.*` 下（一套配置体系）。 */
   config?: ConfigSchema;
   /**
@@ -328,6 +339,12 @@ export class Application {
     }
     if (issues.length > 0) throw new AssemblyError(issues);
 
+    // 1b) 插件依赖图：未知依赖 + 循环依赖（审计 M1：这条验收过去根本没实现）
+    const orderedPlugins = this.orderPlugins(this.pluginSpecs, issues);
+    this.pluginSpecs.length = 0;
+    this.pluginSpecs.push(...orderedPlugins);
+    if (issues.length > 0) throw new AssemblyError(issues);
+
     // 2) 配置：插件 schema 合并进应用 schema，走同一套加载/校验/环境变量机制
     const baseSchema = (this.spec.config?.schema ?? {}) as ConfigSchema;
     const definition = defineConfig(mergePluginSchemas(baseSchema, this.pluginSpecs));
@@ -488,6 +505,46 @@ export class Application {
       }
       if (mod.imports) this.collect(mod.imports, issues);
     }
+  }
+
+  /**
+   * 插件依赖图：校验 `requires` 都能被某个插件的 `name`/`provides` 满足，按依赖顺序拓扑排序，
+   * 并在成环时打印**环本身**（`a -> b -> a`），与 provider 的循环依赖错误同一风格。
+   */
+  private orderPlugins(plugins: readonly PluginSpec[], issues: AssemblyIssue[]): PluginSpec[] {
+    const byCapability = new Map<string, PluginSpec>();
+    for (const plugin of plugins) {
+      byCapability.set(plugin.name, plugin);
+      for (const capability of plugin.provides ?? []) {
+        if (!byCapability.has(capability)) byCapability.set(capability, plugin);
+      }
+    }
+    const ordered: PluginSpec[] = [];
+    const state = new Map<string, 'visiting' | 'done'>();
+    const visit = (plugin: PluginSpec, stack: readonly string[]): void => {
+      const current = state.get(plugin.name);
+      if (current === 'done') return;
+      if (current === 'visiting') {
+        issues.push({ message: `插件循环依赖: ${[...stack, plugin.name].join(' -> ')}`, requester: '(app.plugins)' });
+        return;
+      }
+      state.set(plugin.name, 'visiting');
+      for (const requirement of plugin.requires ?? []) {
+        const provider = byCapability.get(requirement);
+        if (provider === undefined) {
+          issues.push({
+            message: `插件 '${plugin.name}' 依赖未知能力 '${requirement}'`,
+            requester: '(app.plugins)',
+          });
+          continue;
+        }
+        visit(provider, [...stack, plugin.name]);
+      }
+      state.set(plugin.name, 'done');
+      if (!ordered.includes(plugin)) ordered.push(plugin);
+    };
+    for (const plugin of plugins) visit(plugin, []);
+    return ordered;
   }
 
   private resolveProvider(

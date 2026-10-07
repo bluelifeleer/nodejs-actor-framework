@@ -233,3 +233,13 @@ cluster.remoteActors();     // 已发现的远端 Actor；peers() 看对端是�
 | W4 | 路由声明位置 | ① `defineModule({ routes })` ② 只放 `defineApp({ routes })` | **①**（与 actors/providers 对称） |
 | W5 | WebSocket 时机 | ① M2 内紧随 HTTP ② 独立里程碑 | **①**（内核已有 ws-server，接入层示例已存在） |
 | W6 | 服务器实现 | `node:http` 零依赖 | **零依赖**（与内核的取向一致，不引 express/fastify） |
+
+## 审计后的如实记录（2026-10-07）
+
+两条验收的覆盖情况：
+
+- ✅ "同进程部署下控制器零改动"：有端到端用例（HTTP 走通、错误映射逐条）。
+- ⚠️ "接入层进程 + 节点（`examples/access-node.js`）这一部署下控制器代码零改动"：**没有直接断言**。
+  现有覆盖是两块拼起来看：`test/integration-cluster-access.test.js` 测**裸内核**接入层（token/路由/回推），
+  `packages/web/test/cluster-location-transparency.test.ts` 测"控制器在 B、Actor 在 A"（真两节点）。
+  **把两者合成一个"接入层进程 + web 控制器"的用例**需要起独立进程，属于新工作，如实记在这里。

@@ -20,8 +20,8 @@
 | 步 | 内容 | 验收（可跑） | 状态 |
 |---|---|---|---|
 | **1** | **一致性哈希环 + 所有权计算**：纯函数、确定性、虚拟节点；`ownerOf(actorPath)`；成员变更只影响变更点区间 | 同一成员视图下**所有节点算出同一 owner**；增删一个成员只迁移 ≈1/N 的 shard（迁移量可测） | ⏳ |
-| 2 | **所有权守卫 + fencing token**：`shardEpoch`；跨节点消息带 epoch；接收端拒绝旧 epoch（"旧 owner 说的话不算数"） | 旧 epoch 的消息**必被拒**（fencing 测试） | ✅ 2a 完成（§3.3）；2b 接网关待做 |
-| 3 | **优雅交接**：冻结 → 排空 → 导出（快照 + 事件 offset）→ 在新 owner 上恢复 → epoch+1 → 释放；幂等可重试 | 3 节点：下线一个节点，它的 shard 全部交接**且无消息丢失**（有测试） | — |
+| 2 | **所有权守卫 + fencing token**：`shardEpoch`；跨节点消息带 epoch；接收端拒绝旧 epoch（"旧 owner 说的话不算数"） | 旧 epoch 的消息**必被拒**（fencing 测试） | ✅ 完成（§3.3 + §3.4.5；网关侧也有 `unit-gateway-fencing` 端到端用例） |
+| 3 | **优雅交接**：冻结 → 排空 → 导出（快照 + 事件 offset）→ 在新 owner 上恢复 → epoch+1 → 释放；幂等可重试 | 3 节点：下线一个节点，它的 shard 全部交接**且无消息丢失**（有测试） | ✅ 完成（`integration-cluster-governance` / `integration-cluster-fencing`；**仅优雅 drain**，崩溃路径不交接，见指南 05） |
 | 4 | **Singleton**：`shardCount = 1` 的特例 + 接管延迟语义（尽力而为的单例，不是分布式锁） | 全集群唯一 owner；owner 下线后新 owner 接管（有测试） | ✅ §5.5 |
 | 5 | **少数派拒写 + 脑裂边界**：多数派判据 + 503 + 重试提示；文档写清质量等级 | 少数派拒写、多数派继续服务（有测试） | ✅ §5.6 |
 | 6 | **可迁移性声明 + 指标**：`transferable: false` 的 Actor 在下线时**明确失败**（不假装能迁 socket）；所有权/迁移进 metrics | 不可迁移 Actor 给出明确错误；指标可见 | ✅ §5.7 |

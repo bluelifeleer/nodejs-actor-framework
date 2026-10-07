@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createSystem } from 'nodejs-actor-framework';
-import { FilePersistence } from 'nodejs-actor-framework/src/store/persistence.ts';
+import { FilePersistence } from 'nodejs-actor-framework'; // 公开面成员，从包根导入
 
 import {
   createEventEnvelope,

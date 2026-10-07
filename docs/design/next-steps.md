@@ -3,8 +3,8 @@
 > 快照时间：本次会话结束时。所有数字均为**实测**（`npm test` / `npm run typecheck` / `find`）。
 >
 > ⚠️ **这是历史基线**（M2/M2.5 之前）。后续里程碑已落地，当前实测：
-> `npm test` → **353 / 353 通过**、`npm run typecheck` → **0 错误**、core `src` 共 **52 个 `.ts`**
-> （其中 **43 个**仍带 `@ts-nocheck`，9 个已进入严格检查）。下方 §1–§2 的 ESM 前置决策与
+> 当时的快照：`npm test` → **353 / 353 通过**（**现在 630+**，本文件下面的数字都按当时记录读）、`npm run typecheck` → **0 错误**、core `src` 共 **52 个 `.ts`**
+> （当时其中 **43 个**仍带 `@ts-nocheck`；**现在内核已 0 个**，全部进入严格检查。）下方 §1–§2 的 ESM 前置决策与
 > §3 的待办清单**仍然有效**，只是测试基数已从 281 涨到 353。
 
 ## 0. 当前状态（可作为基线）
@@ -14,7 +14,7 @@
 | 测试 | **281 / 281 通过**，0 失败 |
 | 类型门 | `npm run typecheck` → **0 错误**（严格；覆盖声明面 + `config.ts`、`obs/alerting.ts`、`ops/token.ts`、`ops/ws-server.ts`） |
 | 模块体系 | **单一 CJS `.ts`**：`packages/core/src` 47 个 `.ts`，0 个 `.mts` |
-| 包入口 | `main: src/index.ts`（Node 直接跑，**零构建**）；`index.mjs` 给 ESM 消费者提供 30 个具名导出（实测 30/30、身份一致） |
+| 包入口 | `main: src/index.ts`（Node 直接跑，**零构建**）；`index.mjs` 给 ESM 消费者提供具名导出（当时 30 个，**现在 34 个**且由公开面门禁核对） |
 | 依赖 | 运行时**零依赖**；`classic-level` 为可选（缺省时 level 相关用例跳过） |
 | 打包 | `npm pack` core = 55 文件；已实测：装进临时工程后 `require` + `createSystem` + `spawn` + `ask` 可用 |
 | 示例 | 游戏服务器 / 接入层（WSS+token）/ 多节点房间分片 / 告警规则 全部可跑 |

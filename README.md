@@ -194,6 +194,10 @@ const system = createSystem({
 
 - **不装插件 = 零开销**：Actor 热路径上只有几个 `if (this.system.tracer)` 之类的判断，没有插件时不创建 trace、不建令牌桶、死信留在内存。
 - **同步 API 不变**：`resolve()` 仍是同步的；`cluster` 返回的 `DiscoveredRef` 在首次使用时才连接（真正的连接失败会在 `ask` 上抛出，`tell` 则会发 `remote_tell_failed` 事件）。
+- **`ACTOR_TLS_VERIFY_NODE_ID=0` 会关掉"证书 CN ↔ nodeId"绑定**：持有**任一**合法证书的对端就能冒充别的 nodeId
+  （`tls-util.ts` 头部注释承诺的"合法证书也不能冒充"正是被这个开关关掉的）。它只应在滚动升级窗口内临时使用；
+  启动时会记一条 `tls_node_id_verification_disabled`。同时 `requestCert=0` + `verifyNodeId=0` 的组合会被**拒绝启动**
+  （那是"TLS 开着却零客户端认证"）。
 - **监督配额是"整系统共享"的**：窗口内所有顶层 Actor 的崩溃一起计数（与 OTP 的 `max_restarts/max_seconds` 同语义），
   超过就升级为 `system.stop()`。可用 `createSystem({ supervision: { maxRestarts, withinSeconds } })` 调；
   需要"每个 Actor 各自记账"请在自己的 supervisor 里做（内核不提供）。

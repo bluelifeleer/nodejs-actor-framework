@@ -30,9 +30,9 @@ function makeApp(routes: ReturnType<typeof defineRoutes>, extra = {}) {
   return { app, plugin };
 }
 
-// TODO(M2)：这两个用例当前失败，原因未定位（现象：测试失败后进程因服务端句柄未退出而不打印汇总，
-// 失败详情因此被截断）。实现本身已通过类型检查、listen 已确认可达（日志有 listening 输出）。
-// 下一轮第一件事：用 `--test-reporter=tap` 抓到真实断言/异常信息再修，不要凭推测改实现。
+// 说明（历史）：这里曾经挂着一条 TODO，写着"这两个用例当前失败、原因未定位"。
+// 审计核实它们**早已通过**（`node --test packages/web/test/http.test.ts` → 2/2），
+// 那条注释会让下一个人去修一个不存在的问题 —— 过时注释比没有注释更糟，所以删掉、只留下这段记录。
 test('http: 真实请求走通（200 JSON / 404 / 405 带 Allow），start() 返回即端口就绪', async () => {
   const { app, plugin } = makeApp(
     defineRoutes([

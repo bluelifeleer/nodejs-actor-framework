@@ -203,6 +203,8 @@ async function bootstrap(overrides = {}) {
     console_ = new TelnetConsole({
       host: cfg.telnet.host,
       port: cfg.telnet.port,
+      // 审计 S6：无 token 的控制台必须显式许可（配置里写 ACTOR_TELNET_ALLOW_UNAUTHENTICATED=1）
+      allowUnauthenticated: cfg.telnet.allowUnauthenticated,
       token: cfg.telnet.token,
       maxLineBytes: cfg.telnet.maxLineBytes,
       maxConnections: cfg.telnet.maxConnections,

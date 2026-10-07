@@ -4,6 +4,7 @@ import _helpers from '../packages/core/test/helpers.js';
 const { setupTempEnv, cleanup, telnet, telnetRaw } = _helpers;
 import _actor_main from '../actor-main.js';
 const { bootstrap } = _actor_main;
+// 审计说明：TelnetConsole 不在内核公开面（ops 是内部模块），刻意深引用
 import _telnet_console from '../packages/core/src/ops/telnet-console.ts';
 const { TelnetConsole } = _telnet_console;
 
@@ -34,13 +35,13 @@ before(async () => {
   // degradation and auth, and four exporters + gossip nodes make the suite slow
   // enough to be flaky under load.
   const light = {
-    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null },
+    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null, allowUnauthenticated: true },
     metrics: { exporter: { enabled: false } },
     bootActors: [],
   };
 
   ctx = await bootstrap({
-    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null },
+    telnet: { enabled: true, port: 0, host: '127.0.0.1', token: null, allowUnauthenticated: true },
     metrics: { exporter: { enabled: true, host: '127.0.0.1', port: 0 } },
     bootActors: ['player_001'],
     nodeId: 'console-node',
@@ -224,10 +225,24 @@ test('console: dlq commands report and clear dead letters', async () => {
   }, { id: 'console-flaky', failure: 'retry', maxRetry: 0 });
   await assert.rejects(() => flaky.ask('x'), /console dlq failure/);
 
-  assert.match(await run('dlq size'), /DLQ size:1/);
+  /**
+   * 死信落盘是异步的（actor_cell -> system._deadLetter -> 队列 append），所以这里必须**轮询等它到**
+   * 而不是"立刻查一次" —— 审计里那条"这类用例在负载下会抖"讲的就是这种等待。
+   */
+  const sizeSeen = async (expected, timeoutMs = 10_000) => {
+    const deadline = Date.now() + timeoutMs;
+    let last = '';
+    while (Date.now() < deadline) {
+      last = await run('dlq size');
+      if (new RegExp(`DLQ size:${expected}`).test(last)) return last;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return last;
+  };
+  assert.match(await sizeSeen(1), /DLQ size:1/);
   assert.match(await run('dlq list'), /console-flaky/);
   assert.match(await run('dlq clear'), /DLQ cleared/);
-  assert.match(await run('dlq size'), /DLQ size:0/);
+  assert.match(await sizeSeen(0, 3_000), /DLQ size:0/);
   await flaky.stop();
 });
 

@@ -4,8 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createSystem } from 'nodejs-actor-framework';
-import { FilePersistence } from 'nodejs-actor-framework/src/store/persistence.ts';
+import { createSystem, FilePersistence } from 'nodejs-actor-framework'; // FilePersistence 本来就在公开面
 import { createApp, defineApp, defineModule } from '@actor/app';
 
 import { createEventEnvelope, defineAggregate, defineEventSchema, type AggregateEvent } from '../src/index.ts';

@@ -28,6 +28,8 @@ const ROOT = path.join(import.meta.dirname, '..');
  * 返回 { code, signal, stdout, stderr, exitedEarly }。
  */
 function runExample(args, { env = {}, readyMs = 6000, killMs = 6000 } = {}) {
+  // 说明：readyMs 是"还活着就发 SIGTERM"的时刻，killMs 是"再给它多久优雅退出"。
+  // 这两个值刻意给得宽松 —— 门禁要的是"不崩、能收尾"，不是"多快"。
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, {
       cwd: ROOT,
@@ -70,7 +72,9 @@ function assertNoCrash(label, result) {
 }
 
 test('examples: alerts.mjs 能跑完并自行结束（README 说"完整示例：node examples/alerts.mjs"）', async () => {
-  const result = await runExample(['examples/alerts.mjs'], { readyMs: 30000 });
+  // 宽限到 60s：这条是**冒烟**门禁（"起得来/跑得完"），不是性能门禁。
+// 满负载下这个示例（有固定的演示时长）实测会逼近 10s，30s 会被别的一起跑的测试挤爆。
+  const result = await runExample(['examples/alerts.mjs'], { readyMs: 60000, killMs: 15000 });
   assertNoCrash('examples/alerts.mjs', result);
   assert.strictEqual(result.code, 0, `alerts.mjs 退出码 ${String(result.code)}：\n${result.stderr.slice(0, 400)}`);
   assert.match(result.stdout, /演示结束/, 'alerts.mjs 没有跑到结束');
