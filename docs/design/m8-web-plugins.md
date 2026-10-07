@@ -195,6 +195,32 @@ export function runMailTransportContract(...): void;                      // 契
    - `GET /__debug/config`（**只出 schema 与"已设置"标记，值打码**）
 4. 已有的 `http:error` 事件直接进日志；**5xx 永远带 requestId 记明细**。
 
+## 8.5 实施进度
+
+### M8a0（已完成）：抽 `@actor/resource`
+
+- 新建 `packages/resource`（`@actor/resource`，零运行时依赖）：通用层搬过来 ——
+  错误基类（`ResourceError`/`DriverMissingError`/`ResourceConfigError`/`ResourceConnectionError`/
+  `ResourceNotConnectedError`/`ResourceUnavailableError`）、驱动解析（`createAppRequire`/`loadDriverModule`/
+  `DriverResolver`）、连接形状与池参数（`BaseConnection`/`PoolOptions`/`mapPoolOptions`）、
+  适配器契约（`ResourceAdapter`/`ManagedConnection`/`AdapterConnectInput`/`defineResourceAdapter`/
+  `defineManagedResource`）、连接管控（`supervise` + 事件 + drain + 快速失败）、应用接线
+  （`resourceAdapter()`）、契约套件（`runManagedResourceContract`/`realResourceUrl`/`testWithResource`）。
+- **兼容策略：别名 + 保形**（这是本期的关键纪律）：
+  - `@actor/db-core` 的 `errors.ts`/`resolve.ts`/`adapter.ts`/`managed.ts`/`plugin.ts`/`testing.ts`
+    全部变成**再导出 shim**，运行时导出集合与名字**一个不少**；`Row`/`Runner`/`DriverPool`/`DriverFactory`
+    （SQL 形状）与 `DbConflictError`/`DbNotFoundError`（实体语义）留在 db-core；
+  - 别名是**同一个对象**（`databaseAdapter === resourceAdapter`、`DbError === ResourceError`、
+    `runManagedConnectionContract === runManagedResourceContract`），有断言钉住；
+  - **`name`/`code`/消息文案全部保持搬迁前形态**（`DbError` / `DB_CONFIG_INVALID` …）—— 实施中发现
+    "错误的 `name` 也是对外行为"（既有测试断言 `err.name === 'DbDriverMissingError'`），所以泛型类仍然
+    报历史名字，只把它们当作类型层的别名；`ResourceNotConnectedError` 的默认参数与文案也一并保形。
+- `@actor/redis` / `@actor/mongodb` 依赖从 `@actor/db-core` 改为 `@actor/resource`（它们只用通用层）；
+  `@actor/db` 不变（仍依赖 db-core 拿 SQL 形状）。
+- 矩阵：`packages/resource` 进 `npm test` 工作区矩阵、`tsconfig.json` include、`tools/docs-site.mjs` PACKAGES；
+  自带公开面门禁（含证伪）；通用层测试（managed/plugin/real-db-helpers/kind-gate）随包搬到 `packages/resource/test/`。
+- **验证**：全量 **850/850**（833 pass / 0 fail / 17 skipped）、typecheck 0、文档站 46 页；db-core 运行时导出数不变。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

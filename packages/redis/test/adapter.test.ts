@@ -7,7 +7,7 @@ import {
   supervise,
   type ContractResourceFactory,
   type DriverResolver,
-} from '@actor/db-core';
+} from '@actor/resource';
 
 import { describeRedis, parseRedisUrl, redisAdapter, resolveRedisDriver } from '../src/index.ts';
 import { createFakeStore, type FakeStore } from './fake-store.ts';

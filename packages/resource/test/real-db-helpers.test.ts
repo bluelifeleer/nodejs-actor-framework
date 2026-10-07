@@ -15,7 +15,7 @@ import { realDatabaseUrl, testWithDatabase } from '../src/index.ts';
  * 没设时必须注册成**显式 skip**（输出里有 `skipped 1`），不许静默变绿。
  */
 const ROOT = path.join(import.meta.dirname, '..', '..', '..');
-const CORE_URL = pathToFileURL(path.join(ROOT, 'packages', 'db-core', 'src', 'index.ts')).href;
+const CORE_URL = pathToFileURL(path.join(ROOT, 'packages', 'resource', 'src', 'index.ts')).href;
 
 function runFixture(env: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'real-db-fixture-'));

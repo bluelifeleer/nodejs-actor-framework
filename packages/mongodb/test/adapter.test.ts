@@ -7,7 +7,7 @@ import {
   supervise,
   type ContractResourceFactory,
   type DriverResolver,
-} from '@actor/db-core';
+} from '@actor/resource';
 
 import { defineCollection, describeMongo, mongoAdapter, mongoPoolOptions, parseMongoUrl, resolveMongoDriver } from '../src/index.ts';
 import { createFakeMongoDriver, type FakeMongoDriver } from './fake-mongo-driver.ts';

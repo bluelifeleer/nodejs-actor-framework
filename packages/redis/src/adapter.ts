@@ -3,7 +3,7 @@ import {
   type BaseConnection,
   type DatabaseAdapter,
   type ManagedConnection,
-} from '@actor/db-core';
+} from '@actor/resource';
 
 import { DEFAULT_REDIS_DRIVER, resolveRedisDriver, type RedisDriverName } from './adapters/index.ts';
 import { createKeyValueClient, type KeyValueClient, type KeyValueOptions } from './client.ts';

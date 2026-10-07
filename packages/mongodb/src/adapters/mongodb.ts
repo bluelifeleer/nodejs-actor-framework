@@ -1,4 +1,4 @@
-import { DbConnectionError, type PoolOptions } from '@actor/db-core';
+import { DbConnectionError, type PoolOptions } from '@actor/resource';
 
 import type { MongoDriverHandle, MongoNativeDb } from '../client.ts';
 

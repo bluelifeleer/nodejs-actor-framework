@@ -7,7 +7,7 @@
  *   - 逃生通道永远留着：`command(args)` 发任意命令、`raw` 直接拿原生客户端；
  *   - **不做**"假装完备"的 Redis ORM。
  */
-import { DbConfigError, type PoolOptions } from '@actor/db-core';
+import { DbConfigError, type PoolOptions } from '@actor/resource';
 
 /** 驱动句柄：两个驱动各自的实现都归一到这个形状。 */
 export interface RedisDriverHandle {

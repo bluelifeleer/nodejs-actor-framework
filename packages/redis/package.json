@@ -19,6 +19,6 @@
     "adapter"
   ],
   "dependencies": {
-    "@actor/db-core": "*"
+    "@actor/resource": "*"
   }
 }

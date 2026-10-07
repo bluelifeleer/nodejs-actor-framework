@@ -17,5 +17,8 @@
     "database",
     "adapter",
     "connection-pool"
-  ]
+  ],
+  "dependencies": {
+    "@actor/resource": "*"
+  }
 }

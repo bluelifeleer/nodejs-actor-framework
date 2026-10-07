@@ -2,7 +2,7 @@
  * `@actor/redis` 的手写声明面（与 src/index.ts 的运行时导出一一对应，由门禁测试盯着）。
  * 设计见 docs/design/m7-multi-database.md。
  */
-import type { BaseConnection, DatabaseAdapter, PoolOptions } from '@actor/db-core';
+import type { BaseConnection, DatabaseAdapter, PoolOptions } from '@actor/resource';
 
 // --- 驱动与连接 -------------------------------------------------------------
 export type RedisDriverName = 'redis' | 'ioredis';

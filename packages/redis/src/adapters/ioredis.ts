@@ -1,4 +1,4 @@
-import { DbConnectionError } from '@actor/db-core';
+import { DbConnectionError } from '@actor/resource';
 
 import type { RedisConnectInput, RedisDriverHandle } from '../client.ts';
 

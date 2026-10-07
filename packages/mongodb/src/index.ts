@@ -5,7 +5,7 @@
  *
  * ```ts
  * import { mongoAdapter, defineCollection } from '@actor/mongodb';
- * import { supervise } from '@actor/db-core';
+ * import { supervise } from '@actor/resource';
  *
  * const Event = defineCollection({
  *   name: 'events',

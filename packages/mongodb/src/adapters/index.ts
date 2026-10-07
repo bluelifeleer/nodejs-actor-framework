@@ -1,4 +1,4 @@
-import { DbConfigError } from '@actor/db-core';
+import { DbConfigError } from '@actor/resource';
 
 import type { MongoDriverHandle } from '../client.ts';
 import { createMongoHandle, mongoPoolOptions, type MongoConnectInput } from './mongodb.ts';

@@ -1,4 +1,4 @@
-import { DbConfigError } from '@actor/db-core';
+import { DbConfigError } from '@actor/resource';
 
 /**
  * `defineCollection`：把"集合/字段/索引/validator"声明出来，框架据此

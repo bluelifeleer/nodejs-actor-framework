@@ -1,0 +1,12 @@
+{
+  "name": "@actor/resource",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "受管资源契约与连接管控（连接/健康检查/保活/重连事件/drain/关闭）—— 与具体中间件无关，零运行时依赖",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "files": ["src"],
+  "engines": { "node": ">=24" },
+  "keywords": ["actor", "resource", "adapter", "connection-pool", "lifecycle"]
+}

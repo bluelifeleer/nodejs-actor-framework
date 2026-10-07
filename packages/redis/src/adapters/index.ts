@@ -1,4 +1,4 @@
-import { DbConfigError } from '@actor/db-core';
+import { DbConfigError } from '@actor/resource';
 
 import type { RedisConnectInput, RedisDriverHandle } from '../client.ts';
 import { createIoredisHandle, resolveIoredisConstructor } from './ioredis.ts';

@@ -6,7 +6,7 @@ import {
   runManagedConnectionContract,
   supervise,
   type ContractResourceFactory,
-} from '@actor/db-core';
+} from '@actor/resource';
 
 import { redisAdapter } from '../src/index.ts';
 

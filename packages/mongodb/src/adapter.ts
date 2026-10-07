@@ -3,7 +3,7 @@ import {
   type BaseConnection,
   type DatabaseAdapter,
   type ManagedConnection,
-} from '@actor/db-core';
+} from '@actor/resource';
 
 import { DEFAULT_MONGO_DRIVER, resolveMongoDriver, type MongoDriverName } from './adapters/index.ts';
 import { createDocumentClient, type DocumentClient } from './client.ts';

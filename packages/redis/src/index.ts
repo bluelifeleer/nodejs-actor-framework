@@ -5,7 +5,7 @@
  *
  * ```ts
  * import { redisAdapter } from '@actor/redis';
- * import { supervise } from '@actor/db-core';
+ * import { supervise } from '@actor/resource';
  *
  * const cache = supervise(redisAdapter({ driver: 'ioredis', prefix: 'app:' }), {
  *   connection: { url: 'redis://127.0.0.1:6379/0' },
