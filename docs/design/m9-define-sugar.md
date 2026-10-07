@@ -161,6 +161,17 @@ defineUploadStorage defineWebPlugin
 修法（比"事后检测"彻底）：把这类框架内部槽改成**不可能被撞的键**（如 `ctx.state['@actor/route']`，或干脆用 symbol），
 同时把保留键清单补全（`route` 先兜底进 `CORE_CONTEXT_KEYS`）。
 
+**②的实际缺口（已核实，避免重复造门禁）**：
+
+- **service 名这一半已经有人管**：`packages/app/src/assembly.ts` 里 `app.provide` 重复注册会**抛错**
+  （"服务 'x' 被重复注册"），内置插件也只提供 `httpServer` / `wsConnections` 两个名字
+  → 所以"服务名撞保留名"这件事**已经是响亮失败**，不需要再加一层；
+- **只剩"路由前缀"这一半**：内置插件占用的前缀（`/uploads`、`/__debug`，以及 ws 的升级路径）
+  与用户插件/路由撞车时，目前**没有专门校验**（路由表检查的是模式重复，不是"与框架保留前缀撞车"）。
+  这一半才需要做，且做法与 M9b 的能力闭包同构：**单一来源清单 + 一致性门禁** ——
+  `@actor/web` 导出 `RESERVED_ROUTE_PREFIXES`，并有一条测试断言"内置插件实际占用的前缀 ⊆ 这份清单"
+  （否则清单会与实现分叉），然后在装配期对撞车**明确报错**（延续"响亮失败优于静默覆盖"）。
+
 **②的落地形态**：
 - `@actor/web` / `@actor/app` 导出**单一来源**的保留名常量（`RESERVED_CONTEXT_KEYS` / `RESERVED_SERVICE_NAMES` /
   `RESERVED_ROUTE_PREFIXES`），文档与门禁都读它；
