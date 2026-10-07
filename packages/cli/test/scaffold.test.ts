@@ -122,6 +122,45 @@ test('scaffold: --web-plugins 生成片段 + 桶文件，且生成的项目里�
   }
 });
 
+test('scaffold: --with 追加能力（闭包写进 package.json，片段自带冒烟测试）', async () => {
+  const dir = tempDir('with-redis');
+  try {
+    const result = await newApp(dir, { capabilities: ['redis'] });
+    assert.deepStrictEqual(result.capabilities, ['redis']);
+    assert.ok(result.files.includes('src/plugin/redis.ts'), `缺 redis 片段：${result.files.join(', ')}`);
+    // 闭包：redis 片段会 import @actor/resource，所以生成的项目必须**声明**它（不能指望传递依赖被提升）
+    assert.ok(result.packages.includes('@actor/redis'));
+    assert.ok(result.packages.includes('@actor/resource'), `闭包应当带 resource：${result.packages.join(', ')}`);
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+    assert.ok(pkg.dependencies['@actor/redis'] && pkg.dependencies['@actor/resource'], JSON.stringify(pkg.dependencies));
+
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.APP_REDIS_URL;
+    const { stdout } = await run('npm', ['test'], { cwd: dir, timeout: 120_000, env });
+    assert.match(stdout, /pass 5/, `api 4 + redis 1 = 5 条应当全过：\n${stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('scaffold: --with mail（fileTransport 离线可跑）；还没实现片段的能力明确拒绝', async () => {
+  const dir = tempDir('with-mail');
+  try {
+    const result = await newApp(dir, { capabilities: ['mail'] });
+    assert.ok(result.files.includes('src/plugin/mail.ts'));
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const { stdout } = await run('npm', ['test'], { cwd: dir, timeout: 120_000, env });
+    assert.match(stdout, /pass 5/, `api 4 + mail 1 = 5 条应当全过：\n${stdout}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  // db/mongodb 的片段还没实现 → **明确报错**（不生成一半、也不静默少给）
+  await assert.rejects(() => newApp(tempDir('with-db'), { capabilities: ['db'] }), /片段还没实现：db/);
+  await assert.rejects(() => newApp(tempDir('with-bad'), { capabilities: ['nope' as never] }), /未知能力 'nope'/);
+});
+
 test('scaffold: 没选能力时桶文件为空；flat 布局下 --web-plugins 明确拒绝（不静默忽略）', async () => {
   const plain = await newApp(tempDir('web-plugins-none'));
   assert.deepStrictEqual(plain.webPlugins, []);

@@ -98,6 +98,22 @@ actor new app my-app --web-plugins upload,auth     # 文件上传 + 鉴权
 
 flat 布局不支持 `--web-plugins`（桶文件是 layered 的机制），会**明确报错**而不是静默忽略。
 
+### 追加能力：`--with redis,mail`
+
+```bash
+actor new app my-app --with redis,mail     # 基础模板（web + data）+ 追加 Redis 与邮件
+```
+
+- 依赖**按闭包**写进生成项目的 `package.json`（含传递包，例如 redis 片段会用 `@actor/resource`）——
+  不指望"传递依赖恰好被提升到顶层"；
+- 每个能力是一个片段，自带**一条冒烟测试**；服务类能力**按 env 门控**：
+  | 能力 | 默认行为 |
+  |---|---|
+  | `redis` | 没配 `APP_REDIS_URL` 就不挂（框架对资源是"连不上就启动失败"，本地没 Redis 不该拖垮应用）；配了之后连不上**会**让启动失败（刻意的，不静默降级） |
+  | `mail` | `fileTransport` 写 `.eml`（零依赖、离线可跑）；换 SMTP 只改一行 + `npm i nodemailer` |
+- 还没实现片段的能力（当前是 `db` / `mongodb`）**明确报错**，不会生成一半；
+- `--with` 是**追加**：基础模板自带 web + data（模板代码依赖它们）。
+
 ### 另一种布局：`--layout flat`
 
 ```bash

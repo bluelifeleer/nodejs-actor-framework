@@ -34,8 +34,15 @@ export const DEFAULT_CAPABILITIES: readonly Capability[] = ['web', 'data'];
 export interface CapabilityClosure {
   /** 选中的能力（含闭包补进来的）。 */
   readonly capabilities: readonly Capability[];
-  /** 需要声明到 package.json 的包名（升序）。 */
+  /** 选中的能力对应的包名（升序）。 */
   readonly packages: readonly string[];
+  /**
+   * **传递闭包**里所有 `@actor/*` 包（升序）。
+   *
+   * 生成的项目要把这些写进 `package.json` —— 它 import 的是真实用到的包
+   * （例如 redis 片段会用 `@actor/resource`），不能指望"传递依赖恰好被提升到顶层"。
+   */
+  readonly transitivePackages: readonly string[];
   /** 选中的 web 插件（升序）。 */
   readonly webPlugins: readonly WebPlugin[];
 }
@@ -66,6 +73,7 @@ export function resolveClosure(
   graph: PackageGraph,
 ): CapabilityClosure {
   const selected = new Set<Capability>();
+  const transitives = new Set<string>();
   const queue: Capability[] = [...requested];
 
   // web 插件必须挂在 web 上（否则生成的接线没有对应包）
@@ -88,16 +96,20 @@ export function resolveClosure(
       );
     }
     selected.add(capability);
-    // 依赖里凡是"能映射回能力"的，就一起选上（闭包）
     for (const dependency of node.dependencies) {
+      // 依赖里凡是"能映射回能力"的，就一起选上（能力闭包）
       const nested = (Object.keys(CAPABILITY_PACKAGES) as Capability[]).find((key) => CAPABILITY_PACKAGES[key] === dependency);
       if (nested !== undefined && !selected.has(nested)) queue.push(nested);
+      // 其余 @actor/* 依赖进"传递包"（生成的项目要声明它们）
+      if (dependency.startsWith('@actor/') && dependency !== CAPABILITY_PACKAGES[capability]) transitives.add(dependency);
     }
   }
 
+  const packages = [...selected].map((capability) => CAPABILITY_PACKAGES[capability]);
   return {
     capabilities: [...selected].sort(),
-    packages: [...selected].map((capability) => CAPABILITY_PACKAGES[capability]).sort(),
+    packages: [...packages].sort(),
+    transitivePackages: [...new Set([...packages, ...transitives])].sort(),
     webPlugins: [...webPlugins].sort(),
   };
 }

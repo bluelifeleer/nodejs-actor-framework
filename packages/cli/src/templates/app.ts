@@ -9,7 +9,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { WEB_PLUGINS, type WebPlugin } from '../capabilities.ts';
+import { WEB_PLUGINS, type Capability, type WebPlugin } from '../capabilities.ts';
+
+/** 片段名：web 插件片段 + 能力片段（两者形状一样：片段目录里放 `src/plugin/<name>.ts` + 测试）。 */
+export type FragmentName = WebPlugin | Capability;
+
+/** 已经有片段的片段名（其余能力暂时会明确报错，而不是生成一半）。 */
+export const AVAILABLE_FRAGMENTS: readonly FragmentName[] = ['upload', 'auth', 'debug', 'redis', 'mail'];
 
 /** 支持的布局：`layered`（默认，按业务分层）/ `flat`（最小扁平形状）。 */
 export const LAYOUTS = ['layered', 'flat'] as const;
@@ -55,7 +61,7 @@ export async function appTemplates(projectName = 'my-actor-app', layout: Layout 
 const FRAGMENT_ROOT = path.join(import.meta.dirname, '..', '..', 'templates', 'fragments');
 
 /** 某个 web 插件片段的文件清单（片段目录与生成目录同构，直接拷进去）。 */
-export async function fragmentTemplates(name: WebPlugin): Promise<TemplateFile[]> {
+export async function fragmentTemplates(name: FragmentName): Promise<TemplateFile[]> {
   const files: TemplateFile[] = [];
   for (const { relative, absolute } of await walk(path.join(FRAGMENT_ROOT, name))) {
     files.push({ relative, content: await fs.readFile(absolute, 'utf8') });
@@ -70,7 +76,7 @@ export async function fragmentTemplates(name: WebPlugin): Promise<TemplateFile[]
  * `server.ts`（那种做法很脆）。片段导出的可以是单个 `PluginSpec`，也可以是 `PluginSpec[]`
  * （空数组 = 没配置就不挂，例如没给 JWT 密钥时的 auth）。
  */
-export function pluginBarrel(names: readonly WebPlugin[]): string {
+export function pluginBarrel(names: readonly FragmentName[]): string {
   const imports = names.map((name) => `import ${name} from './${name}.ts';`).join('\n');
   const list = names.join(', ');
   return `import type { PluginSpec } from '@actor/app';
