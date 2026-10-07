@@ -13,15 +13,24 @@ let projection: { start(o?: { intervalMs?: number }): void; stop(): Promise<void
 export default defineModule({
   name: 'data',
   providers: {
-    notes: ({ config }: { config: { get<T>(key: string): T } }) =>
-      createFileRepository<Record<string, unknown>>({
+    // ProviderFactory 的入参类型是 Record<string, unknown>（应用层不依赖具体配置类型），
+    // 所以**在函数体内**收窄一次 config 的形状；**不要标注参数类型** —— 那与 ProviderFactory 逆变不兼容
+    // （我上一轮就是这么写错的，当时 examples 还没进 typecheck 所以没被发现）。
+    notes: (deps) => {
+      const config = deps['config'] as { get<T>(key: string): T };
+      return createFileRepository<Record<string, unknown>>({
         dir: path.join(config.get<string>('dataDir'), 'notes'),
         idField: 'id',
-      }),
-    summaries: ({ config }: { config: { get<T>(key: string): T } }) =>
-      createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'summaries') }),
-    orderDedupe: ({ config }: { config: { get<T>(key: string): T } }) =>
-      createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'dedupe') }),
+      });
+    },
+    summaries: (deps) => {
+      const config = deps['config'] as { get<T>(key: string): T };
+      return createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'summaries') });
+    },
+    orderDedupe: (deps) => {
+      const config = deps['config'] as { get<T>(key: string): T };
+      return createFileRepository<Record<string, unknown>>({ dir: path.join(config.get<string>('dataDir'), 'dedupe') });
+    },
   },
   actors: {
     // 事件溯源 + 快照缓存（每 5 条事件存一次；快照只是缓存，日志才是真相）

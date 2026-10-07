@@ -13,6 +13,7 @@
     "allowImportingTsExtensions": true
   },
   "include": [
+    "examples/**/*.ts",
     "packages/cli/src/**/*.ts",
     "packages/testkit/src/**/*.ts",
     "packages/core/src/**/*.ts",

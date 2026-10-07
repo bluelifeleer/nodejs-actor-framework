@@ -5,6 +5,7 @@ import { DbConfigError } from '@actor/resource';
 
 import type { Middleware } from './middleware.ts';
 import type { Route } from './routes.ts';
+import type { RouteEntry } from './router.ts';
 
 /**
  * **Web 插件**：`PluginSpec` + 三个贡献点（路由 / 带阶段的中间件 / 请求上下文扩展）。
@@ -33,7 +34,16 @@ export interface WebPluginSpec {
   description?: string;
   config?: Record<string, unknown>;
   /** 贡献的路由（`routePrefix` 会在定义时套到每个模式上）。 */
-  routes?: readonly Route[];
+  /**
+   * 插件贡献的路由。
+   *
+   * 接受**助手产出形状**（`get(...)`/`post(...)` 返回的 `RouteEntry` 元组）与已构建的 `Route` 两者 ——
+   * 与 `router.ts` 里 router spec 的 `routes?: readonly RouteEntry[]` 同一口径。
+   * 早先这里只写 `Route[]`，于是 `defineWebPlugin({ routes: [get(...)] })` 是类型错误，
+   * 而**示例没进 typecheck 矩阵**所以一直没暴露（`routes.ts` 里 `defineRoutes` 的注释记过同一类 bug，
+   * 那次放宽了它，这次把插件 spec 漏掉的那处补齐）。运行时本来就按元组解释（见下面 `as unknown as` 的用法）。
+   */
+  routes?: readonly (Route | RouteEntry)[];
   /** 路由前缀，例如 `/uploads`。 */
   routePrefix?: string;
   /** 贡献的中间件（带阶段）。 */
@@ -82,7 +92,10 @@ export function defineWebPlugin(spec: WebPluginSpec): WebPluginSpec {
   }
 
   const seen = new Set<string>();
-  const routes = (spec.routes ?? []).map((route) => {
+  // spec.routes 对**用户**放宽了（允许 get/post 的助手元组，见字段注释）；内部按老口径当 Route[] 用一次，
+  // 元组形状由运行时转换（下面 `as unknown as readonly unknown[]` 那几处就是干这个的）。
+  const normalizedRoutes = (spec.routes ?? []) as readonly Route[];
+  const routes = normalizedRoutes.map((route) => {
     const prefixed = prefixRoute(route, prefix);
     const entry = prefixed as unknown as readonly unknown[];
     const key = `${String(entry[0])} ${String(entry[1])}`;
