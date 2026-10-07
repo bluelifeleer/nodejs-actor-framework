@@ -274,6 +274,20 @@ const Note = defineModel({
   insert 时不给主键 → **省略该列**；给主键 → 走普通 INSERT（三种方言都允许）。
 - 测试 5 条（含重复 sync 幂等 + 漂移报告干净这条边界）；指南新增"自增整数主键"一节（三方言 DDL + 回读语义 + 取舍）。
 
+### Round 9（已完成）：第 4 个方言 SQL Server（mssql）—— 用真实加方言验证 DialectSpec
+
+- 按 `docs/design/m6-dialect-spec.md` §10 的 checklist 实际加了一个方言（T-SQL）：新增
+  `dialects/mssql.ts`（完整 DialectSpec，含 `[方括号]` 引用、`@pN` 占位符、`IDENTITY(1,1)`、
+  `nvarchar(n)/nvarchar(max)`、`bit`、`datetimeoffset(3)`、扩展属性注释、`INFORMATION_SCHEMA` 内省）
+  与 `drivers/mssql.ts`（懒加载 `mssql`、`pool.*` 参数映射、`@pN` → 命名参数绑定、
+  `SCOPE_IDENTITY()` 回读、事务 begin/commit/rollback）。
+- **checklist 第一遍跑就暴露两个硬编码缺口**（已修成接口的缝）：`CREATE TABLE IF NOT EXISTS`
+  与 `ALTER TABLE … ADD COLUMN` 都不是通用写法（T-SQL 分别是 `IF OBJECT_ID(…) IS NULL EXEC(…)`
+  与 `ALTER TABLE t ADD c`）。
+- 顺带把 `DIALECTS`/`DEFAULT_PORTS`/`DRIVER_PACKAGES` 改成从 `DIALECT_SPECS` 派生（此前手写三份，
+  加方言必须回来改）。
+- 定位不变：**mssql 与 pg/mysql 都是契约级验证**（离线、未真连库），指南里写明。
+
 ### 待做
  —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。

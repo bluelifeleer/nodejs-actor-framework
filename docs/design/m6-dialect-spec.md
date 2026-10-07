@@ -199,7 +199,37 @@ export const pgsql: DialectSpec = { name: 'pgsql', columnType: (t, o) => TYPES[t
 MySQL 的 `insertId`（没有 RETURNING）。这些最终会退化成 `if (name === 'mysql')` 特例，
 比"每个方言一个对象"更难读、更难测。**结论：不采用。**
 
-## 10. 以后加方言的 checklist（这就是这次重构的产出）
+## 10. 以后加方言的 checklist（**已用 SQL Server 实际跑过一遍**）
+
+> **实测结论（2026-10，第 4 个方言 SQL Server / T-SQL）**：checklist 基本成立，但第一遍跑就暴露了
+> **两个硬编码缺口**，已修（见下）。也就是说：**如果没真跑一遍，这两个洞会留给下一个加方言的人。**
+
+实际改动清单（诚实版）：
+
+| 要做的事 | 实情 |
+|---|---|
+| 1. 写 `dialects/<方言>.ts` | ✅ 一个文件（mssql.ts，~200 行） |
+| 2. 注册表加一行 + `Dialect` 联合加一个成员 | ✅ `dialects/index.ts` 一行 + `dialects/types.ts` 一行（联合类型无法避免） |
+| 3. 写驱动 `drivers/<方言>.ts` | ✅ 一个文件（mssql.ts，~130 行）+ 在 `index.ts` 导出 |
+| 4. 契约测试自动扩到新方言 | ✅ 契约测试遍历 `DIALECTS`，注册后自动覆盖 4 方言 × 22 类型 |
+| 5. 文档类型表加一列 | ✅ 指南里加 SQL Server 列 + 语句级差异表 |
+| 6. **不用碰** model/schema/repository/mapping | ✅ 门禁保证（0 处方言名分支） |
+
+**第一遍跑出来的两个缺口（已修成接口的缝）**：
+
+1. `CREATE TABLE IF NOT EXISTS` 被硬编码在装配器里 —— T-SQL 没有这个写法（要
+   `IF OBJECT_ID(N'…') IS NULL EXEC(N'CREATE TABLE …')`，因为 T-SQL 的 CREATE TABLE 必须是批次首句）
+   → 新增 `DialectSpec.createTable(model, columns, options)`。
+2. `ALTER TABLE t ADD COLUMN c` 也被硬编码 —— T-SQL 不写 `COLUMN` 关键字
+   → 新增 `DialectSpec.alterAddColumn(table, column)`。
+
+**还顺手收干净了一处"加方言要改的地方"**：`DIALECTS` 数组与 `DEFAULT_PORTS`/`DRIVER_PACKAGES`
+此前是逐方言手写的（加方言必须回来改三处）→ 改为从 `DIALECT_SPECS` **派生**。
+
+**流程教训**：`DIALECTS`/派生注册表这类"注册表之外的第二份清单"是最容易漏的 —— 加方言时先 grep
+"哪些地方逐方言列举过"，再动手。
+
+## 10.1 checklist（下次照着做）
 
 1. 复制 `dialects/sqlite.ts` 起手；实现 `DialectSpec`（TypeScript 会逐项提示）。
 2. 在 `DIALECT_SPECS` 注册表加一行；`DIALECTS`/`DEFAULT_PORTS`/`DRIVER_PACKAGES` 自动包含它。
