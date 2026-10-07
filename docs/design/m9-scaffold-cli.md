@@ -158,6 +158,21 @@ actor migrate                                                 # 不变
 还是要求用户写 `flattenRoutes(routes({...}))`。**这属于公开 API 的形状决策，应该先定方向再改**，
 不能为了"把 examples 接进 typecheck"而临时塞 cast（那会把 cast 教给用户）。
 
+**方向已查清（读真实声明后的结论，含仓库自己的先例）**：
+
+1. `examples/app-web/src/module.ts` —— 修法是**一个词**：`defineModule` 有**两个**字段，
+   `routes?: readonly unknown[]`（扁平路由）与 `router?: unknown`（嵌套路由器，注释写明"与 routes 互斥"），
+   而示例把 `routes({...})`（`RouterSpec`）传给了 `routes:` → 应当传 **`router:`**；
+2. `examples/app-plugin/src/greeting-plugin.ts` ×2 —— 这与仓库**自己记过的一个 bug 同类**：
+   `routes.ts` 里 `defineRoutes` 的注释写着"早先这里只接受 3 元组，于是 `defineRoutes([get(...)])` 是类型错误
+   —— 而示例没进 typecheck 矩阵，一直没暴露"，后来它被放宽成接受助手产出形状。插件 spec 的 `routes` 字段
+   显然漏了同一处放宽（助手产出 `[method, pattern, controller, middleware?]`，字段却要求 `Route`）
+   → 修法是**照 `defineRoutes` 的先例放宽**，而不是让用户写 cast。
+
+**所以 A 方向的准确表述**：不是"改 `Route` 接口"，而是**把 web 层"接受助手产出形状"的那次放宽补齐到
+插件 spec 的 `routes` 字段**（`Route` 是接口、助手产出是元组，两者靠 `buildRouteTable`/`flattenRoutes` 衔接，
+这层转换本来就有，只是字段类型没跟上）。
+
 **已提前修掉的一类（3 处）**：`examples/app-data/src/module.ts` 的 3 个 provider 原来写 `({ config }) =>`，
 而 `deps` 是 `Record<string, unknown>` → `config` 是 `unknown`。按脚手架模板的既有做法在**边界**收窄一次
 （`({ config }: { config: { get<T>(key: string): T } }) =>`），不把 `src/` 整体放宽。
