@@ -20,6 +20,7 @@
     "packages/db-core/src/**/*.ts",
     "packages/db/src/**/*.ts",
     "packages/redis/src/**/*.ts",
+    "packages/mongodb/src/**/*.ts",
     "packages/core/index.d.ts"
   ]
 }

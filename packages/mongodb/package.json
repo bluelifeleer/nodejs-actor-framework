@@ -1,0 +1,13 @@
+{
+  "name": "@actor/mongodb",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "MongoDB 适配器（官方 mongodb 驱动）+ defineCollection（索引 / $jsonSchema validator / sync 漂移检测）",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "files": ["src"],
+  "engines": { "node": ">=24" },
+  "keywords": ["actor", "mongodb", "adapter", "schema"],
+  "dependencies": { "@actor/db-core": "*" }
+}

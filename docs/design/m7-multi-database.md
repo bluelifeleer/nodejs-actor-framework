@@ -469,6 +469,38 @@ export const myDb = defineDatabaseAdapter({
 - 测试 6 条（用**假 app 对象**驱动生命周期，正说明它是结构化的）：生命周期与注册、默认名取 kind、
   多实例各注册各的、连不上启动失败、不健康启动失败（错误信息点明实例名）、事件可接出去、空名字报错。
 
+### M7d（已完成）：`@actor/mongodb`
+
+- 新增 `packages/mongodb`（`@actor/mongodb`，只依赖 `@actor/db-core`）：
+  - `src/collection-model.ts`：`defineCollection({ name, fields, indexes, validator, strict, description })`
+    → 归一字段/确定性索引名/`$jsonSchema`（纯函数，离线可测）+ `inspectCollection`/`checkCollectionDrift`/
+    `syncCollections`。**纪律与 SQL 侧一致**：缺集合→建（带 validator）、缺索引→建（补齐不算改结构）、
+    validator 不一致→**报漂移**，要改得显式 `auto: true`（走 `collMod`）。
+    `_id` 不写进 `required`（MongoDB 隐式保证它存在，写进去只是噪音），但不可空。
+  - `src/client.ts`：`DocumentClient`（集合薄封装直接转调原生集合、`find` 返回**原生游标**、
+    `withDb`/`raw` 逃生通道、`transaction` 走 `session.withTransaction`，与 SQL 侧同签名）。
+  - `src/adapters/mongodb.ts` + `adapters/index.ts`：官方驱动适配（池参数映射
+    `maxPoolSize`/`minPoolSize`/`maxIdleTimeMS`/`serverSelectionTimeoutMS`、事件只转发、stats 如实
+    —— 拿不到池数字就报 null），驱动注册表（v1 只有 `mongodb`，加驱动＝加一行）。
+  - `src/adapter.ts`：`mongoAdapter({ database, collections, auto, clientOptions })` +
+    `parseMongoUrl`/`describeMongo`（`mongodb://`/`mongodb+srv://`、`authSource`、TLS、**不含密码**）。
+- **诚实边界写进实现与测试**：没有 `$jsonSchema` validator 的集合**无法谈字段漂移** ——
+  框架不擅自加 validator，只在 `syncCollections().fieldDriftUnavailable` 里如实说明。
+- 测试 +24：集合模型 8 条（`$jsonSchema` 逐类型对照含 int/long 与可空、strict、确定性索引名、
+  sync 幂等、validator 漂移与 `auto`、缺索引补齐、**诚实边界**、单集合漂移查询）；
+  适配器 7 条（**同一套连接管理契约** + 池参数映射、集合薄封装与逃生通道、事务走 session、
+  事件只转发、声明式集合端到端、安装提示、DSN 解析）；公开面门禁 2 条；真库开关 2 条（本环境跳过）。
+- 矩阵：进 npm test 工作区矩阵、tsconfig include、docs-site PACKAGES、npm install link；
+  kind 门禁通过（kind 分支只在 `src/adapters/`）。
+- 文档：新增指南 `docs/guide/10-mongodb.md`（含**离线可跑**的 verify 块：`$jsonSchema` 生成 + DSN 解析）。
+
+**自我修正（四处）**：
+1. 假 mongo 的 `bucket()` 写成 `docs.get(name) ?? []` —— `insertOne` 里两次调用各拿到一个新数组，
+   插入的文档直接丢了（**假绿**：count 永远是 0）。写成"同名必拿同一个数组"。
+2. 我把"集合建出来了"断言在**文档存储** Map 上（那是 `docs`，不是集合目录）—— 改成 `listCollections`。
+3. 测试把 `find()` 当 Promise（它是**原生游标**）—— 改成 `toArray()`。
+4. 断言 `collMod` 时取错层级（`command` 对象是 `{ collMod, validator }`，不是 `{ collMod: { validator } }`）。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |
