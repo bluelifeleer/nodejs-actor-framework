@@ -154,3 +154,10 @@ test('examples: app-multi-db 能启动（自装适配器 + 多实例接线 + 优
   assert.match(result.stdout, /stopped gracefully/, 'app-multi-db 没有走优雅停机');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('examples: app-plugin 能启动（自定义 web 插件 + 优雅停）', async () => {
+  const result = await runExample(['examples/app-plugin/main.ts'], { readyMs: 6000 });
+  assertNoCrash('examples/app-plugin', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-plugin 没起来：\n${result.stdout.slice(0, 400)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-plugin 没有走优雅停机');
+});

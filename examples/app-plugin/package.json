@@ -1,0 +1,8 @@
+{
+  "name": "example-app-plugin",
+  "private": true,
+  "type": "module",
+  "description": "示例：用户自定义 web 插件（贡献路由 + 带阶段中间件 + 请求上下文扩展）",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@actor/app": "*", "@actor/resource": "*", "@actor/web": "*" }
+}
