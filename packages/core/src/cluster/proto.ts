@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -20,9 +19,33 @@ const WIRE_64BIT = 1;
 const WIRE_LENGTH = 2;
 const WIRE_32BIT = 5;
 
+/** schema 里一个字段的类型（本编解码器只支持这四种）。 */
+type FieldType = 'string' | 'bytes' | 'uint64' | 'bool';
+
+/** schema 里一个字段的描述（`no` 是 protobuf 字段号）。 */
+interface FieldSchema {
+  name: string;
+  no: number;
+  type: FieldType;
+}
+
+/** 一条消息的 schema。 */
+type MessageSchema = readonly FieldSchema[];
+
+/** 待编码/解码的消息体（字段名与 schema 对应）。 */
+interface ProtoMessage {
+  [key: string]: unknown;
+}
+
+/** `readVarint()` 的结果：值可能是 number（安全范围内）或 bigint。 */
+interface VarintResult {
+  value: number | bigint;
+  offset: number;
+}
+
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 
-function writeVarint(value) {
+function writeVarint(value: number | bigint): Buffer {
   let v = typeof value === 'bigint' ? value : BigInt(Math.trunc(Number(value)));
   if (v < 0n) throw new RangeError('varint value must be non-negative');
   const bytes = [];
@@ -34,12 +57,12 @@ function writeVarint(value) {
   return Buffer.from(bytes);
 }
 
-function readVarint(buf, offset) {
+function readVarint(buf: Buffer, offset: number): VarintResult {
   let result = 0n;
   let shift = 0n;
   let i = offset;
   while (i < buf.length) {
-    const byte = buf[i];
+    const byte = buf[i] ?? 0;
     i += 1;
     result |= BigInt(byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) {
@@ -52,22 +75,22 @@ function readVarint(buf, offset) {
   throw new Error('truncated varint');
 }
 
-function tagFor(fieldNumber, wireType) {
+function tagFor(fieldNumber: number, wireType: number): Buffer {
   return writeVarint((BigInt(fieldNumber) << 3n) | BigInt(wireType));
 }
 
-function encodeField(field, value) {
+function encodeField(field: FieldSchema, value: unknown): Buffer {
   switch (field.type) {
     case 'string': {
       const body = Buffer.from(String(value), 'utf8');
       return Buffer.concat([tagFor(field.no, WIRE_LENGTH), writeVarint(body.length), body]);
     }
     case 'bytes': {
-      const body = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      const body = Buffer.isBuffer(value) ? value : Buffer.from(value as string | Uint8Array);
       return Buffer.concat([tagFor(field.no, WIRE_LENGTH), writeVarint(body.length), body]);
     }
     case 'uint64':
-      return Buffer.concat([tagFor(field.no, WIRE_VARINT), writeVarint(value)]);
+      return Buffer.concat([tagFor(field.no, WIRE_VARINT), writeVarint(value as number | bigint)]);
     case 'bool':
       return Buffer.concat([tagFor(field.no, WIRE_VARINT), writeVarint(value ? 1 : 0)]);
     default:
@@ -79,8 +102,8 @@ function encodeField(field, value) {
  * @param {Array<{name:string, no:number, type:string}>} schema
  * @param {object} obj
  */
-function encodeMessage(schema, obj) {
-  const parts = [];
+function encodeMessage(schema: MessageSchema, obj: ProtoMessage): Buffer {
+  const parts: Buffer[] = [];
   for (const field of schema) {
     const value = obj[field.name];
     if (value === undefined || value === null) continue; // proto3 default: omit
@@ -89,7 +112,7 @@ function encodeMessage(schema, obj) {
   return Buffer.concat(parts);
 }
 
-function skipField(buf, offset, wireType) {
+function skipField(buf: Buffer, offset: number, wireType: number): number {
   switch (wireType) {
     case WIRE_VARINT: {
       const { offset: next } = readVarint(buf, offset);
@@ -113,9 +136,9 @@ function skipField(buf, offset, wireType) {
  * without breaking older peers.
  * @returns {object} only the fields present on the wire
  */
-function decodeMessage(schema, buf) {
-  const byNumber = new Map(schema.map((f) => [f.no, f]));
-  const out = {};
+function decodeMessage(schema: MessageSchema, buf: Buffer): ProtoMessage {
+  const byNumber = new Map<number, FieldSchema>(schema.map((f) => [f.no, f]));
+  const out: ProtoMessage = {};
   let offset = 0;
   while (offset < buf.length) {
     const tag = readVarint(buf, offset);
@@ -164,7 +187,7 @@ function decodeMessage(schema, buf) {
 
 // --- gateway frame schema (mirrors actor-proto.proto) ----------------------
 
-const GATEWAY_FRAME_SCHEMA = [
+const GATEWAY_FRAME_SCHEMA: readonly FieldSchema[] = [
   { name: 'kind', no: 1, type: 'string' },
   { name: 'id', no: 2, type: 'string' },
   { name: 'nodeId', no: 3, type: 'string' },
@@ -193,14 +216,15 @@ const GATEWAY_FRAME_SCHEMA = [
   { name: 'shardCount', no: 17, type: 'uint64' },
 ];
 
-function toJsonBytes(value) {
+/** JSON 内嵌成 bytes（undefined / 不可序列化的值一律省略该字段）。 */
+function toJsonBytes(value: unknown): Buffer | undefined {
   if (value === undefined) return undefined;
   const text = JSON.stringify(value);
   if (text === undefined) return undefined; // e.g. a bare function/undefined
   return Buffer.from(text, 'utf8');
 }
 
-function fromJsonBytes(value) {
+function fromJsonBytes(value: unknown): unknown {
   if (value === undefined || value === null) return undefined;
   const text = Buffer.isBuffer(value) ? value.toString('utf8') : String(value);
   if (text === '') return undefined;
@@ -208,7 +232,7 @@ function fromJsonBytes(value) {
 }
 
 /** Encode a gateway frame (payload/data become embedded JSON bytes). */
-function encodeGatewayFrame(frame) {
+function encodeGatewayFrame(frame: ProtoMessage): Buffer {
   return encodeMessage(GATEWAY_FRAME_SCHEMA, {
     kind: frame.kind,
     id: frame.id,
@@ -231,9 +255,9 @@ function encodeGatewayFrame(frame) {
 }
 
 /** Decode a gateway frame back into the plain-object form the gateway uses. */
-function decodeGatewayFrame(buf) {
+function decodeGatewayFrame(buf: Buffer): ProtoMessage {
   const wire = decodeMessage(GATEWAY_FRAME_SCHEMA, buf);
-  const frame = {};
+  const frame: ProtoMessage = {};
   if (wire.kind !== undefined) frame.kind = wire.kind;
   if (wire.id !== undefined) frame.id = wire.id;
   if (wire.nodeId !== undefined) frame.nodeId = wire.nodeId;
@@ -257,7 +281,7 @@ function decodeGatewayFrame(buf) {
     const caps = fromJsonBytes(wire.capsJson);
     if (caps !== undefined) frame.caps = caps;
   } catch (err) {
-    throw new Error(`gateway frame carries invalid JSON: ${err.message}`);
+    throw new Error(`gateway frame carries invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
   return frame;
 }
@@ -267,7 +291,7 @@ function decodeGatewayFrame(buf) {
 // The envelope is typed; the replicated registry map stays JSON bytes because
 // its values are heterogeneous (actor metadata and subscription sets).
 
-const GOSSIP_ENVELOPE_SCHEMA = [
+const GOSSIP_ENVELOPE_SCHEMA: readonly FieldSchema[] = [
   { name: 'type', no: 1, type: 'string' },
   { name: 'sender', no: 2, type: 'string' },
   { name: 'advertiseHost', no: 3, type: 'string' },
@@ -278,7 +302,7 @@ const GOSSIP_ENVELOPE_SCHEMA = [
   { name: 'peersJson', no: 6, type: 'bytes' },
 ];
 
-function encodeGossipEnvelope(envelope) {
+function encodeGossipEnvelope(envelope: ProtoMessage): Buffer {
   return encodeMessage(GOSSIP_ENVELOPE_SCHEMA, {
     type: envelope.type,
     sender: envelope.sender,
@@ -289,9 +313,9 @@ function encodeGossipEnvelope(envelope) {
   });
 }
 
-function decodeGossipEnvelope(buf) {
+function decodeGossipEnvelope(buf: Buffer): ProtoMessage {
   const wire = decodeMessage(GOSSIP_ENVELOPE_SCHEMA, buf);
-  const envelope = {};
+  const envelope: ProtoMessage = {};
   if (wire.type !== undefined) envelope.type = wire.type;
   if (wire.sender !== undefined) envelope.sender = wire.sender;
   if (wire.advertiseHost !== undefined) envelope.advertiseHost = wire.advertiseHost;
@@ -302,7 +326,7 @@ function decodeGossipEnvelope(buf) {
     const peers = fromJsonBytes(wire.peersJson);
     if (peers !== undefined) envelope.peers = peers;
   } catch (err) {
-    throw new Error(`gossip envelope carries invalid JSON: ${err.message}`);
+    throw new Error(`gossip envelope carries invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
   return envelope;
 }
