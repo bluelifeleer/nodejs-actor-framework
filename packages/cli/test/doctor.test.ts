@@ -66,3 +66,54 @@ test('doctor: 端口被占用能看出来（最常见的"起不来"）', async (
     removeProject(dir);
   }
 });
+
+test('doctor: **能力一致性** —— 声明了 @actor/redis 却没有对应接线，要报出来并给下一步', async () => {
+  const dir = makeProject('doctor-capability', {
+    'server.ts': 'export default {};\n',
+    'package.json': JSON.stringify(
+      {
+        name: 'doctor-capability',
+        type: 'module',
+        engines: { node: '>=24' },
+        dependencies: { '@actor/app': '*', '@actor/web': '*', '@actor/data': '*', '@actor/redis': '*' },
+      },
+      null,
+      2,
+    ),
+  });
+  try {
+    const result = await cli(['doctor', '--dir', dir, '--json']);
+    assert.strictEqual(result.code, 2, `有问题时退出码要是 2：\n${result.stdout}${result.stderr}`);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /能力一致性/, `要报能力一致性：\n${output}`);
+    assert.match(output, /actor add --with redis/, '要给出"下一步怎么办"');
+  } finally {
+    removeProject(dir);
+  }
+});
+
+test('doctor: **布局一致性** —— layered 项目里放错层的文件只提示不擅自改；放对了不误报', async () => {
+  const mislaid = makeProject('doctor-layout-bad', {
+    'server.ts': 'export default {};\n',
+    'src/notes.controller.ts': 'export {};\n',
+  });
+  const clean = makeProject('doctor-layout-good', {
+    'server.ts': 'export default {};\n',
+    'src/controller/notes.controller.ts': 'export {};\n',
+  });
+  try {
+    const bad = await cli(['doctor', '--dir', mislaid, '--json']);
+    assert.strictEqual(bad.code, 2);
+    const badOutput = `${bad.stdout}${bad.stderr}`;
+    assert.match(badOutput, /布局一致性/);
+    assert.match(badOutput, /放错了层|像是放错了/, `要指出放错层：\n${badOutput}`);
+    assert.match(badOutput, /src\/notes\.controller\.ts/, '要指出具体是哪个文件');
+
+    const good = await cli(['doctor', '--dir', clean, '--json']);
+    const goodOutput = `${good.stdout}${good.stderr}`;
+    assert.ok(!/放错了层/.test(goodOutput), `分层正确时不该误报：\n${goodOutput}`);
+  } finally {
+    removeProject(mislaid);
+    removeProject(clean);
+  }
+});

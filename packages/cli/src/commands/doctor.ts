@@ -91,6 +91,65 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
     });
   }
 
+  // 3b) **能力一致性**：声明了能力包 / 已经有了片段，两边要对得上
+  //     片段名 → 需要的能力包（web 插件没有独立包，只看片段文件在不在）
+  const FRAGMENT_FOR_PACKAGE: Record<string, string> = {
+    '@actor/redis': 'redis',
+    '@actor/mail': 'mail',
+  };
+  const WEB_PLUGIN_FRAGMENTS = ['upload', 'auth', 'debug'];
+  const pluginDir = path.join(project.dir, 'src', 'plugin');
+  const fragments = new Set<string>();
+  try {
+    for (const entry of await fs.readdir(pluginDir)) {
+      if (entry.endsWith('.ts') && entry !== 'index.ts') fragments.add(entry.slice(0, -'.ts'.length));
+    }
+  } catch {
+    // 没有 src/plugin/ → 可能不是 layered，或还没加过能力
+  }
+  for (const [pkg, fragment] of Object.entries(FRAGMENT_FOR_PACKAGE)) {
+    if (pkg in deps && !fragments.has(fragment)) {
+      checks.push({
+        name: `能力一致性：${pkg}`,
+        ok: false,
+        detail: `声明了 ${pkg}，但没有 src/plugin/${fragment}.ts（等于装了不用）`,
+        fix: `actor add --with ${fragment}（或用不到就把 ${pkg} 从 package.json 里去掉）`,
+      });
+    }
+  }
+  for (const fragment of WEB_PLUGIN_FRAGMENTS) {
+    // 反向：有片段但没有对应依赖声明（一般不会，但缺了就是"跑的代码没声明"）
+    if (fragments.has(fragment) && !('@actor/web' in deps)) {
+      checks.push({
+        name: `能力一致性：${fragment} 片段`,
+        ok: false,
+        detail: `有 src/plugin/${fragment}.ts，但没有声明 @actor/web`,
+        fix: 'npm i @actor/web（片段用的就是它的插件）',
+      });
+    }
+  }
+
+  // 3c) **布局一致性**：layered 项目里"放错层"的文件只提示，不擅自改
+  if (layered) {
+    const mislaid: string[] = [];
+    try {
+      for (const entry of await fs.readdir(path.join(project.dir, 'src'))) {
+        if (/\.(controller|actor|model|schema|service)\.ts$/.test(entry)) mislaid.push(`src/${entry}`);
+      }
+    } catch {
+      // src/ 不存在 → 上游的文件检查已经报过
+    }
+    checks.push({
+      name: '布局一致性',
+      ok: mislaid.length === 0,
+      detail:
+        mislaid.length === 0
+          ? 'layered 分层看起来对（controller/actor/model/schema/service 都在 src/<层>/ 下）'
+          : `这些文件像是放错了层：${mislaid.join(', ')}`,
+      fix: mislaid.length === 0 ? undefined : '把它们移到 src/<层>/ 下（例如 src/controller/notes.controller.ts）；doctor 不擅自改',
+    });
+  }
+
   // 4) 配置能不能加载（这一步会真的导入项目里的配置模块）
   const configFile = path.join(project.configDir, 'default.ts');
   let configOk = true;

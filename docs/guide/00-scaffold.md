@@ -125,6 +125,15 @@ flat 是**保留的旧形状**（`src/app.ts` + `src/{notes,counter,module}.ts`�
 
 ## 迁移与体检
 
+`actor doctor` 除了"文件在不在、配置能不能加载、迁移有没有应用、端口有没有被占"，
+还检查两类**一致性**（都只提示、不擅自改你的代码）：
+
+- **能力一致性**：`package.json` 声明了 `@actor/redis`，但 `src/plugin/redis.ts` 不存在（等于装了不用）→
+  提示 `actor add --with redis`，或把用不到的包去掉；
+- **布局一致性**：layered 项目里出现 `src/notes.controller.ts` 这类"放错层"的文件 →
+  提示应该放到 `src/controller/`（doctor 不会替你移动文件）。
+
+
 项目里加 `src/migrations.ts`（约定位置）之后：
 
 ```bash

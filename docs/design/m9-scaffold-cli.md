@@ -132,8 +132,11 @@ actor migrate                                                 # 不变
 | **M9c** | `actor add` + `doctor` 扩展 + `--dry-run` | `add` 非破坏性用例；doctor 能诊断"声明未接线" |
 | **M9d** | `actor new plugin <name> --kind …` + 仓库内矩阵接线清单 | 生成四种骨架，各自跑通对应契约套件 |
 
-## 10. 仍待你确认（小问题，不阻塞 M9a）
+## 10. 已确认（用户拍板）
 
-1. `server.ts` 这个名字可以吗？（备选：`bootstrap.ts` / 保持现在的 `src/app.ts`）
-2. `data/` 与 `src/schema/` 的边界：`data/` 只放运行期产物，`src/schema/` 放声明 —— 同意吗？
-3. `--web-plugins debug` 的"全局/局部"具体形态，见 `m9-define-sugar.md` §6（我给了推荐模型，需要你确认作用域粒度）。
+1. ✅ `server.ts` 用这个名字（装配层；`main.ts` 是进程入口）—— M9a 已按此实现；
+2. ✅ **`data/` 只放运行期产物**（`.gitignore` 掉），**`src/schema/` 放声明**（表/集合名、排序键、
+   将来迁移的落点）。模板现状即如此：`src/schema/note.schema.ts` 提供集合名给 `src/service/` 用，
+   运行期数据落在 `data/`（`APP_DATA_DIR` 可改）；
+3. ✅ `--web-plugins debug` 的全局/局部形态按 `m9-define-sugar.md` §6：**全局 / 路由前缀 / 模块 / 控制器**
+   四层可见性作用域（并写死"只减少信息面，不是安全边界"）。
