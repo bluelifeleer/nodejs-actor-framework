@@ -11,19 +11,24 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { UsageError } from '../args.ts';
-import { appTemplates, LAYOUTS, type Layout } from '../templates/app.ts';
+import { assertKnown } from '../capabilities.ts';
+import { appTemplates, fragmentTemplates, LAYOUTS, pluginBarrel, type Layout } from '../templates/app.ts';
+
+import type { WebPlugin } from '../capabilities.ts';
 
 export interface NewAppResult {
   dir: string;
   /** 实际使用的布局（默认 layered）。 */
   layout: Layout;
+  /** 选中的 web 插件（升序）。 */
+  webPlugins: WebPlugin[];
   files: string[];
   nextSteps: string[];
 }
 
 export async function newApp(
   target: string,
-  options: { force?: boolean; layout?: Layout } = {},
+  options: { force?: boolean; layout?: Layout; webPlugins?: readonly WebPlugin[] } = {},
 ): Promise<NewAppResult> {
   if (target === undefined || String(target).trim() === '') {
     throw new UsageError('缺少目标目录', `用法：actor new app <dir> [--layout ${LAYOUTS.join('|')}] [--force]`);
@@ -31,6 +36,19 @@ export async function newApp(
   const layout = options.layout ?? 'layered';
   if (!LAYOUTS.includes(layout)) {
     throw new UsageError(`未知的布局 '${String(layout)}'`, `可选：${LAYOUTS.join(' / ')}`);
+  }
+  const webPlugins = [...new Set(options.webPlugins ?? [])].sort();
+  if (webPlugins.length > 0 && layout === 'flat') {
+    throw new UsageError(
+      'flat 布局不支持 --web-plugins',
+      'web 插件需要 layered 的 src/plugin/ 桶文件；用默认布局，或去掉 --web-plugins',
+    );
+  }
+  try {
+    assertKnown([], webPlugins);
+  } catch (err) {
+    const error = err as { message: string; hint?: string };
+    throw new UsageError(error.message, error.hint ?? '');
   }
   const dir = path.resolve(String(target));
 
@@ -49,6 +67,15 @@ export async function newApp(
 
   const projectName = path.basename(dir).replace(/[^\w.-]/g, '-') || 'actor-app';
   const templates = await appTemplates(projectName, layout);
+  // 片段：直接按同构路径拷进项目（每个片段自带它的接线与冒烟测试）
+  for (const name of webPlugins) {
+    templates.push(...(await fragmentTemplates(name)));
+  }
+  // 桶文件只给 layered：flat 的 src/app.ts 不消费它（塞进去就是死文件）
+  if (layout === 'layered') {
+    templates.push({ relative: 'src/plugin/index.ts', content: pluginBarrel(webPlugins) });
+  }
+
   for (const file of templates) {
     const destination = path.join(dir, file.relative);
     await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -58,7 +85,8 @@ export async function newApp(
   return {
     dir,
     layout,
-    files: templates.map((file) => file.relative),
+    webPlugins,
+    files: [...new Set(templates.map((file) => file.relative))].sort(),
     nextSteps: [`cd ${dir}`, 'npm install', 'npm start', 'npm test'],
   };
 }

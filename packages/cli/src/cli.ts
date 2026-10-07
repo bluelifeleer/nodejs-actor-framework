@@ -9,6 +9,7 @@
 import path from 'node:path';
 
 import { UsageError, parseArgs } from './args.ts';
+import type { WebPlugin } from './capabilities.ts';
 import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
 import { migrate } from './commands/migrate.ts';
@@ -22,7 +23,7 @@ function usage(): string {
     'actor —— actor 框架的命令行工具',
     '',
     '用法：',
-    '  actor new app <dir> [--layout layered|flat] [--force]',
+    '  actor new app <dir> [--layout layered|flat] [--web-plugins upload,auth,debug] [--force]',
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
     '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
@@ -63,9 +64,17 @@ async function main(argv: readonly string[]): Promise<number> {
   const [first, second] = parsed.command;
   if (first === 'new' && second === 'app') {
     const layout = typeof parsed.flags.layout === 'string' ? (parsed.flags.layout as Layout) : undefined;
+    const webPlugins =
+      typeof parsed.flags['web-plugins'] === 'string'
+        ? (parsed.flags['web-plugins']
+            .split(',')
+            .map((name) => name.trim())
+            .filter((name) => name !== '') as WebPlugin[])
+        : undefined;
     const result = await newApp(parsed.positionals[0] ?? '', {
       force: parsed.flags.force === true,
       ...(layout === undefined ? {} : { layout }),
+      ...(webPlugins === undefined ? {} : { webPlugins }),
     });
     process.stdout.write(`已生成 ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
     for (const file of result.files) process.stdout.write(`  ${file}\n`);

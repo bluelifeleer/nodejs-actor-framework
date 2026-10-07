@@ -26,14 +26,15 @@ const dir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-'));
 try {
   const cli = path.join(process.cwd(), 'packages', 'cli', 'src', 'cli.ts');
   const { stdout } = await run(process.execPath, [cli, 'new', 'app', dir]);
-  assert.match(stdout, /已生成 16 个文件/);   // 默认 layered
+  assert.match(stdout, /已生成 17 个文件/);   // 默认 layered
 
   // layered：进程入口与装配分开，业务按层分目录
   for (const file of [
     'package.json', 'tsconfig.json', 'main.ts', 'server.ts', 'config/default.ts',
     'src/module.ts', 'src/controller/notes.controller.ts', 'src/controller/counter.controller.ts',
     'src/controller/health.controller.ts', 'src/actor/counter.actor.ts', 'src/model/note.ts',
-    'src/schema/note.schema.ts', 'src/service/notes.repository.ts', 'test/api.test.ts',
+    'src/schema/note.schema.ts', 'src/service/notes.repository.ts', 'src/plugin/index.ts',
+    'test/api.test.ts',
   ]) {
     assert.ok(fs.existsSync(path.join(dir, file)), `缺少 ${file}`);
   }
@@ -71,12 +72,31 @@ my-app/
 │   ├── model/              领域类型与映射
 │   ├── schema/             数据层声明（集合名、排序键；换 SQL 时这里是 defineModel/迁移的落点）
 │   ├── service/            仓储/外部依赖的装配（换存储只改这一个文件）
+│   ├── plugin/index.ts     能力插件桶（脚手架按你选的能力生成；server.ts 只 import 它）
 │   └── module.ts           接线：providers + actors + routes
 └── test/api.test.ts        端到端（真 HTTP + 真重启）
 ```
 
 **谁放哪是写死的**：`main.ts` 只做进程级的事，`server.ts` 只做装配，业务在 `src/` 各层里。
 这样项目长大后不会出现"所有东西都在一个文件里"。
+
+### 选 web 插件：`--web-plugins upload,auth,debug`
+
+```bash
+actor new app my-app --web-plugins upload,auth     # 文件上传 + 鉴权
+```
+
+每个插件是一个**片段**（自带接线 + 一条冒烟测试），生成器把它们拷进项目并重写
+`src/plugin/index.ts`（桶文件）—— **`server.ts` 不会被文本改写**（那种做法很脆）。
+三个插件的默认行为都是"没配置就不干活"，所以离线/没服务时项目照常能跑：
+
+| 插件 | 默认行为 |
+|---|---|
+| `upload` | 挂 `/uploads`（流式单/多文件 + 分片续传），数据落 `./data/uploads` |
+| `auth` | **没配 `APP_JWT_SECRET` 就不挂**（很多项目本来没有登录体系）；配了才校验 Bearer |
+| `debug` | **默认关闭**；`APP_DEBUG=1` + `APP_DEBUG_TOKEN`（≥16 字符）才开 `/__debug/*` |
+
+flat 布局不支持 `--web-plugins`（桶文件是 layered 的机制），会**明确报错**而不是静默忽略。
 
 ### 另一种布局：`--layout flat`
 

@@ -9,6 +9,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { WEB_PLUGINS, type WebPlugin } from '../capabilities.ts';
+
 /** 支持的布局：`layered`（默认，按业务分层）/ `flat`（最小扁平形状）。 */
 export const LAYOUTS = ['layered', 'flat'] as const;
 export type Layout = (typeof LAYOUTS)[number];
@@ -49,6 +51,42 @@ export async function appTemplates(projectName = 'my-actor-app', layout: Layout 
   }
   return files;
 }
+
+const FRAGMENT_ROOT = path.join(import.meta.dirname, '..', '..', 'templates', 'fragments');
+
+/** 某个 web 插件片段的文件清单（片段目录与生成目录同构，直接拷进去）。 */
+export async function fragmentTemplates(name: WebPlugin): Promise<TemplateFile[]> {
+  const files: TemplateFile[] = [];
+  for (const { relative, absolute } of await walk(path.join(FRAGMENT_ROOT, name))) {
+    files.push({ relative, content: await fs.readFile(absolute, 'utf8') });
+  }
+  return files;
+}
+
+/**
+ * 生成插件桶 `src/plugin/index.ts`。
+ *
+ * 这是"能力选择"能work的关键：`server.ts` 永远只 import 桶文件，于是**不需要**用文本替换去改
+ * `server.ts`（那种做法很脆）。片段导出的可以是单个 `PluginSpec`，也可以是 `PluginSpec[]`
+ * （空数组 = 没配置就不挂，例如没给 JWT 密钥时的 auth）。
+ */
+export function pluginBarrel(names: readonly WebPlugin[]): string {
+  const imports = names.map((name) => `import ${name} from './${name}.ts';`).join('\n');
+  const list = names.join(', ');
+  return `import type { PluginSpec } from '@actor/app';
+
+${names.length === 0 ? '' : `${imports}\n\n`}/**
+ * 插件桶（由脚手架按你选的能力生成，**不要手改**：加能力请用 \`actor add\`）。
+ *
+ * 每个片段可以导出单个 PluginSpec，或 PluginSpec[]（空数组 = 该能力没被配置，就不挂）。
+ */
+const fragments: Array<PluginSpec | PluginSpec[]> = [${list}];
+
+export default fragments.flat() as PluginSpec[];
+`;
+}
+
+export const WEB_PLUGIN_NAMES: readonly WebPlugin[] = [...WEB_PLUGINS];
 
 export const templateRoot = TEMPLATE_ROOTS.layered;
 export const templateRootOf = (layout: Layout = 'layered'): string => TEMPLATE_ROOTS[layout];
