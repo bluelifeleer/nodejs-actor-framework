@@ -22,6 +22,9 @@ export interface RunAppOptions {
   /** 进程退出（默认 process.exit）——**可注入**，这样信号路径能在测试里断言。 */
   exit?: (code: number) => void;
   /** 日志（默认写 stdout）。 */
+  /** 日志标签（默认 `main` —— 它就是**进程入口**；示例与集成测试按 `[main] ...` 断言）。 */
+  label?: string;
+  /** 日志（默认写 stdout，带 `[label]` 前缀）。 */
   log?: (message: string) => void;
   /**
    * **启动前**要做的事（例如"迁移门"：有未应用迁移就拒绝启动）。
@@ -38,6 +41,7 @@ export interface RunAppOptions {
  * 创建并启动应用，接好优雅停。返回**已启动**的 application（调用方可以继续用，例如拿 http 句柄）。
  */
 export async function runApp(spec: unknown, options: RunAppOptions = {}): Promise<Application> {
+  const label = options.label ?? 'main';
   const log = options.log ?? ((message: string) => process.stdout.write(`${message}\n`));
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const stopTimeoutMs = options.stopTimeoutMs ?? 10_000;
@@ -57,11 +61,11 @@ export async function runApp(spec: unknown, options: RunAppOptions = {}): Promis
       void application
         .stop({ timeoutMs: stopTimeoutMs })
         .then(() => {
-          log('[runApp] stopped gracefully');
+          log(`[${label}] stopped gracefully`);
           exit(0);
         })
         .catch((err: unknown) => {
-          process.stderr.write(`[runApp] stop failed: ${String(err)}\n`);
+          process.stderr.write(`[${label}] stop failed: ${String(err)}\n`);
           exit(1);
         });
     });
