@@ -14,7 +14,8 @@ export interface ManagedConnection<C = unknown> {
   readonly client: C;
   healthCheck(): Promise<void>;
   close(): Promise<void>;
-  stats?(): Record<string, unknown>;
+  /** 驱动自报的统计；**没有就返回 null**（不要编造池数字）。 */
+  stats?(): Record<string, unknown> | null;
   keepAlive?(): Promise<void>;
 }
 

@@ -1,4 +1,6 @@
+import { DbUnavailableError, supervise, type ManagedResource } from '@actor/db-core';
 import { dialectSpec } from './dialects/index.ts';
+import { createSqlAdapter } from './sql-adapter.ts';
 import {
   DbConfigError,
   DbConnectionError,
@@ -127,16 +129,34 @@ export function createDatabase(options: DatabaseOptions): Database {
   const target = describeConnection(connection);
   const log = options.logger;
 
-  let pool: DriverPool | null = null;
-  let closed = false;
   let lastError: Error | null = null;
-  let connected = false;
   /** model 注册表：`sync()` 会注册，`repository()` 与关联解析用它。 */
   const registry = new Map<string, Model>();
 
-  const requirePool = (): DriverPool => {
-    if (pool === null || !connected) throw new DbNotConnectedError(`database ${target}`);
-    return pool;
+  /**
+   * 连接生命周期统一交给 core 的 `supervise()`（SQL 与 Redis/Mongo/自装适配器走同一条路）。
+   *
+   * 边界翻译（保住既有语义，见设计文档 M7a 第二部分）：
+   *   - supervisor 抛 `DbUnavailableError` → 这里翻译回 `DbNotConnectedError`（既有使用者依赖这个类型）；
+   *   - `logger` 事件串（`db_connected`/`db_closed`/`db_close_failed`）保持原样。
+   */
+  const resource: ManagedResource<DriverPool> = supervise(createSqlAdapter({ dialect, driver }), {
+    connection,
+    pool: poolOptions,
+    ...(log === undefined ? {} : { logger: log }),
+  });
+
+  const requirePool = async (): Promise<DriverPool> => {
+    try {
+      return await resource.acquire();
+    } catch (err) {
+      if (err instanceof DbUnavailableError) {
+        throw new DbNotConnectedError(
+          resource.state === 'closed' ? `database ${target} (already closed)` : `database ${target}`,
+        );
+      }
+      throw err;
+    }
   };
 
   const api: Database = {
@@ -145,50 +165,40 @@ export function createDatabase(options: DatabaseOptions): Database {
     driverName: driver.name,
 
     async connect(): Promise<void> {
-      if (connected && pool !== null) return; // 幂等
-      if (closed) throw new DbNotConnectedError(`database ${target} (already closed)`);
+      if (resource.state === 'ready' || resource.state === 'degraded') return; // 幂等
+      if (resource.state === 'closed' || resource.state === 'draining') {
+        throw new DbNotConnectedError(`database ${target} (already closed)`);
+      }
       try {
-        pool = await driver.create(connection, poolOptions, dialect);
-        await pool.healthCheck();
-        connected = true;
+        await resource.connect(); // 适配器内部已做：探活 + 失败时关掉半开的池 + 错误包装
         lastError = null;
         log?.('db_connected', { target, driver: driver.name, pool: poolOptions });
       } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        lastError = error;
-        // 驱动缺失等**配置类**错误原样抛（信息更具体）；其它包成连接错误
-        connected = false;
-        if (pool !== null) {
-          await pool.close().catch(() => undefined);
-          pool = null;
-        }
-        if (error instanceof DbError) throw error;
-        throw new DbConnectionError(`cannot connect to ${target}: ${error.message}`, error);
+        lastError = err instanceof Error ? err : new Error(String(err));
+        throw lastError;
       }
     },
 
     async close(): Promise<void> {
-      closed = true;
-      connected = false;
-      const current = pool;
-      pool = null;
-      if (current !== null) {
-        await current.close().catch((err: unknown) => {
-          log?.('db_close_failed', { target, err: err instanceof Error ? err.message : String(err) });
-        });
-        log?.('db_closed', { target });
+      const wasConnected = resource.state === 'ready' || resource.state === 'degraded';
+      try {
+        await resource.close(); // 幂等
+      } catch (err) {
+        // 保持既有语义：关闭失败只记日志，不把停机流程炸掉
+        log?.('db_close_failed', { target, err: err instanceof Error ? err.message : String(err) });
       }
+      if (wasConnected) log?.('db_closed', { target });
     },
 
     async healthCheck(): Promise<HealthReport> {
-      if (closed) return { ok: false, error: 'database is closed', target };
-      if (pool === null || !connected) {
+      if (resource.state === 'closed') return { ok: false, error: 'database is closed', target };
+      if (resource.state === 'idle' || resource.state === 'connecting') {
         const reason = lastError === null ? 'database is not connected' : lastError.message;
         return { ok: false, error: reason, target };
       }
       const startedAt = Date.now();
       try {
-        await pool.healthCheck();
+        await resource.checkHealth();
         return { ok: true, latencyMs: Date.now() - startedAt, target };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -200,13 +210,13 @@ export function createDatabase(options: DatabaseOptions): Database {
     runner(): Runner {
       return {
         async all(sql, params) {
-          return requirePool().all(sql, params);
+          return (await requirePool()).all(sql, params);
         },
         async run(sql, params) {
-          return requirePool().run(sql, params);
+          return (await requirePool()).run(sql, params);
         },
         async transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
-          const current = requirePool();
+          const current = await requirePool();
           if (typeof current.transaction !== 'function') {
             throw new DbConfigError(`driver ${driver.name} does not support transactions`);
           }
@@ -216,23 +226,23 @@ export function createDatabase(options: DatabaseOptions): Database {
     },
 
     async raw<T = Row>(sql: string, params: readonly unknown[] = []): Promise<T[]> {
-      return requirePool().all(sql, params) as Promise<T[]>;
+      return (await requirePool()).all(sql, params) as Promise<T[]>;
     },
 
     async rawRun(sql: string, params: readonly unknown[] = []): Promise<number> {
-      return requirePool().run(sql, params);
+      return (await requirePool()).run(sql, params);
     },
 
     stats(): Record<string, unknown> | null {
-      if (pool === null || typeof pool.stats !== 'function') return null;
-      return pool.stats();
+      // 驱动自报的统计；驱动没给就是 null（**不编造**池数字）
+      return resource.stats().driver;
     },
 
     async sync(models: readonly Model[] | Model, syncOptions: SyncOptions = {}): Promise<SyncReport> {
       const list = Array.isArray(models) ? models : [models as Model];
       // 先注册：这样 sync 之后的 repository() 与关联解析都能按名字找到 model
       for (const model of list) registry.set(model.name, model);
-      return syncModels(dialect, requirePool(), list, {
+      return syncModels(dialect, await requirePool(), list, {
         auto: syncOptions.auto ?? options.migrations?.auto === true,
         ...(syncOptions.comments === undefined
           ? options.migrations?.comments === undefined
@@ -244,11 +254,11 @@ export function createDatabase(options: DatabaseOptions): Database {
     },
 
     async inspectTable(table: string): Promise<TableInfo> {
-      return inspectTable(dialect, requirePool(), table);
+      return inspectTable(dialect, await requirePool(), table);
     },
 
     async checkDrift(model: Model): Promise<DriftReport> {
-      const info = await inspectTable(dialect, requirePool(), model.table);
+      const info = await inspectTable(dialect, await requirePool(), model.table);
       return checkDrift(dialect, model, info);
     },
 
@@ -267,17 +277,17 @@ export function createDatabase(options: DatabaseOptions): Database {
        * 真发查询时才要求已连接（否则抛 DbNotConnectedError，而不是悄悄对着空池跑）。
        */
       const lazy: Runner = {
-        all: (sql, params) => requirePool().all(sql, params),
-        run: (sql, params) => requirePool().run(sql, params),
-        insertReturning: (sql, params) => {
-          const current = requirePool();
+        all: async (sql, params) => (await requirePool()).all(sql, params),
+        run: async (sql, params) => (await requirePool()).run(sql, params),
+        insertReturning: async (sql, params) => {
+          const current = await requirePool();
           if (typeof current.insertReturning !== 'function') {
             throw new DbConfigError(`driver ${driver.name} cannot read back generated ids (no insertReturning)`);
           }
           return current.insertReturning(sql, params);
         },
-        transaction: (fn) => {
-          const current = requirePool();
+        transaction: async (fn) => {
+          const current = await requirePool();
           if (typeof current.transaction !== 'function') throw new DbConfigError(`driver ${driver.name} does not support transactions`);
           return current.transaction(fn);
         },

@@ -490,6 +490,20 @@ export interface RepositoryOptions {
 
 export declare function createRepository<M extends Model>(model: M, options: RepositoryOptions): Repository<M>;
 
+// --- SQL 适配器 -------------------------------------------------------------
+/** SQL 适配器参数：方言 + 驱动工厂。 */
+export interface SqlAdapterOptions {
+  dialect: Dialect;
+  driver: DriverFactory;
+}
+/**
+ * 把既有的 `DriverFactory` 包成 core 的 `DatabaseAdapter` —— 这样 SQL 与
+ * Redis/MongoDB/自装适配器走**同一条**连接生命周期（core 的 `supervise()`）。
+ */
+export declare function createSqlAdapter(
+  options: SqlAdapterOptions,
+): import('@actor/db-core').DatabaseAdapter<DriverPool, NormalizedConnection>;
+
 // --- 应用层插件（让 web 层开箱可用）------------------------------------------
 
 /** 插件需要的**应用侧**能力（结构化，不 import @actor/app）。 */

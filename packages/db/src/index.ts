@@ -59,6 +59,9 @@ export { createPgDriver } from './drivers/pg.ts';
 export { createMysqlDriver } from './drivers/mysql.ts';
 export type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';
 
+// --- SQL 适配器（把 DriverFactory 包成 core 的 DatabaseAdapter）-----------------
+export { createSqlAdapter, type SqlAdapterOptions } from './sql-adapter.ts';
+
 // --- 应用层插件（让 web 层开箱可用）------------------------------------------
 export {
   databasePlugin,

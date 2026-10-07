@@ -92,7 +92,7 @@ export interface ManagedConnection<C = unknown> {
   readonly client: C;
   healthCheck(): Promise<void>;
   close(): Promise<void>;
-  stats?(): Record<string, unknown>;
+  stats?(): Record<string, unknown> | null;
   keepAlive?(): Promise<void>;
 }
 export interface AdapterConnectInput<Conn extends BaseConnection = BaseConnection> {

@@ -381,12 +381,29 @@ export const myDb = defineDatabaseAdapter({
   适配器 kind 分支（redis/ioredis/mongodb），带证伪用例 —— 与既有"方言门禁"同构的对偶门禁。
 - **验证**：全量 **742/742**、typecheck 0、文档站 41 页。
 
-尚未完成（M7b 剩余 + M7a 第二部分）：
+### M7a 第二部分（已完成）：SQL 接到 `supervise()` 上
+
+- 新增 `packages/db/src/sql-adapter.ts`：`createSqlAdapter({ dialect, driver })` 把既有的 `DriverFactory`
+  包成 core 的 `DatabaseAdapter`。SQL 侧的语义在这里**原样保住**：`DbError` 原样抛、
+  其它包成 `DbConnectionError`、建连失败时**关掉半开的池**（不泄漏连接）。
+- `database.ts` 的生命周期改为走 `supervise()`；边界翻译（设计文档早先列的四处风险逐个处理）：
+  - supervisor 的 `DbUnavailableError` → 翻译回 **`DbNotConnectedError`**（既有使用者依赖这个类型，
+    并保留 `(already closed)` 这两种消息形态）；
+  - `logger` 事件串保持 `db_connected` / `db_closed` / `db_close_failed`（关闭失败仍然只记日志，不炸停机流程）；
+  - `stats()` 如实透传驱动统计，驱动没给就是 `null`；
+  - 适配器从**方言描述符**取 `driverPackage`/`connectionKind`（见下）。
+- **等价性证明**：新增 `packages/db/test/sql-adapter-contract.test.ts` —— 用**同一套契约断言**跑 SQL 适配器
+  （假 SQL 驱动）7 条全绿，另有 4 条 SQL 专属断言（错误包装、半开池必关、`DbNotConnectedError` 翻译、
+  stats 如实）。也就是说"接上 supervisor 后行为等价"是**被测试证明**的，不是人肉对比。
+- **门禁抓到我自己**：`sql-adapter.ts` 初版写了 `dialect === 'sqlite' ? 'file' : 'host'` —— 直接被
+  M7a 新加的"方言门禁"拦下（`dialects/` 之外不得按方言名分支），改为读方言描述符的 `connectionKind`
+  能力位。这条门禁当场证明了它的价值。
+- **验证**：全量 **753/753**、typecheck 0、文档站 41 页、`dialects/` 之外方言名分支 **0**。
+
+尚未完成（M7b 剩余）：
 1. **真库用例**：`ACTOR_TEST_REDIS_URL` / `ACTOR_TEST_IOREDIS_URL` / `ACTOR_TEST_MONGO_URL` /
    `ACTOR_TEST_PG_URL` / `ACTOR_TEST_MYSQL_URL` / `ACTOR_TEST_MSSQL_URL` 环境开关 + `scripts/dev-databases.mjs`
-   （docker 起库）；SQL 三家的真库用例跑**同一套契约断言**。
-2. **把 SQL 侧接到 `supervise()` 上**（`sqlAdapter` 包装 DriverFactory，边界翻译错误类型与日志事件），
-   用契约套件证明"接上后行为等价"。
+   （docker 起库）；SQL 三家的真库用例跑**同一套契约断言**（适配器已就位，只差环境）。
 
 ## 9. 分期路线
 
