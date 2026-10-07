@@ -114,6 +114,71 @@ actor new app my-app --with redis,mail     # 基础模板（web + data）+ 追�
 - 还没实现片段的能力（当前是 `db` / `mongodb`）**明确报错**，不会生成一半；
 - `--with` 是**追加**：基础模板自带 web + data（模板代码依赖它们）。
 
+### 用短名写（应用层语法糖）
+
+同一条定义有**两个名字**：`defineXxx` 是规范名，小写短名是**同一个对象的别名**（不是包装函数）。
+两种写法完全等价、可以混用，选你觉得好读的那种：
+
+```ts
+// server.ts —— 两种写法混用也没问题
+import { app, config, module } from '@actor/app';            // defineApp/defineConfig/defineModule
+import { controller, get, httpPlugin } from '@actor/web';     // defineController
+
+export default app({
+  config: config({ port: { type: 'number', default: 3000 } }),
+  modules: [
+    module({
+      name: 'notes',
+      routes: [controller({ name: 'notes', routes: [get('/notes', () => [])] })],
+    }),
+  ],
+  plugins: [httpPlugin({ port: 0 })],
+});
+```
+
+**为什么可以放心用短名**：`test/unit-sugar-aliases.test.js` 逐包逐名断言 `short === canonical`
+（用 `===` 钉死，不只是"行为像"）——谁要是把它改成包装函数，门禁立刻红。所以这里**不再抄一遍等价性代码**：
+一份可执行的恒等断言比文档里再贴一段"两种写法"更不容易腐烂。
+
+短名清单（都来自 `define*`，只是去掉前缀、首字母小写）：
+
+| 包 | 短名 |
+|---|---|
+| `@actor/app` | `app` `config` `module` `plugin` |
+| `@actor/web` | `controller` `router` `middleware` `webPlugin` `uploadStorage` |
+| `@actor/db` / `@actor/mongodb` | `model` / `collection` |
+| `@actor/data` | `aggregate` `eventSchema` `evolution` |
+| `@actor/mail` / `@actor/resource` | `mailTransport` / `managedResource` |
+
+两个**没有**短名的地方（不是遗漏，是名字已被占用）：
+
+- `defineRoutes` 没有短名 —— `routes` 在 `@actor/web` 里已经是**另一个东西**（路由表的标记，配 `RoutesTableSpec`）；
+- `defineResourceAdapter` 没有短名 —— `resourceAdapter` 已经是**插件装载函数**（`resourceAdapter(adapter, { name })`）。
+
+### 进程入口：`runApp()` 收敛样板
+
+每个 `main.ts` 都要写一遍的 `createApp → 接优雅停 → start → 打印地址`，现在一次调用就够：
+
+```ts
+// main.ts
+import { runApp } from '@actor/app';
+
+import app, { http } from './server.ts';
+
+await runApp(app, {
+  configDir: new URL('./config', import.meta.url).pathname,
+  onStarted: () => {
+    const address = http.address();
+    console.log(`listening on http://${String(address?.host)}:${String(address?.port)}`);
+  },
+});
+```
+
+`runApp` 把一处**容易写错的顺序**固定下来了：**信号处理器在任何 `await` 之前注册** ——
+否则启动窗口内收到 `SIGTERM` 会走 Node 默认行为（直接退出，不做优雅停）。
+退出行为可注入（`exit`，默认 `process.exit`），所以这条路径**能被测试**：`packages/web/test/run-app.test.ts`
+真的发一个信号、断言"停一次、退 0、重复信号不重复退"。
+
 ### 另一种布局：`--layout flat`
 
 ```bash
