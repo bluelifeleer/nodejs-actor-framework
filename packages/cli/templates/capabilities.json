@@ -1,0 +1,56 @@
+{
+  "generatedBy": "node packages/cli/src/freeze-capabilities.ts",
+  "packages": [
+    {
+      "name": "@actor/app",
+      "dependencies": [
+        "nodejs-actor-framework"
+      ]
+    },
+    {
+      "name": "@actor/data",
+      "dependencies": []
+    },
+    {
+      "name": "@actor/db",
+      "dependencies": [
+        "@actor/db-core"
+      ]
+    },
+    {
+      "name": "@actor/db-core",
+      "dependencies": [
+        "@actor/resource"
+      ]
+    },
+    {
+      "name": "@actor/mail",
+      "dependencies": [
+        "@actor/resource"
+      ]
+    },
+    {
+      "name": "@actor/mongodb",
+      "dependencies": [
+        "@actor/resource"
+      ]
+    },
+    {
+      "name": "@actor/redis",
+      "dependencies": [
+        "@actor/resource"
+      ]
+    },
+    {
+      "name": "@actor/resource",
+      "dependencies": []
+    },
+    {
+      "name": "@actor/web",
+      "dependencies": [
+        "@actor/app",
+        "nodejs-actor-framework"
+      ]
+    }
+  ]
+}
