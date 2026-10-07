@@ -340,6 +340,45 @@ export interface RepositoryOptions {
 
 export declare function createRepository<M extends Model>(model: M, options: RepositoryOptions): Repository<M>;
 
+// --- 应用层插件（让 web 层开箱可用）------------------------------------------
+
+/** 插件需要的**应用侧**能力（结构化，不 import @actor/app）。 */
+export interface DbPluginApp {
+  config: { get<T>(key: string): T };
+  provide?(name: string, value: unknown): void;
+  get?<T>(name: string): T;
+}
+
+/** `databasePlugin()` 的返回值：一个 PluginSpec 形状的对象。 */
+export interface DatabasePluginSpec {
+  name: string;
+  config: Record<string, unknown>;
+  onReady(app: DbPluginApp): Promise<void>;
+  onStopping(app: DbPluginApp): Promise<void>;
+}
+
+export interface DatabasePluginOptions {
+  /** 插件名（也是配置节名），默认 `db`。 */
+  name?: string;
+  /** 要 sync 的 model（也会被注册，供关联解析）。 */
+  models?: readonly Model[];
+  /** 注册成应用服务的仓储：`{ notes: Note }` 或 `{ notes: 'notes' }`。 */
+  repositories?: Record<string, Model | string>;
+  /** 方言（不写则从 connection 推断 / 读配置 `plugins.<name>.driver` / 默认 pgsql）。 */
+  dialect?: Dialect;
+  /** 连接配置（不写则读配置：有 url 用 url，否则用 filename 走 sqlite）。 */
+  connection?: Record<string, unknown>;
+  pool?: PoolOptions;
+  /** 是否允许 sync 自动补安全列（默认 false，也可由配置打开）。 */
+  autoMigrate?: boolean;
+  /** 连接后是否必须健康（默认 true）。 */
+  requireHealthy?: boolean;
+  logger?: (event: string, meta?: Record<string, unknown>) => void;
+}
+
+/** 让 web 层开箱可用的数据库插件（连接 + 建表 + 注册服务 + 优雅关池）。 */
+export declare function databasePlugin(options?: DatabasePluginOptions): DatabasePluginSpec;
+
 // --- 数据库句柄 -------------------------------------------------------------
 
 export interface DatabaseOptions {

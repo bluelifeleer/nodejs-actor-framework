@@ -11,7 +11,8 @@
     "node": ">=24"
   },
   "devDependencies": {
-    "@actor/data": "*"
+    "@actor/data": "*",
+    "@actor/app": "*"
   },
   "files": [
     "src"

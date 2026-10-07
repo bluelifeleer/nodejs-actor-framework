@@ -331,6 +331,7 @@ export const DOC_RECEIVERS = ['ctx', 'system', 'cluster', 'app', 'pubsub'];
 export const APP_LAYER_MEMBERS = new Set([
   'actor',      // guide 03：@actor/web 的 ctx.actor(name)（Web 请求上下文，不是内核 ActorContext）
   'repository', // guide 04：@actor/web 的 ctx.repository(name)
+  'get',        // guide 08：@actor/web 的 ctx.get(name)（按名字取应用服务/provider，内核 ActorContext 没有它）
   'game',       // README：应用自己注册到 system 上的服务名
 ]);
 

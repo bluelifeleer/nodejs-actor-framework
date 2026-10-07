@@ -53,6 +53,14 @@ export { createPgDriver } from './drivers/pg.ts';
 export { createMysqlDriver } from './drivers/mysql.ts';
 export type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';
 
+// --- 应用层插件（让 web 层开箱可用）------------------------------------------
+export {
+  databasePlugin,
+  type DatabasePluginOptions,
+  type DatabasePluginSpec,
+  type DbPluginApp,
+} from './plugin.ts';
+
 export { createDatabase, defaultPortFor, DEFAULT_POOL, type Database, type DatabaseOptions, type HealthReport } from './database.ts';
 
 // --- model 层（用户写声明，框架生成 DDL / 做漂移检测）-------------------------

@@ -1,18 +1,14 @@
 import { defineConfig } from '@actor/app';
 
 /**
- * 数据库配置：**连接由使用者在配置里给**（默认 sqlite 文件；换 PG/MySQL 只改这几行 + 装驱动）。
+ * 应用配置。数据库的连接参数**不需要在这里声明** —— `databasePlugin` 自带配置节
+ * `plugins.db.*`（driver / url / file / poolMax / autoMigrate），会被合并进应用配置。
  *
- * 环境变量覆盖用双下划线：`APP_DATABASE__DRIVER=pgsql APP_DATABASE__URL=pgsql://user:pass@host:5432/db`。
+ * 覆盖方式（双下划线表示层级）：
+ *   APP_PLUGINS__DB__DRIVER=pgsql
+ *   APP_PLUGINS__DB__URL='pgsql://user:pass@host:5432/appdb'   # 需要 npm i pg
+ *   APP_PLUGINS__DB__FILE=./data/app-db.sqlite                # 默认 sqlite
  */
 export default defineConfig({
   name: { type: 'string', default: 'app-db' },
-  dataDir: { type: 'string', default: './data' },
-  // 嵌套分组：纯对象 + 每组里是字段声明（与 defineConfig 的 DSL 一致）
-  database: {
-    driver: { type: 'string', default: 'sqlite' }, // sqlite | pgsql | mysql
-    url: { type: 'string', default: '' }, // 给了 url 就用它（DSN），否则用 file
-    file: { type: 'string', default: './data/app-db.sqlite' },
-    poolMax: { type: 'number', default: 10 },
-  },
 });

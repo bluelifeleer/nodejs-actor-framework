@@ -334,41 +334,67 @@ await db.close();
 **分工**：`@actor/db` 管连接、方言、model 与映射；`@actor/data` 管仓储语义（游标分页、outbox、
 投影、迁移 runner、事件演进）。两边用上面的 `runner()` 组合，不需要二选一。
 
-## 接进 `@actor/app`
+## 接进 `@actor/app` 与 Web 层（**开箱可用**）
 
-`@actor/db` 本体是库级 API；接应用时在 module 的 `providers` 里建一个 db（或仓储），
-在生命周期钩子里关池（可跑示例见 [`examples/app-db`](../../examples/app-db/README.md)）：
+推荐直接用 `databasePlugin`：它负责连接、健康检查、建表、把 `db` 与仓储**注册成应用服务**，
+并在停机时优雅关池。业务代码（控制器）只需要 `ctx.get('notes')`：
 
 ```js
-// src/module.ts（片段）
-import { createDatabase, defineModel } from '@actor/db';
+// src/app.ts —— 数据库只出现在这一行
+import { databasePlugin } from '@actor/db';
+import { Note } from './models.ts';
 
-const Note = defineModel({ name: 'notes', fields: { /* … */ } });
-let db;
-
-export default defineModule({
-  name: 'db',
-  providers: {
-    // ⚠️ provider 是**同步**解析的（app 解析依赖时不会 await 你的 promise）：
-    //    这里只同步建句柄并返回仓储，需要等待的 connect()/sync() 放到 onStart。
-    //    这能成立是因为 db.repository() 用惰性 runner：拿到仓储时不需要已连接。
-    notes: ({ config }) => {
-      db = createDatabase({
-        connection: { url: config.get('databaseUrl') },   // 例如 APP_DATABASE_URL=pgsql://…
-        pool: { max: config.get('plugins.db.poolMax') },
-      });
-      return db.repository(Note);
-    },
-  },
-  async onStart() {
-    await db.connect();
-    await db.sync([Note]);              // 生产里建议显式跑迁移，而不是依赖 auto
-  },
-  async onStop() {
-    await db?.close();                  // 优雅关池：等查询结束再释放
-  },
+export default defineApp({
+  config,
+  modules: [notesModule],
+  plugins: [
+    databasePlugin({
+      models: [Note],
+      repositories: { notes: Note },   // 控制器里： ctx.get('notes')
+      autoMigrate: true,               // 演示方便；生产建议关掉、走显式迁移
+    }),
+    httpPlugin({ port: 0 }),
+  ],
 });
 ```
+
+```js
+// src/controllers.ts —— 只依赖注入进来的仓储，不关心方言
+import { defineController } from '@actor/web';
+export const notesController = {
+  create: defineController({
+    input: { title: { type: 'string', min: 1 } },
+    async handle(input, ctx) {
+      const notes = ctx.get('notes');           // ← 插件注册的仓储
+      return notes.insert({ title: input.title });
+    },
+  }),
+};
+```
+
+**配置**：插件自带配置节 `plugins.db.*`，用环境变量覆盖（双下划线表示层级）：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `plugins.db.driver` | `sqlite` | `sqlite` / `pgsql` / `mysql`（给 `url` 时按 DSN 推断，可省） |
+| `plugins.db.url` | 空 | DSN，例如 `pgsql://user:pass@host:5432/db`（此时记得 `npm i pg`） |
+| `plugins.db.file` | `./data/app.sqlite` | sqlite 的文件路径（`:memory:` 也行） |
+| `plugins.db.poolMax` | `10` | 池上限（映射到各驱动的真实字段名） |
+| `plugins.db.autoMigrate` | `false` | 是否允许 `sync()` 自动补**安全**的列 |
+
+```bash
+APP_PLUGINS__DB__URL='pgsql://user:pass@host:5432/appdb' node main.ts
+```
+
+插件注册的服务名：`db`（`Database` 句柄，可用 `raw()`/`healthCheck()`/`inspectTable()`）+
+你在 `repositories` 里声明的每个名字（仓储）。**连不上就启动失败**，不会出现"应用起来了但数据库没连上"。
+
+> 插件默认方言是 **sqlite**（零依赖、开箱可用）；包级 `createDatabase()` 的默认方言仍是 **pgsql**。
+> 想手写接线也可以（不走插件）：注意 **provider 是同步解析的**（app 解析依赖时不会 await 你的 promise），
+> 所以要在 provider 里同步建句柄并返回仓储（惰性 runner 让它先可用），把 `connect()`/`sync()` 放进 `onStart`、
+> 把 `db.close()` 放进 `onStop` —— 这也正是 `databasePlugin` 内部做的事。
+
+完整可跑示例：[`examples/app-db`](../../examples/app-db/README.md)。
 
 ## 诚实的边界（请先读这段）
 

@@ -221,6 +221,27 @@ const Note = defineModel({
   `SyncReport` 因此新增 `comments` / `unsupportedComments` 两个字段。
 - 指南 `docs/guide/08-database.md` 增加完整类型对照表与注释示例（新 verify 块真跑）。
 
+### Round 6（已完成）：让 web 层开箱可用（用户反馈第 ③ 点）
+
+- 新增一等插件 `databasePlugin()`（`packages/db/src/plugin.ts`）：返回的是**结构化 PluginSpec**
+  （`name` / `config` / `onReady` / `onStopping`），**不反向依赖 `@actor/app`** —— 两边靠结构兼容。
+  - 配置节 `plugins.db.*`：`driver`（插件默认 **sqlite**，零依赖开箱可用；包级 `createDatabase()` 默认仍是
+    **pgsql**）/ `url` / `file` / `poolMax` / `autoMigrate`，可用 `APP_PLUGINS__DB__URL` 这类环境变量覆盖；
+  - `onReady`：建库 → `connect()` → 健康检查（不健康就**启动失败**）→ `sync(models)`（按 `autoMigrate` 决定
+    是否自动补安全列）→ 通过 `app.provide` 注册 `db` 与每个声明的仓储；
+  - `onStopping`：优雅关池（等查询结束再释放）；
+  - 方言推断：显式 `dialect` → 从 `connection` 推断（`filename` ⇒ sqlite、`url` ⇒ 按 DSN）→ 配置 → 默认；
+    需要 host 的方言却没给 url 时，报一句能照着做的错（而不是掉进通用解析错误）。
+- `examples/app-db` 重写为"**插件一行接入 + 控制器只用 `ctx.get`**"：`src/app.ts` 里一行
+  `databasePlugin({ models, repositories: { notes: Note } })`，`src/module.ts` 里**没有任何数据库接线**，
+  控制器只依赖注入的仓储。真实 HTTP 端到端复验：POST 201 → GET 200（JSON 列解码回数组）→ PATCH(版本 0→1)
+  → PATCH 过期版本 **409** → DELETE 200 → GET 404 → SIGTERM 优雅退出（插件关池）✓。
+- 测试 3 条（sqlite 真库 + 真 app）：一行接入后 `app.get('db')`/`app.get('notes')` 可用且数据落盘、
+  连不上时启动必须失败、`autoMigrate` 开了才自动补列（默认遇到漂移就启动失败）。
+- 指南的"接进 @actor/app"整节改写为插件版（含配置表、环境变量示例、插件注册的服务名），
+  并保留"手写接线要注意 provider 是同步的"那段说明；示例 README 同步更新；示例冒烟门禁改用
+  `APP_PLUGINS__DB__FILE`；内核成员门禁的"应用/Web 层"白名单补 `ctx.get`（附理由）。
+
 ### 待做
  —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。
