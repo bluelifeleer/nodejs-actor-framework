@@ -1,5 +1,63 @@
 # M9a 设计：脚手架与 CLI（layered 布局 / 能力选择 / `new plugin`）
 
+
+---
+
+## 0. 交接记录（M9 进度快照，含未完成项与下一步顺序）
+
+> 这一节是给"下一个接手的人/下一个会话"看的：M9 没做完，做到哪儿、怎么继续，都写在这儿。
+> 每一条都对应已提交的 commit，可以 `git log --oneline` 核对。
+
+### 已完成（都已提交，全量 978/978 通过、typecheck 0）
+
+| 期 | 内容 | commit |
+|---|---|---|
+| M9a | layered 为默认布局（`server.ts` 装配 / `main.ts` 进程入口 / 分层目录 / 自带 tsconfig），flat 保留旧形状（`--layout flat`）；两种布局都真跑生成的测试；layered 额外 typecheck | `8234429` |
+| M9b | 能力模型 + 从各包 `package.json` 推导闭包 + 固化 `templates/capabilities.json`（含一致性测试） | `e8eaa8d` |
+| M9b | 模板**片段机制** + `--web-plugins upload,auth,debug` + 生成插件桶 `src/plugin/index.ts`（不改用户的 `server.ts`） | `a3ee7ac` |
+| M9b | `--with redis,mail`：闭包写进生成项目的 `package.json`；服务类片段按 env 门控；未实现的片段**明确拒绝**而非生成一半 | `b110b8c` |
+| M9c | `actor add`（非破坏性、只增量、跳过已存在片段、打印要配的 env）+ `--dry-run`（一个字节都不写）+ 解析器"带值选项"修复 | `9b85023` |
+| M9c | `doctor` 扩展：能力一致性（声明了包却没接线）、布局一致性（放错层只提示、不擅自改） | `35d2301` |
+| M9d | 包矩阵接线完整性门禁（四张矩阵 + 可证伪 + 例外自清机制） | `418829a` |
+| — | 修完 cli/testkit 的 11 处类型错误并把它们接进 typecheck（例外自清走通一轮） | `daf6db7` |
+| M9d | `actor new plugin --kind web|resource`：骨架自带**已发布**契约套件的 `test/contract.test.ts`；修掉契约套件自己漏 `await` 的 bug | `6163060` |
+| M9e | T1 应用层小写短名（`app/config/module/plugin/controller/router/middleware/webPlugin/uploadStorage/model/collection/aggregate/eventSchema/evolution/mailTransport/managedResource`），别名与 `define*` **同一对象** + 恒等门禁 | `b3d1318` |
+| M9e | `runApp()` 收敛 `main.ts` 样板（信号处理器在首个 `await` 之前注册；退出行为可注入以便测试）；`beforeStart`；默认日志前缀 `[main]` | `08c98f7` `3aad754` `ad61462` |
+| M9e | 指南加"短名""`runApp`"两节 | `98e2f7a` |
+| M9e | `examples/*/main.ts` **8/8** 迁到 `runApp`（含 `app-data` 的迁移门进 `beforeStart`） | `84b4c0e` `69a099a` |
+| M9e | **`examples/` 正式进 typecheck**：欠账 14 → 0（放宽 `PluginSpec.config`、插件 spec 的 `routes` 接受助手形状、`app-web` 改用 `router:` 字段、`app-data` 在函数体内收窄 config） | `6d4c1a0` `d3f439e` `79f8baa` `0fd0534` `d4637ec` |
+
+### 未完成（按建议顺序）
+
+1. **M9e 剩余：保留名常量 + 启动期校验**（对应 `m9-define-sugar.md` §8.5 的②）。
+   现状：`ctx` 保留键的洞已修（`RESERVED_CONTEXT_KEYS` 已导出、框架槽改用 WeakMap，见 `28e26b2`），
+   但**service 名 / 路由前缀**的保留名清单与启动期校验还没做。做法：`@actor/web` 导出单一来源的
+   `RESERVED_SERVICE_NAMES` / `RESERVED_ROUTE_PREFIXES`，装配期撞名**明确报错**（延续"响亮失败优于静默覆盖"）。
+2. **M9f（T2 参数简写）**：config 值即 schema（值推 `{type,default}`，全量写法保留可混用）；
+   controller 输入声明合一（字符串简写展开、默认来自 body，`from:'query'|'params'` 保留）；
+   中间件阶段简写。**每条都要有"糖产出与长名深比较相等"的可证伪测试**。
+3. **M9g（T3 工厂 + debug 作用域）**：`crudRoutes(prefix, model, opts)`（五路由 + input + 404/409 + 分页，可逐项覆盖）、
+   `healthRoutes()`；debug 的**四层可见性作用域**（全局 / 路由前缀 / 模块 / 控制器，见 `m9-define-sugar.md` §6）
+   影响 `/__debug/routes` 与 `/__debug/config` 的暴露，并写死"只减少信息面、不是安全边界"。
+4. **`actor new plugin` 补 `app` / `mail` 两种 kind**（目前只有 `web` / `resource`；未知 kind 会明确拒绝）。
+5. 次要：`doctor` 的"模板漂移"提示（原计划在 M9c，优先级最低）。
+
+### 等你拍板的三件事（都不阻塞实现，按我给的默认继续即可）
+
+1. `routes` 已被"路由表标记"占用（`context.ts`，配 `RoutesTableSpec`），与 `defineRoutes`（恒等类型辅助）是两回事
+   → 我建议 **`defineRoutes` 保持规范名、不设短名**（零破坏）；
+2. 指南是否要补一段"短名与 `define*` 两种写法"的 verify 块（我现在靠 `test/unit-sugar-aliases.test.js`
+   的 `===` 恒等断言保证等价，没有在文档里再抄一遍代码）；
+3. `examples` 里那类"类型比运行时严"的问题（`Route` vs 助手元组、`routes` vs `router`），
+   以后是否一律按"**照仓库已有先例放宽类型**"处理（我这几轮就是这么做的，先例见 `routes.ts` 里 `defineRoutes` 的注释）。
+
+### 本会话反复出现的一个教训（值得写进纪律）
+
+**"typecheck 0"必须说清覆盖范围** —— 这个会话里出现过三次"绿但不覆盖"：
+`cli`/`testkit` 从未进 typecheck（11 处错误）、`examples/` 从未进 typecheck（14 处错误）、
+示例 `main.ts` 的迁移只有冒烟在管（冒烟只看"起得来"，真正的失败在集成测试的优雅停止断言）。
+三次的共同点：改动生效了，但**验证网没罩住它**。现在这三块都进矩阵了。
+
 > 用户已定的决策（本节即"设计记录"）：
 > 1. 生成项目的**默认布局是 layered**（一个项目的业务面很多，全挤在扁平 `src/` 里不合理）；
 > 2. 能力粒度：**`upload` / `auth` / `debug` 算 web 的插件选项**，不是独立包；其中 `debug` 要支持**全局/局部**设置；
