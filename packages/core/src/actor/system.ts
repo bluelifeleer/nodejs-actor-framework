@@ -277,6 +277,31 @@ class ActorSystem extends EventEmitter {
     return this._initPromise;
   }
 
+  /**
+   * 遥测监听器抛错**不能影响内核**（审计 F2）。
+   *
+   * 为什么在 `emit` 上兜：`logger` 与 `spanSink` 各自有 try/catch，但 `system.emit(...)` 是
+   * 文档化的遥测接缝，任何一条 `on('actor_stopped'|'log'|'dead_letter'|…)` 抛错都会沿着
+   * 调用栈炸回去——`_unregister` 在 `cell.stop()` 的 resolve **之前**，于是停机永久挂住；
+   * `_log('actor_crash')` 抛错则让 `crashing` 永久为 true、该 Actor 再也不重启。
+   *
+   * 这里只用一个**不会递归**的兜底（直接调 logger，而不是再走 `_log`），并如实记一条事件：
+   * 监听器坏了要看得见，而不是把内核拖下水。
+   */
+  emit(event: string | symbol, ...args: unknown[]): boolean {
+    try {
+      return super.emit(event, ...args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        if (this.logger) this.logger('event_listener_failed', { event: String(event), err: message });
+      } catch {
+        /* 坏日志器同样不能影响内核 */
+      }
+      return false;
+    }
+  }
+
   /** The installed plugin with that name, or null. */
   plugin(name: string): PluginLike | null {
     return this.installed.get(name) || null;
@@ -367,7 +392,12 @@ class ActorSystem extends EventEmitter {
           this._log('actor_init_retry_failed', { path: target.path, err: retryErr instanceof Error ? retryErr.message : String(retryErr) });
         }
       }
-      if (!recovered) throw err;
+      if (!recovered) {
+        // 审计 F6：失败的 spawn 不能留在注册表里。否则 `listActors()`/`resolve()` 会把它当正常
+        // Actor（半初始化的实例还能收消息、id 被永久占用），而调用方已经拿到"spawn 失败"。
+        this._abandon(cell);
+        throw err;
+      }
     }
 
     this.emit('actor_started', cell.ref);
@@ -577,6 +607,19 @@ class ActorSystem extends EventEmitter {
     // so only paths are indexed (resolve() still accepts an unambiguous id).
     this.cells.set(cell.path, cell);
     this.emit('actor_registered', cell.ref);
+  }
+
+  /**
+   * 丢弃一个从未成功启动的 cell（审计 F6）。
+   *
+   * 与 `_unregister` 的区别：这里还要把半初始化的实例置空（它的 `receive` 仍可被调用），
+   * 并把 id 从根监督者里摘掉，这样 id 可以被重新使用、`listActors()` 也不会报出一个不存在的 Actor。
+   */
+  _abandon(cell: CellLike): void {
+    cell.instance = null;
+    cell.stopped = true;
+    this.rootSupervisor.remove(cell.id);
+    this._unregister(cell);
   }
 
   _unregister(cell: CellLike): void {

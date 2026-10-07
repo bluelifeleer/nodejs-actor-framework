@@ -5,6 +5,7 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
+const { randomBytes } = require('node:crypto');
 const { fileName } = require('./backends/naming.ts');
 const { PersistenceError, PersistenceConflictError } = require('../actor/errors.ts');
 
@@ -45,6 +46,31 @@ const DEFAULT_CAPABILITIES: PersistenceCapabilities = Object.freeze({ conditiona
 /** 一次写入的选项：`expectedVersion` 是**日志当前版本（= 记录条数）**。 */
 interface AppendOptions {
   expectedVersion?: number;
+}
+
+/**
+ * **进程级**写入锁（审计 F3）。
+ *
+ * 为什么不是实例字段：`capabilities().conditionalAppend === 'in-process'` 承诺的是"本进程内安全"，
+ * 而同一个进程里完全可能有两个指向同一目录的实例（两个 system、一个进程里的两个节点）。
+ * 按**绝对路径**在模块级串行化，才真正覆盖"同进程"，同时不同 actor 之间仍然并发。
+ *
+ * 链在 settle 后会被摘掉（避免 Map 无界增长，审计 F9 的同一类问题）。
+ */
+const writeChains = new Map<string, Promise<unknown>>();
+
+function withPathLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeChains.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn) as Promise<T>;
+  const tail: Promise<unknown> = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  writeChains.set(key, tail);
+  void tail.then(() => {
+    if (writeChains.get(key) === tail) writeChains.delete(key); // 链空了就摘掉
+  });
+  return run;
 }
 
 /** Interface documentation; both adapters below implement it. */
@@ -205,6 +231,10 @@ class FilePersistence extends PersistenceAdapter {
   readonly deferDirs: boolean;
   /** 路径 -> 已写入记录条数（进程内缓存）。 */
   readonly _counts: Map<string, LogCount>;
+  /**
+   * 写入串行化的说明见文件顶部的 `withPathLock`：锁是**进程级、按绝对路径**的，
+   * 因为 `capabilities()` 承诺的是"同进程安全"，而同进程可能有多个实例指向同一目录（审计 F3）。
+   */
 
   constructor(options: FilePersistenceOptions = {}) {
     super();
@@ -226,6 +256,11 @@ class FilePersistence extends PersistenceAdapter {
     // 但文件没有事务，崩溃仍可能只落下一部分（读取端的撕裂尾巴规则会把不完整的行截断，
     // 于是最坏情况是"看到批次的前缀"——真要严格原子请用支持事务的后端）
     return { conditionalAppend: 'in-process', batchAppend: 'in-process' };
+  }
+
+  /** 同一 actor 的写操作串行化（读-改-写全程持有）。锁在模块级、按绝对路径，跨实例生效。 */
+  _withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    return withPathLock(this._eventPath(key), fn);
   }
 
   _ensureDirs(): void {
@@ -320,7 +355,7 @@ class FilePersistence extends PersistenceAdapter {
     const target = this._snapshotPath(id);
     try {
       this._ensureDirs();
-      const tmp = `${target}.${process.pid}.tmp`;
+      const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
       await fsp.writeFile(tmp, `${JSON.stringify(state)}\n`);
       await fsp.rename(tmp, target);
     } catch (err) {
@@ -340,32 +375,38 @@ class FilePersistence extends PersistenceAdapter {
   override async appendEvent(id: string, event: unknown, options: AppendOptions = {}): Promise<void> {
     const key = String(id);
     const expected = readExpectedVersion(options);
-    const { count: actual, size } = await this._countFor(key);
-    if (expected !== null && actual !== expected) throw appendConflict(key, expected, actual);
-    const line = `${JSON.stringify(event)}\n`;
-    try {
-      this._ensureDirs();
-      await fsp.appendFile(this._eventPath(key), line);
-      this._counts.set(key, { size: size + Buffer.byteLength(line), count: actual + 1 });
-    } catch (err) {
-      throw new PersistenceError(`cannot append event for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
-    }
+    // 版本检查与写入必须原子（对本进程而言）：整段进串行化链
+    return this._withLock(key, async () => {
+      const { count: actual, size } = await this._countFor(key);
+      if (expected !== null && actual !== expected) throw appendConflict(key, expected, actual);
+      const line = `${JSON.stringify(event)}\n`;
+      try {
+        this._ensureDirs();
+        await fsp.appendFile(this._eventPath(key), line);
+        this._counts.set(key, { size: size + Buffer.byteLength(line), count: actual + 1 });
+      } catch (err) {
+        throw new PersistenceError(`cannot append event for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
+      }
+    });
   }
 
   override async appendEvents(id: string, events: unknown[], options: AppendOptions = {}): Promise<number> {
     const key = String(id);
     const expected = readExpectedVersion(options);
-    const { count: actual, size } = await this._countFor(key);
-    if (expected !== null && actual !== expected) throw appendConflict(key, expected, actual);
-    const lines = events.map((event) => `${JSON.stringify(event)}\n`).join('');
-    try {
-      this._ensureDirs();
-      await fsp.appendFile(this._eventPath(key), lines); // 一次写完整批
-      this._counts.set(key, { size: size + Buffer.byteLength(lines), count: actual + events.length });
-      return events.length;
-    } catch (err) {
-      throw new PersistenceError(`cannot append events for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
-    }
+    // 批量写同样全程持有串行化链（"整批要么都在"这条承诺不能只在单进程外成立）
+    return this._withLock(key, async () => {
+      const { count: actual, size } = await this._countFor(key);
+      if (expected !== null && actual !== expected) throw appendConflict(key, expected, actual);
+      const lines = events.map((event) => `${JSON.stringify(event)}\n`).join('');
+      try {
+        this._ensureDirs();
+        await fsp.appendFile(this._eventPath(key), lines); // 一次写完整批
+        this._counts.set(key, { size: size + Buffer.byteLength(lines), count: actual + events.length });
+        return events.length;
+      } catch (err) {
+        throw new PersistenceError(`cannot append events for ${key}: ${err instanceof Error ? err.message : String(err)}`, { actorId: key });
+      }
+    });
   }
 
   override async loadEvents(id: string): Promise<unknown[]> {

@@ -85,7 +85,16 @@ class WebSocketConnection extends EventEmitter {
     socket.setNoDelay(true);
     socket.on('data', (chunk: Buffer) => this._onData(chunk));
     socket.on('error', (err: Error) => {
-      this.emit('error', err);
+      /**
+       * 审计 F1：EventEmitter 在**没有 `error` 监听者**时 `emit('error')` 会抛
+       * `ERR_UNHANDLED_ERROR`，而抛点就在 net socket 的 error 回调里 → uncaughtException →
+       * 整进程退出。任何客户端 abortive close（移动端切网、代理、k8s 杀连接）都能触发。
+       *
+       * 所以这里**先保证不崩**：有监听者才发 `error`（保持既有语义），同时总是发一个不会抛的
+       * `connection_error`；两者都带上原因，降级是**可见**的而不是被吞掉。
+       */
+      this.emit('connection_error', err);
+      if (this.listenerCount('error') > 0) this.emit('error', err);
       this._teardown(1006);
     });
     socket.on('close', () => this._teardown(1006, { silent: true }));

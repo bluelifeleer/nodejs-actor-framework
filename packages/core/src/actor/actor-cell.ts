@@ -791,8 +791,9 @@ class ActorCell {
     if (this.crashing || this.stopped) return;
     this.crashing = true;
     this.counters.crashed += 1;
-    this.system._log('actor_crash', { path: this.path, err: reason instanceof Error ? reason.message : String(reason) });
     try {
+      // 日志与 teardown 都在 try 内：任何一环抛错都不许把 crashing 永久留在 true
+      this.system._log('actor_crash', { path: this.path, err: reason instanceof Error ? reason.message : String(reason) });
       await this._teardown(reason, msg);
       await this._stopChildren();
     } finally {

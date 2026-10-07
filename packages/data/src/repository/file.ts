@@ -1,4 +1,27 @@
 /**
+ * **进程级**按路径写入锁（审计 F4）。
+ *
+ * `capabilities().conditionalUpdate === 'in-process'` 承诺的是"同进程安全"，而同进程里可能有
+ * 两个仓储实例指向同一目录——实例级锁挡不住它们。按绝对路径在模块级串行化才配得上这个承诺；
+ * 链 settle 后摘除，避免 Map 无界增长。
+ */
+const repositoryWriteChains = new Map<string, Promise<unknown>>();
+
+function withPathLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = repositoryWriteChains.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn) as Promise<T>;
+  const tail: Promise<unknown> = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  repositoryWriteChains.set(key, tail);
+  void tail.then(() => {
+    if (repositoryWriteChains.get(key) === tail) repositoryWriteChains.delete(key);
+  });
+  return run;
+}
+
+/**
  * 文件仓储（M3 第 3 步②）：一实体一文件 + 追加式索引（含 tombstone）。
  *
  * 布局：
@@ -23,7 +46,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   RepositoryConflictError,
@@ -114,7 +137,7 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
 
   async function writeIndex(entries: Map<string, boolean>): Promise<void> {
     fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${indexPath}.${process.pid}.tmp`;
+    const tmp = `${indexPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     const body = [...entries.entries()]
       .map(([id, alive]) => JSON.stringify(alive ? { id } : { id, deleted: true }))
       .join('\n');
@@ -158,7 +181,7 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
   async function writeEntity(id: string, entity: Entity): Promise<void> {
     fs.mkdirSync(entitiesDir, { recursive: true });
     const target = entityPath(id);
-    const tmp = `${target}.${process.pid}.tmp`;
+    const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await fsp.writeFile(tmp, `${JSON.stringify(entity)}\n`);
     await fsp.rename(tmp, target); // 原子替换：读到的要么是旧版本，要么是新版本
   }
@@ -184,6 +207,16 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
     await writeIndex(new Map(alive));
     return { before, after: alive.size };
   }
+
+  /**
+   * 按 id 串行化"读-改-写"（审计 F4）：`conditionalUpdate: 'in-process'` 是给使用者的承诺，
+   * 而 `update()` 原本是"读 → 检查 version → 写"、中间没有串行化 → 同进程并发两次都能成功。
+   *
+   * 刻意**不用**下面的全局 `serialize`：`transaction()` 已经持有它，事务里再调 `update()`
+   * 会等自己、直接死锁。按 id 分链既满足承诺又不与事务互锁。
+   */
+  const serializeById = <R>(key: string, fn: () => Promise<R>): Promise<R> =>
+    withPathLock(entityPath(key), fn);
 
   /** 本进程内串行（与内存适配器同一语义）。 */
   let tail: Promise<unknown> = Promise.resolve();
@@ -290,17 +323,19 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
       if (expected !== undefined && !Number.isInteger(expected)) {
         throw new RepositoryQueryError(`expectedVersion 必须是整数（当前 ${String(expected)}）`);
       }
-      const row = await readEntity(key);
-      const actual = row === null ? null : (row[versionField] as number);
-      if (expected !== undefined && actual !== expected) throw new RepositoryConflictError(key, expected, actual);
-      if (row === null) throw new RepositoryNotFoundError(key);
+      return serializeById(key, async () => {
+        const row = await readEntity(key);
+        const actual = row === null ? null : (row[versionField] as number);
+        if (expected !== undefined && actual !== expected) throw new RepositoryConflictError(key, expected, actual);
+        if (row === null) throw new RepositoryNotFoundError(key);
 
-      const next = { ...row, ...structuredClone(patch) } as Entity;
-      next[idField] = row[idField]; // id 不可改
-      next[versionField] = (row[versionField] as number) + 1;
-      await writeEntity(key, next);
-      // 更新不碰索引：id 集合没变，于是"实体写了、索引没写"这个崩溃窗口不存在
-      return structuredClone(next) as T;
+        const next = { ...row, ...structuredClone(patch) } as Entity;
+        next[idField] = row[idField]; // id 不可改
+        next[versionField] = (row[versionField] as number) + 1;
+        await writeEntity(key, next);
+        // 更新不碰索引：id 集合没变，于是"实体写了、索引没写"这个崩溃窗口不存在
+        return structuredClone(next) as T;
+      });
     },
 
     async delete(id) {

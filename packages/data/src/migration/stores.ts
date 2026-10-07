@@ -5,6 +5,7 @@
  * 只是一个普通的覆盖；`read` 返回每个版本的**最后**状态。
  */
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -71,7 +72,7 @@ export function createFileMigrationStore(options: FileMigrationStoreOptions): Mi
 
   const writeAll = async (records: readonly MigrationRecord[]): Promise<void> => {
     fs.mkdirSync(options.dir, { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
+    const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await fsp.writeFile(tmp, `${JSON.stringify(records, null, 2)}\n`);
     await fsp.rename(tmp, file); // 原子替换：版本表不会读到写了一半的内容
   };

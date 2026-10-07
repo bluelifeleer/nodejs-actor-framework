@@ -4,6 +4,7 @@
 
 const fs = require('fs');
 const fsp = require('fs/promises');
+const { randomBytes } = require('node:crypto');
 const path = require('path');
 
 /**
@@ -76,7 +77,7 @@ class Manifest {
 
   async _persist(): Promise<void> {
     const entries = await this._load();
-    const tmp = `${this.path}.${process.pid}.tmp`;
+    const tmp = `${this.path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await fsp.writeFile(tmp, `${JSON.stringify({ version: 1, actors: entries }, null, 2)}\n`);
     await fsp.rename(tmp, this.path);
   }

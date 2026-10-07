@@ -219,6 +219,12 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
           close: (code?: number, reason?: string) => socket.close(code, reason),
         };
         registry.register(connection);
+        // 审计 F1：连接上的 error 必须有监听者 —— 否则 `emit('error')` 在无监听者时会抛
+        // ERR_UNHANDLED_ERROR，而抛点在 net socket 的 error 回调里，一次 RST 就能打崩整个进程。
+        // 这里**显式**记一条日志（而不是静默吞掉），保持"降级可见"。
+        socket.on('error', ((err: Error) => {
+          app.emit('ws:connection:error', { message: err.message });
+        }) as never);
         socket.on('close', (() => {
           registry.unregister(connection.id);
           sockets.delete(socket);

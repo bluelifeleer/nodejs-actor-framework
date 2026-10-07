@@ -5,6 +5,7 @@
  * 跨实例可读。日志读取则是"把内核的 `store.loadEvents` 包一层"，用注册表补号并取出 `seq/eventId`。
  */
 
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -61,7 +62,7 @@ export function createFileOutboxCursor(options: FileOutboxCursorOptions): Outbox
     async write(seq) {
       checkSeq(seq);
       fs.mkdirSync(options.dir, { recursive: true });
-      const tmp = `${file}.${process.pid}.tmp`;
+      const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
       await fsp.writeFile(tmp, `${JSON.stringify({ cursor: seq })}\n`);
       await fsp.rename(tmp, file); // 原子替换：不会读到写了一半的游标
     },
