@@ -177,3 +177,40 @@ test('schema/mysql: 已存在的索引名要容忍（mysql 不支持 CREATE INDE
     await db.close();
   }
 });
+
+test('schema/pg: 注释走独立的 COMMENT ON 语句（幂等，每次 sync 都会发）', async () => {
+  const fake = fakePgBackend();
+  const Commented = defineModel({
+    name: 'notes',
+    comment: '用户笔记',
+    fields: {
+      id: { type: 'uuid', primaryKey: true },
+      title: { type: 'string', length: 200, comment: "标题（it's ok）" },
+    },
+  });
+  const db = createDatabase({
+    dialect: 'pgsql',
+    connection: { host: 'h', database: 'd' },
+    driver: createPgDriver(async () => fake.module),
+  });
+  await db.connect();
+  try {
+    const report = await db.sync([Commented]);
+    const comments = fake.calls.filter((sql) => /^COMMENT ON /i.test(sql.trim()));
+    assert.deepStrictEqual(
+      comments,
+      [`COMMENT ON TABLE "notes" IS '用户笔记'`, `COMMENT ON COLUMN "notes"."title" IS '标题（it''s ok）'`],
+      `COMMENT 语句不对：${JSON.stringify(comments)}`,
+    );
+    assert.deepStrictEqual(report.comments, ['notes', 'notes.title']);
+    assert.deepStrictEqual(report.unsupportedComments, []);
+
+    // 再 sync 一次（表已存在）：pg 的 COMMENT 是幂等的，仍然会发（幂等 + 修正历史遗留注释）
+    const before = fake.calls.filter((sql) => /^COMMENT ON /i.test(sql)).length;
+    await db.sync([Commented]);
+    const after = fake.calls.filter((sql) => /^COMMENT ON /i.test(sql)).length;
+    assert.strictEqual(after - before, 2, 'pg 每次 sync 都应当重新应用注释（幂等）');
+  } finally {
+    await db.close();
+  }
+});

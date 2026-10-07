@@ -261,6 +261,10 @@ export interface SyncReport {
   created: string[];
   altered: string[];
   indexes: string[];
+  /** 成功应用了注释的目标（`notes` / `notes.title`）。 */
+  comments: string[];
+  /** **没有**被应用的注释目标 + 原因（不静默丢弃）。 */
+  unsupportedComments: string[];
 }
 export interface SyncOptions {
   auto?: boolean;

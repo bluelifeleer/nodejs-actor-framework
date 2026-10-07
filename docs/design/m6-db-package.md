@@ -206,6 +206,21 @@ const Note = defineModel({
    所以正确写法是"同步建句柄 + 返回仓储（惰性 runner 让它可以先拿），connect/sync 放 onStart"。
    示例与指南都已改正（示例的错误正是被 `http:error` 事件暴露出来的）。
 
+### Round 5（已完成）：补类型 + 补注释（用户反馈）
+
+- **类型**：`LogicalType` 从 11 个扩到 17 个 —— 新增 `bigText`（MySQL `longtext`）、`smallint`、
+  `decimal`（`precision`/`scale`，默认 10,2）、`date`、`time`、`binary`（MySQL `varbinary(n)`）；
+  每个都逐条对照三方言，并有测试。`date`/`time` 的领域表示统一成 `'YYYY-MM-DD'`/`'HH:MM:SS'`
+  （**不带时区**，避免"日期漂移一天"这类经典坑），解析/序列化都覆盖了 Date 与文本两种输入，
+  非法输入报错而不是静默写坏数据。
+- **注释**：`FieldSpec`/`ModelSpec` 的**每个选项都补了 JSDoc**（用户反馈"缺注释"）；并新增
+  `comment?: string`（字段级 + 表级）落到数据库 schema 注释：
+  MySQL 建表时**内联** `COMMENT '…'`（超 1024 字符在生成 DDL 时就报错，不留给数据库静默截断）、
+  PostgreSQL 走独立的 `COMMENT ON TABLE/COLUMN … IS '…'`（`sync()` 每次重新应用，**幂等**）、
+  SQLite 不支持 → `SyncReport.unsupportedComments` **如实报告**（不假装应用了）。
+  `SyncReport` 因此新增 `comments` / `unsupportedComments` 两个字段。
+- 指南 `docs/guide/08-database.md` 增加完整类型对照表与注释示例（新 verify 块真跑）。
+
 ### 待做
  —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。

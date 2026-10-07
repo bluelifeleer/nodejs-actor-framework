@@ -80,8 +80,44 @@ console.log(Note.createTableSql('pgsql'));
 console.log(Note.createTableSql('mysql'));
 ```
 
-支持的逻辑类型：`uuid / string / text / integer / bigint / real / boolean / timestamp / json / blob`
-（每个都会映射成方言正确的列类型）。
+支持的逻辑类型（每个都会映射成方言正确的列类型）：
+
+| 逻辑类型 | PostgreSQL | MySQL | SQLite | 说明 |
+|---|---|---|---|---|
+| `uuid` | `uuid` | `char(36)` | `text` | 主键由仓储自动生成 |
+| `string` | `varchar(n)` / `text` | `varchar(n)` / `varchar(255)` | `text` | 用 `length` 指定长度 |
+| `text` | `text` | `text` | `text` | 普通文本 |
+| `bigText` | `text` | `longtext` | `text` | 大文本（MySQL 用 `longtext`） |
+| `smallint` / `integer` / `bigint` | `smallint` / `integer` / `bigint` | 同左 | `integer` | SQLite 只有整数 |
+| `decimal` | `numeric(p, s)` | `decimal(p, s)` | `numeric(p, s)` | 定点小数，用 `precision`/`scale`（默认 10,2） |
+| `real` | `double precision` | `double` | `real` | 浮点 |
+| `boolean` | `boolean` | `tinyint(1)` | `integer` | 领域里统一是 `boolean` |
+| `date` / `time` | `date` / `time` | `date` / `time` | `text` | 领域里统一是 `'YYYY-MM-DD'` / `'HH:MM:SS'`（不带时区） |
+| `timestamp` | `timestamptz` | `datetime(3)` | `text` | 领域里统一是 `Date` |
+| `json` | `jsonb` | `json` | `text` | 领域里统一是对象/数组 |
+| `blob` / `binary` | `bytea` | `blob` / `varbinary(n)` | `blob` | 二进制 |
+
+字段还可以带 **schema 注释**（给人看的，不是给你看的）：
+
+```js verify
+import { defineModel } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  comment: '用户笔记',                       // 表注释
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    title: { type: 'string', length: 200, comment: '标题（必填）' },  // 列注释
+  },
+});
+
+// MySQL：注释内联在建表语句里
+console.log(Note.createTableSql('mysql'));
+// PostgreSQL：走独立的 COMMENT ON（sync 每次都会重新应用，幂等）
+console.log(Note.commentSql('pgsql').join('\n'));
+// SQLite：不支持列注释 → 如实返回空数组，sync 会在 unsupportedComments 里报告（不假装）
+console.log('sqlite comments:', JSON.stringify(Note.commentSql('sqlite')));
+```
 
 ## sync：建表、检测漂移、（可选）自动迁移
 

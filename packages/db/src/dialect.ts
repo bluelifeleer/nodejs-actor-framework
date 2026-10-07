@@ -8,13 +8,34 @@ export type LogicalType =
   | 'uuid'
   | 'string'
   | 'text'
+  /** 大文本（MySQL `longtext`；PG/SQLite 就是 `text`）。 */
+  | 'bigText'
+  | 'smallint'
   | 'integer'
   | 'bigint'
+  /** 定点小数：用 `precision`/`scale`（默认 10,2），**不要**拿它当浮点用。 */
+  | 'decimal'
   | 'real'
   | 'boolean'
+  /** 只有日期（`2026-10-07`），没有时间/时区。 */
+  | 'date'
+  /** 只有时间（`13:45:06`），没有日期/时区。 */
+  | 'time'
   | 'timestamp'
   | 'json'
-  | 'blob';
+  | 'blob'
+  /** 定长/变长二进制（MySQL `varbinary(n)`）。 */
+  | 'binary';
+
+/** 列类型映射的附加参数（按需使用；不适用的方言忽略它）。 */
+export interface ColumnTypeOptions {
+  /** `string` / `binary` 的长度。 */
+  length?: number;
+  /** `decimal` 的总位数（默认 10）。 */
+  precision?: number;
+  /** `decimal` 的小数位（默认 2）。 */
+  scale?: number;
+}
 
 export const DIALECTS: readonly Dialect[] = ['pgsql', 'mysql', 'sqlite'];
 
@@ -49,7 +70,7 @@ export function quoteTable(dialect: Dialect, schemaOrTable: string, maybeTable?:
 /**
  * 逻辑类型 → 真实列类型。逐条对照（三个方言各一行），不做"听起来对"的猜测。
  */
-export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: { length?: number } = {}): string {
+export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: ColumnTypeOptions = {}): string {
   // 未知方言必须报错：第一版这里对 uuid 用了 `dialect === 'pgsql' ? … : dialect === 'mysql' ? … : 'text'`，
   // 于是 'oracle' 会被**静默当成 sqlite** —— 测试抓到了这个"不认识的输入也照做"的洞。
   assertDialect(dialect);
@@ -63,20 +84,40 @@ export function columnTypeFor(dialect: Dialect, logical: LogicalType, options: {
       return dialect === 'mysql' ? 'varchar(255)' : 'text';
     case 'text':
       return 'text';
+    case 'bigText':
+      // MySQL 区分 text/longtext；PG 与 SQLite 只有 text
+      return dialect === 'mysql' ? 'longtext' : 'text';
+    case 'smallint':
+      return dialect === 'sqlite' ? 'integer' : 'smallint';
     case 'integer':
       return dialect === 'pgsql' ? 'integer' : dialect === 'mysql' ? 'int' : 'integer';
     case 'bigint':
       return dialect === 'sqlite' ? 'integer' : 'bigint';
+    case 'decimal': {
+      // 定点小数：三个方言都保留 precision/scale（sqlite 用 NUMERIC 亲和性，不会变成浮点）
+      const precision = options.precision ?? 10;
+      const scale = options.scale ?? 2;
+      return dialect === 'mysql' ? `decimal(${precision}, ${scale})` : `numeric(${precision}, ${scale})`;
+    }
     case 'real':
       return dialect === 'pgsql' ? 'double precision' : dialect === 'mysql' ? 'double' : 'real';
     case 'boolean':
       return dialect === 'pgsql' ? 'boolean' : dialect === 'mysql' ? 'tinyint(1)' : 'integer';
+    case 'date':
+      // 只有日期：sqlite 没有 date 类型，用文本存（'YYYY-MM-DD' 字典序 == 时间序）
+      return dialect === 'sqlite' ? 'text' : 'date';
+    case 'time':
+      return dialect === 'sqlite' ? 'text' : 'time';
     case 'timestamp':
       return dialect === 'pgsql' ? 'timestamptz' : dialect === 'mysql' ? 'datetime(3)' : 'text';
     case 'json':
       return dialect === 'pgsql' ? 'jsonb' : dialect === 'mysql' ? 'json' : 'text';
     case 'blob':
       return dialect === 'pgsql' ? 'bytea' : dialect === 'mysql' ? 'blob' : 'blob';
+    case 'binary':
+      // 可变长二进制：MySQL 可以给长度；pg/sqlite 都是同一种
+      if (dialect === 'mysql') return length === undefined ? 'varbinary(255)' : `varbinary(${length})`;
+      return dialect === 'pgsql' ? 'bytea' : 'blob';
     default:
       throw new DbConfigError(`unknown logical field type "${String(logical)}"`);
   }

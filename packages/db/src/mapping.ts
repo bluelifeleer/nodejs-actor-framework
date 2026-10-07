@@ -34,6 +34,14 @@ export function defaultParseValue(dialect: Dialect, field: Field, value: unknown
       const parsed = new Date(typeof value === 'number' ? value : String(value));
       return Number.isNaN(parsed.getTime()) ? value : parsed;
     }
+    case 'date':
+      // 只有日期：统一成 'YYYY-MM-DD'（不引入时间/时区，避免"日期漂移一天"这种经典坑）
+      if (value instanceof Date) return value.toISOString().slice(0, 10);
+      return String(value).slice(0, 10);
+    case 'time':
+      // 只有时间：统一成 'HH:MM:SS'（UTC；Date 输入按 UTC 取时分秒）
+      if (value instanceof Date) return value.toISOString().slice(11, 19);
+      return String(value).slice(0, 8);
     case 'integer':
     case 'bigint':
     case 'real':
@@ -58,6 +66,20 @@ export function defaultSerializeValue(dialect: Dialect, field: Field, value: unk
       if (Number.isNaN(date.getTime())) throw new DbConfigError(`cannot serialize "${String(value)}" as a timestamp`);
       // sqlite 的 timestamp 列是 TEXT：统一存 ISO 串（字典序 == 时间序）
       return dialect === 'sqlite' ? date.toISOString() : date;
+    }
+    case 'date': {
+      const text = value instanceof Date ? value.toISOString().slice(0, 10) : String(value);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text.slice(0, 10))) {
+        throw new DbConfigError(`cannot serialize "${String(value)}" as a date (expected YYYY-MM-DD)`);
+      }
+      return text.slice(0, 10);
+    }
+    case 'time': {
+      const text = value instanceof Date ? value.toISOString().slice(11, 19) : String(value);
+      if (!/^\d{2}:\d{2}:\d{2}/.test(text)) {
+        throw new DbConfigError(`cannot serialize "${String(value)}" as a time (expected HH:MM:SS)`);
+      }
+      return text.slice(0, 8);
     }
     default:
       return value;

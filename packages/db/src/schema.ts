@@ -34,6 +34,14 @@ export interface SyncReport {
   created: string[];
   altered: string[];
   indexes: string[];
+  /** 成功应用了注释的目标（形如 `notes` / `notes.title`）。 */
+  comments: string[];
+  /**
+   * **没有**被应用的注释目标 + 原因（形如 `notes.title (sqlite has no column comments)`）。
+   *
+   * 为什么不静默：注释是给人看的 schema 文档，悄悄丢掉会让人以为库里已经有注释了。
+   */
+  unsupportedComments: string[];
 }
 
 /** schema 漂移/需要人工迁移：错误里带上具体差异，绝不"悄悄跳过"。 */
@@ -210,7 +218,7 @@ export async function syncModels(
   models: readonly Model[],
   options: SyncOptions = {},
 ): Promise<SyncReport> {
-  const report: SyncReport = { created: [], altered: [], indexes: [] };
+  const report: SyncReport = { created: [], altered: [], indexes: [], comments: [], unsupportedComments: [] };
   for (const model of models) {
     const info = await inspectTable(dialect, runner, model.table);
     if (!info.exists) {
@@ -251,6 +259,30 @@ export async function syncModels(
         report.altered.push(model.table);
       }
     }
+    // 注释：pg 走独立的（幂等）COMMENT 语句；mysql 只在建表时内联；sqlite 不支持 → 如实报告
+    const declaredComments: string[] = [
+      ...(model.comment === undefined ? [] : [model.table]),
+      ...model.fields.filter((field) => field.comment !== undefined).map((field) => `${model.table}.${field.column}`),
+    ];
+    if (declaredComments.length > 0) {
+      if (dialect === 'pgsql') {
+        for (const statement of model.commentSql(dialect)) {
+          await runner.run(statement);
+        }
+        report.comments.push(...declaredComments);
+        options.logger?.('db_comments_applied', { table: model.table, count: declaredComments.length });
+      } else if (dialect === 'sqlite') {
+        report.unsupportedComments.push(...declaredComments.map((target) => `${target} (sqlite has no column/table comments)`));
+      } else if (info.exists) {
+        // MySQL：注释写在建表语句里，已存在的表不会被自动改注释（要改得 ALTER MODIFY，风险自负）
+        report.unsupportedComments.push(
+          ...declaredComments.map((target) => `${target} (mysql comments are only applied at CREATE TABLE)`),
+        );
+      } else {
+        report.comments.push(...declaredComments); // 刚建表 → 注释已内联
+      }
+    }
+
     for (const index of model.indexes) {
       try {
         await runner.run(model.createIndexSql(dialect, index));
