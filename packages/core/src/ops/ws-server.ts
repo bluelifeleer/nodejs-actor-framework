@@ -44,6 +44,8 @@ export interface WebSocketServerOptions {
   maxPayloadBytes?: number;
   /** 连接数上限（审计 S5），默认 1000：每条连接都会持有最多 maxPayloadBytes 的缓冲。 */
   maxConnections?: number;
+  /** 在非回环地址上、无 TLS 也没有 verifyClient 时仍要绑定的**显式**许可（默认拒绝）。 */
+  allowInsecureBinding?: boolean;
   /** Advertised/required subprotocol, e.g. 'game.v1'. */
   subprotocol?: string | string[];
   /** Return false (or a rejecting promise) to refuse the upgrade. */
@@ -342,6 +344,7 @@ class WebSocketServer extends EventEmitter {
     // 审计 S5：连接数上限 + "已进入 upgrade 且 socket 还活着"的计数（握手完成的连接只在
     // 成功后才登记进 connections，只看它挡不住同时到达的一批连接）。
     this.maxConnections = options.maxConnections ?? 1000;
+    this.allowInsecureBinding = options.allowInsecureBinding === true;
     this._upgrading = 0;
     this.server = null;
     this.boundPort = null;
@@ -371,8 +374,15 @@ class WebSocketServer extends EventEmitter {
   }
 
   listen() {
-    this.assertSafeBinding();
     return new Promise((resolve, reject) => {
+      // 守卫放在 executor 里：同步 throw 会被 Promise 转成 reject，与 Gateway.listen() 行为一致
+      //（第一版我放在外层 → 变成同步抛，`assert.rejects(() => server.listen())` 直接不成立）
+      try {
+        this.assertSafeBinding();
+      } catch (err) {
+        reject(err);
+        return;
+      }
       const handler = (req: any, res: any) => {
         if (this._httpHandler) return this._httpHandler(req, res);
         res.writeHead(426, { 'content-type': 'text/plain' });
