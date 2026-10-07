@@ -272,6 +272,7 @@ const PACKAGES = [
   { name: '@actor/app', entry: 'packages/app/src/index.ts', src: 'packages/app/src' },
   { name: '@actor/web', entry: 'packages/web/src/index.ts', src: 'packages/web/src' },
   { name: '@actor/data', entry: 'packages/data/src/index.ts', src: 'packages/data/src' },
+  { name: '@actor/db-core', entry: 'packages/db-core/src/index.ts', src: 'packages/db-core/src' },
   { name: '@actor/db', entry: 'packages/db/src/index.ts', src: 'packages/db/src' },
 ];
 

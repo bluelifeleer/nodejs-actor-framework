@@ -1,4 +1,4 @@
-import { loadDriverModule, type DriverResolver } from './resolve.ts';
+import { loadDriverModule, type DriverResolver } from '@actor/db-core';
 import type { DriverFactory, DriverPool, Row, Runner } from './types.ts';
 
 /** `mysql2/promise` 的最小结构视图。 */

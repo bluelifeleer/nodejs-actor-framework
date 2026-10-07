@@ -1,0 +1,21 @@
+{
+  "name": "@actor/db-core",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "数据库适配器契约与连接管控（连接/健康检查/保活/重连事件/drain/关闭）—— 与具体数据库无关，零运行时依赖",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "keywords": [
+    "actor",
+    "database",
+    "adapter",
+    "connection-pool"
+  ]
+}

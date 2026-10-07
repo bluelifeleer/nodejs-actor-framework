@@ -51,7 +51,8 @@ export {
   DbNotConnectedError,
 } from './errors.ts';
 
-export { createAppRequire, loadDriverModule, type DriverResolver } from './drivers/resolve.ts';
+// 这几类是从 @actor/db-core 搬走的通用能力：**原样 re-export**，公开面只增不减（见 test/public-surface-baseline.test.ts）
+export { createAppRequire, loadDriverModule, type DriverResolver } from '@actor/db-core';
 export { createSqliteDriver } from './drivers/sqlite.ts';
 export { createMssqlDriver } from './drivers/mssql.ts';
 export { createPgDriver } from './drivers/pg.ts';

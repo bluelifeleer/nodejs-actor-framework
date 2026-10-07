@@ -319,6 +319,35 @@ export const myDb = defineDatabaseAdapter({
 2. 每个适配器（含用户自装示例）必须能过**连接管理契约套件** —— 这是"接口自足"的可证伪证据；
 3. 新包必须进 `npm test`/typecheck 矩阵、公开面/成员级门禁、示例冒烟。
 
+## 8.5 实施进度
+
+### M7a（进行中）：抽 `@actor/db-core`（第一部分已完成）
+
+已完成：
+- 新建 `packages/db-core`（`@actor/db-core`，ESM、零运行时依赖、手写 `src/index.d.ts`）：
+  - **搬移**：错误基类（`DbError`/`DbConfigError`/`DbConnectionError`/`DbDriverMissingError`/
+    `DbNotConnectedError`/`DbConflictError`/`DbNotFoundError`）+ 新增 `DbUnavailableError`（快速失败用）、
+    驱动解析（`createAppRequire`/`loadDriverModule`/`DriverResolver`）、池与运行契约
+    （`Row`/`Runner`/`PoolOptions`/`BaseConnection` + `mapPoolOptions` 映射助手 + 通用的
+    `DriverPool`/`DriverFactory`）。
+  - **新增**：`DatabaseAdapter`/`ManagedConnection`/`AdapterConnectInput`/`defineDatabaseAdapter`、
+    `defineManagedResource`、以及连接管控 `supervise()`
+    （状态机 idle→connecting→ready⇄degraded→draining→closed、事件、`track()` 在途计数 + drain、
+    定时健康检查/保活、`stats` 如实、驱动事件只转发）。
+- `@actor/db` 改为依赖 `@actor/db-core`：删除本地 `drivers/resolve.ts`，`errors.ts` 改为再导出，
+  `Row`/`Runner`/`PoolOptions` 收敛到 core 单一来源（SQL 侧的 `DriverPool`/`DriverFactory` 保留），
+  `index.ts` 原样 re-export 搬走的名字。
+- **公开面红线**：新增 `packages/db/test/public-surface-baseline.test.ts`（把 44 个运行时导出钉成基线，
+  只增不减 + 可证伪）—— 现有 surface 门禁只保证"导出有声明"，发现不了"导出消失"，这个洞补上了。
+- core 自带公开面门禁（`packages/db-core/test/surface.test.ts`，含证伪用例）。
+- 矩阵接线：`packages/db-core` 进 `npm test` 工作区矩阵、`tsconfig.json` include、
+  `tools/docs-site.mjs` 的 PACKAGES（API 页已收录 `supervise`/`defineDatabaseAdapter`）。
+- **验证**：全量 **738/738**（724 原有 + core 12 + 基线 2）、typecheck 0（源码 + 声明面）、文档站 41 页。
+
+尚未完成（M7a 第二部分）：把 SQL 侧连接生命周期（`database.ts`/`plugin.ts`）**接到 `supervise()` 上**
+（内部改走 ManagedConnection + 事件 + drain），对外行为保持不变 —— 这是"SQL 也走同一条路"的落点，
+放到下一轮做，避免与搬迁混在一个提交里。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |
