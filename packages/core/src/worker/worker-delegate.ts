@@ -1,4 +1,3 @@
-// @ts-nocheck —— M0.1：本文件尚未补齐类型标注（见 docs/design/next-steps.md §3）。
 // 该标记是迁移期的显式声明，不是隐藏错误：逐文件补完标注后删除本行，
 // 届时它会自动进入 npm run typecheck 的严格检查。
 'use strict';
@@ -28,7 +27,7 @@ const { DefinitionError, ActorStoppedError } = require('../actor/errors.ts');
 const HOST_PATH = path.join(__dirname, 'worker-host.ts');
 
 /** Resolve an actor module path, refusing anything outside the project root. */
-function resolveActorModule(requested) {
+function resolveActorModule(requested: string): string {
   const root = config.root;
   const resolved = path.resolve(root, requested);
   const relative = path.relative(root, resolved);
@@ -39,7 +38,7 @@ function resolveActorModule(requested) {
 }
 
 /** Build a Definition for an actor that will run in a worker thread. */
-function defineWorkerActor(modulePath, options = {}) {
+function defineWorkerActor(modulePath: unknown, options: { exportName?: string; actorOptions?: Record<string, unknown> } = {}): InstanceType<typeof ActorDefinition> {
   if (typeof modulePath !== 'string' || modulePath.trim() === '') {
     throw new DefinitionError(
       "isolation: 'worker' requires the actor definition to be a module path string, " +
@@ -47,7 +46,7 @@ function defineWorkerActor(modulePath, options = {}) {
     );
   }
   const resolved = resolveActorModule(modulePath);
-  const exportName = options.exportName || 'default';
+  const exportName = options.exportName ?? 'default';
   const name = path.basename(resolved).replace(/\.(js|cjs|mjs)$/, '');
   return new ActorDefinition({
     name,
@@ -55,43 +54,114 @@ function defineWorkerActor(modulePath, options = {}) {
     create() {
       throw new DefinitionError(`worker-isolated actor "${name}" runs in its own thread`);
     },
-    options: options.actorOptions || {},
+    options: options.actorOptions ?? {},
     modulePath: resolved,
     exportName,
   });
 }
 
+/** 一个待回复的调用（invoke 或控制类）。 */
+interface PendingCall {
+  resolve(value: unknown): void;
+  reject(err: Error): void;
+}
+
+/** 控制类调用（带超时定时器）。 */
+interface PendingControl extends PendingCall {
+  timer: NodeJS.Timeout;
+}
+
+/** 就绪门闩上的等待者。 */
+interface ReadyWaiter {
+  resolve(): void;
+  reject(err: Error): void;
+}
+
+/** worker 发回来的消息。 */
+interface WorkerReply {
+  kind: string;
+  seq?: number;
+  callId?: number;
+  pid?: number;
+  error?: string;
+  ok?: boolean;
+  data?: unknown;
+  state?: unknown;
+  event?: string;
+  meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/** delegate 背后的 cell（只列它真正用到的成员）。 */
+interface DelegateCell {
+  readonly path: string;
+  readonly id: string;
+  readonly ref: unknown;
+  readonly system: {
+    _log(event: string, meta?: Record<string, unknown>): void;
+    resolve(target: string): { tell(msg: unknown, sender?: unknown, trace?: unknown): boolean; ask(msg: unknown, timeoutMs?: number, sender?: unknown, trace?: unknown): Promise<unknown>; stop(): Promise<void> } | null;
+    readonly shutdownTimeoutMs: number;
+  };
+  spawnChild(definition: unknown, options?: Record<string, unknown>): Promise<{ id: string; path: string }>;
+  saveSnapshot(): Promise<void>;
+  stop(): Promise<void>;
+  [key: string]: unknown;
+}
+
+/** worker 侧请求的 `ctx.*` 调用参数。 */
+interface CtxCallArgs {
+  definition?: unknown;
+  options?: Record<string, unknown>;
+  target?: unknown;
+  msg?: unknown;
+  trace?: unknown;
+  timeoutMs?: number;
+}
+
 class WorkerDelegate {
-  constructor({ cell, modulePath, exportName }) {
+  readonly cell: DelegateCell;
+  readonly modulePath: string;
+  readonly exportName: string;
+  worker: (import('node:worker_threads').Worker & { __dead?: boolean }) | null;
+  /** worker 侧的调用（invoke）等待表。 */
+  readonly invokePending: Map<number, PendingCall>;
+  /** 控制类调用（snapshot/stop/ctx_*）等待表：键是 `seq:<n>` 或 `ctx:<n>`。 */
+  readonly controlPending: Map<string, PendingControl>;
+  seq: number;
+  stopped: boolean;
+  pid: number | null;
+  /**
+   * 就绪门闩：`start()` 返回前 worker 仍在加载 actor 模块（此时 worker 里的
+   * `instance` 还是 null）。这段时间内如果外部调用 `getState()`（例如
+   * `ref.state()` 或崩溃重启后的 `saveSnapshot()`），worker 会回一个空状态，
+   * 调用方拿到 `undefined` —— 静默丢状态。所以控制类调用必须先等门闩打开。
+   */
+  ready: boolean;
+  /** 门闩上的等待者（超时/worker 丢失时都要唤醒，避免永久挂起）。 */
+  readonly _readyWaiters: ReadyWaiter[];
+
+  constructor({ cell, modulePath, exportName }: { cell: DelegateCell; modulePath: string; exportName: string }) {
     this.cell = cell;
     this.modulePath = modulePath;
     this.exportName = exportName;
     this.worker = null;
-    /** @type {Map<number, {resolve:Function, reject:Function}>} */
     this.invokePending = new Map();
     this.controlPending = new Map();
     this.seq = 0;
     this.stopped = false;
     this.pid = null;
-    /**
-     * 就绪门闩：`start()` 返回前 worker 仍在加载 actor 模块（此时 worker 里的
-     * `instance` 还是 null）。这段时间内如果外部调用 `getState()`（例如
-     * `ref.state()` 或崩溃重启后的 `saveSnapshot()`），worker 会回一个空状态，
-     * 调用方拿到 `undefined` —— 静默丢状态。所以控制类调用必须先等门闩打开。
-     */
     this.ready = false;
-    /** @type {Array<{resolve:Function, reject:Function}>} */
     this._readyWaiters = [];
   }
 
-  _markReady() {
+  _markReady(): void {
     this.ready = true;
     const waiters = this._readyWaiters.splice(0);
     for (const w of waiters) w.resolve();
   }
 
   /** 等待 worker 完成启动；超时则抛错（不静默返回空状态）。 */
-  _whenReady(timeoutMs) {
+  _whenReady(timeoutMs: number): Promise<void> {
     if (this.ready) return Promise.resolve();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -112,19 +182,19 @@ class WorkerDelegate {
   }
 
   /** worker 丢掉时唤醒所有等待者（避免永久挂起）。 */
-  _rejectReadyWaiters(err) {
+  _rejectReadyWaiters(err: Error): void {
     const waiters = this._readyWaiters.splice(0);
     for (const w of waiters) w.reject(err);
   }
 
-  async start({ snapshot } = {}) {
+  async start({ snapshot }: { snapshot?: unknown } = {}): Promise<this> {
     const worker = new Worker(HOST_PATH, {});
     this.worker = worker;
 
-    const failure = new Promise((resolve, reject) => {
-      const onMessage = (msg) => {
+    const failure = new Promise<WorkerReply>((resolve, reject) => {
+      const onMessage = (msg: WorkerReply) => {
         if (msg && msg.kind === 'started') {
-          this.pid = msg.pid;
+          this.pid = typeof msg.pid === 'number' ? msg.pid : null;
           worker.off('message', onMessage);
           resolve(msg);
         } else if (msg && msg.kind === 'start_failed') {
@@ -134,12 +204,12 @@ class WorkerDelegate {
       };
       worker.on('message', onMessage);
       worker.once('error', reject);
-      worker.once('exit', (code) => reject(new Error(`actor worker exited with code ${code} before starting`)));
+      worker.once('exit', (code: number) => reject(new Error(`actor worker exited with code ${code} before starting`)));
     });
 
-    worker.on('message', (msg) => this._onMessage(msg));
-    worker.on('error', (err) => this._onWorkerLost(err));
-    worker.on('exit', (code) => this._onWorkerLost(new Error(`actor worker exited (code ${code})`)));
+    worker.on('message', (msg: WorkerReply) => this._onMessage(msg));
+    worker.on('error', (err: Error) => this._onWorkerLost(err));
+    worker.on('exit', (code: number) => this._onWorkerLost(new Error(`actor worker exited (code ${code})`)));
 
     worker.postMessage({
       kind: 'start',
@@ -157,22 +227,24 @@ class WorkerDelegate {
       // A failed start must not leak the thread: it would keep the process
       // alive forever and burn a slot per failed spawn.
       worker.__dead = true;
-      this._onWorkerLost(err);
+      this._onWorkerLost(err instanceof Error ? err : new Error(String(err)));
       await worker.terminate().catch(() => {});
       throw err;
     }
     return this;
   }
 
-  _onMessage(msg) {
+  _onMessage(msg: WorkerReply): void {
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.kind === 'result') {
-      const entry = this.invokePending.get(msg.seq);
-      if (!entry) return;
-      this.invokePending.delete(msg.seq);
-      if (msg.ok) entry.resolve(msg.data);
-      else entry.reject(new Error(msg.error));
+      const seq = msg.seq;
+      if (seq === undefined) return;
+      const entry = this.invokePending.get(seq);
+      if (entry === undefined) return;
+      this.invokePending.delete(seq);
+      if (msg.ok === true) entry.resolve(msg.data);
+      else entry.reject(new Error(msg.error ?? 'worker call failed'));
       return;
     }
 
@@ -182,7 +254,7 @@ class WorkerDelegate {
     }
 
     if (msg.kind === 'log') {
-      this.cell.system._log(msg.event, msg.meta);
+      this.cell.system._log(msg.event ?? 'worker_log', msg.meta);
       return;
     }
 
@@ -191,13 +263,13 @@ class WorkerDelegate {
     }
   }
 
-  _settleControl(msg) {
-    const key = msg.seq !== undefined ? `seq:${msg.seq}` : `ctx:${msg.callId}`;
+  _settleControl(msg: WorkerReply): void {
+    const key = msg.seq !== undefined ? `seq:${msg.seq}` : `ctx:${String(msg.callId)}`;
     const entry = this.controlPending.get(key);
-    if (!entry) return;
+    if (entry === undefined) return;
     this.controlPending.delete(key);
     clearTimeout(entry.timer);
-    if (msg.error) entry.reject(new Error(msg.error));
+    if (msg.error !== undefined) entry.reject(new Error(msg.error));
     else entry.resolve(msg);
   }
 
@@ -205,11 +277,14 @@ class WorkerDelegate {
    * Run a `ctx.*` call that the worker cannot do itself (it lives on the main
    * thread: spawning children, reaching other actors, persisting).
    */
-  async _handleCtxCall(msg) {
-    const { callId, op, args } = msg;
-    const reply = (ok, payload) => {
-      if (this.worker && !this.worker.__dead) {
-        this.worker.postMessage({ kind: 'ctx_result', callId, ok, ...payload });
+  async _handleCtxCall(msg: WorkerReply): Promise<void> {
+    const callId = msg.callId;
+    const op = msg.op;
+    const args = (msg.args ?? {}) as CtxCallArgs;
+    const reply = (ok: boolean, payload: Record<string, unknown>): void => {
+      const worker = this.worker;
+      if (worker !== null && (worker as { __dead?: boolean }).__dead !== true) {
+        worker.postMessage({ kind: 'ctx_result', callId, ok, ...payload });
       }
     };
 
@@ -217,7 +292,7 @@ class WorkerDelegate {
       switch (op) {
         case 'spawn': {
           const ref = await this.cell.spawnChild(args.definition, {
-            ...(args.options || {}),
+            ...(args.options ?? {}),
             isolation: 'worker',
           });
           return reply(true, { data: { id: ref.id, path: ref.path } });
@@ -246,19 +321,19 @@ class WorkerDelegate {
           return reply(false, { error: `unsupported worker ctx operation: ${op}` });
       }
     } catch (err) {
-      return reply(false, { error: err && err.message ? err.message : String(err) });
+      return reply(false, { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  _resolve(target) {
+  _resolve(target: unknown): { tell(msg: unknown, sender?: unknown, trace?: unknown): boolean; ask(msg: unknown, timeoutMs?: number, sender?: unknown, trace?: unknown): Promise<unknown>; stop(): Promise<void> } {
     if (!target) throw new ActorStoppedError('ctx: target actor is required');
-    const ref = this.cell.system.resolve(target);
-    if (!ref) throw new ActorStoppedError(`no actor registered as "${target}"`);
+    const ref = this.cell.system.resolve(String(target));
+    if (ref === null) throw new ActorStoppedError(`no actor registered as "${String(target)}"`);
     return ref;
   }
 
   /** Everything that was in flight when the worker died. */
-  _onWorkerLost(err) {
+  _onWorkerLost(err: Error): void {
     if (this.worker) this.worker.__dead = true;
     this.ready = false;
     this._rejectReadyWaiters(err);
@@ -272,26 +347,33 @@ class WorkerDelegate {
   }
 
   /** Run one message inside the worker. */
-  invoke(payload, senderPath, trace = null) {
+  invoke(payload: unknown, senderPath: string | null, trace: unknown = null): Promise<unknown> {
     if (this.stopped || !this.worker || this.worker.__dead) {
       return Promise.reject(new ActorStoppedError(`worker for ${this.cell.path} is gone`));
     }
     const seq = (this.seq += 1);
-    const send = () => new Promise((resolve, reject) => {
-      this.invokePending.set(seq, { resolve, reject });
-      try {
-        this.worker.postMessage({ kind: 'invoke', seq, payload, senderPath: senderPath || null, trace });
-      } catch (err) {
-        this.invokePending.delete(seq);
-        reject(new Error(`message cannot be cloned to the worker: ${err.message}`));
-      }
-    });
+    const send = (): Promise<unknown> =>
+      new Promise((resolve, reject) => {
+        this.invokePending.set(seq, { resolve, reject });
+        const worker = this.worker;
+        if (worker === null) {
+          this.invokePending.delete(seq);
+          reject(new ActorStoppedError(`worker for ${this.cell.path} is gone`));
+          return;
+        }
+        try {
+          worker.postMessage({ kind: 'invoke', seq, payload, senderPath: senderPath ?? null, trace });
+        } catch (err) {
+          this.invokePending.delete(seq);
+          reject(new Error(`message cannot be cloned to the worker: ${err instanceof Error ? err.message : String(err)}`));
+        }
+      });
     // 就绪前投递会被 worker 忽略（它还没装好 instance），所以先等门闩。
     return this._whenReady(this.cell.system.shutdownTimeoutMs || 5000).then(send);
   }
 
   /** Ask the worker for its actor state (used by snapshots and introspection). */
-  getState(timeoutMs = 5000) {
+  getState(timeoutMs = 5000): Promise<unknown> {
     if (!this.worker || this.worker.__dead) return Promise.resolve(undefined);
     // 就绪前不能问状态：worker 会回一个空状态，调用方以为"没有状态"。
     const seq = (this.seq += 1);
@@ -300,25 +382,32 @@ class WorkerDelegate {
       .then((msg) => msg.state);
   }
 
-  _control(key, message, timeoutMs) {
+  _control(key: string, message: Record<string, unknown>, timeoutMs: number): Promise<WorkerReply> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.controlPending.delete(key);
         reject(new Error(`worker control call "${message.kind}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.controlPending.set(key, { resolve, reject, timer });
+      const worker = this.worker;
+      if (worker === null) {
+        this.controlPending.delete(key);
+        clearTimeout(timer);
+        reject(new ActorStoppedError(`worker for ${this.cell.path} is gone`));
+        return;
+      }
       try {
-        this.worker.postMessage(message);
+        worker.postMessage(message);
       } catch (err) {
         this.controlPending.delete(key);
         clearTimeout(timer);
-        reject(err);
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }
 
   /** Graceful stop: postStop runs inside the worker, then the thread exits. */
-  async stop(timeoutMs = 5000) {
+  async stop(timeoutMs = 5000): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
     const worker = this.worker;
