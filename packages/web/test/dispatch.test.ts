@@ -94,3 +94,41 @@ test('dispatch: 函数式控制器直接拿到已声明的输入（未声明的�
   assert.strictEqual(hit.status, 200);
   assert.deepStrictEqual(JSON.parse(String(hit.response.body)), { ok: true });
 });
+
+test('dispatch: 5xx 必须通过 onError 暴露给服务端（4xx 是业务语义，不报）', async () => {
+  const seen: Array<{ requestId: string; route?: string; status: number }> = [];
+  const onError = (error: unknown, info: { requestId: string; route?: { path: string }; status: number }) => {
+    seen.push({ requestId: info.requestId, ...(info.route === undefined ? {} : { route: info.route.path }), status: info.status });
+    assert.ok(error instanceof Error);
+  };
+
+  // 控制器里抛普通异常 → 500，且必须被 onError 看见
+  const crashRoutes = buildRouteTable([
+    get('/crash', () => {
+      throw new TypeError('boom');
+    }),
+  ]).routes;
+  const crashed = await dispatch({
+    routes: crashRoutes,
+    request: { method: 'GET', url: '/crash', headers: {} },
+    onError,
+  });
+  assert.strictEqual(crashed.status, 500);
+  assert.strictEqual(seen.length, 1, '5xx 没有被上报（服务端将完全没有线索）');
+  assert.strictEqual(seen[0].status, 500);
+  assert.strictEqual(seen[0].route, '/crash');
+
+  // 业务语义的 4xx（HttpError）不该触发 onError
+  const conflictRoutes = buildRouteTable([
+    get('/conflict', () => {
+      throw new HttpError(409, 'conflict!');
+    }),
+  ]).routes;
+  const conflicted = await dispatch({
+    routes: conflictRoutes,
+    request: { method: 'GET', url: '/conflict', headers: {} },
+    onError,
+  });
+  assert.strictEqual(conflicted.status, 409);
+  assert.strictEqual(seen.length, 1, '4xx 不该被当成服务端错误上报');
+});

@@ -185,7 +185,27 @@ const Note = defineModel({
 规则改成"没有 `serializeRow` 才严格校验"（有用户映射层时允许虚拟字段），并补一条测试固定
 "没有映射层时拼错字段名必须报错"。
 
-### 待做
+### Round 4（已完成）：文档 + 门禁 + 示例
 
-- **Round 4：文档与门禁收尾** —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
+- 用户指南 `docs/guide/08-database.md`：装驱动 → 连接配置（DSN/字段式/池）→ model 声明 → `sync` 与漂移/自动迁移
+  → 仓储（乐观锁、关联、findMany 的输入校验）→ **用户可写的两层映射** → `raw()` 与 `@actor/data` 组合
+  → 接 `@actor/app` 的写法 → 诚实的边界（SQLite 真库验证 / PG·MySQL 仅契约级）。**9 个 verify 代码块全部真跑**。
+- API 页收录 `@actor/db`（`tools/docs-site.mjs` 的 PACKAGES 加一行，已核对 `site/api.html` 里出现 `createDatabase`/`defineModel`）。
+- **成员级门禁**扩到本包（`packages/db/test/member-gate.test.ts`：指南里 `db.*` 用到的成员必须在 `index.d.ts` 里，
+  带可证伪用例）；同时给抽取器补了两条排除规则（URL 主机名 `@db.internal`、字符串字面量 `'db.internal'`）。
+- `examples/app-db`：接 `@actor/app` 的 providers（**同步** provider + `onStart` 里 connect/sync + `onStop` 关池）、
+  控制器只依赖注入的仓储、乐观锁冲突 → 409；已纳入示例冒烟门禁。
+  **额外做了真实 HTTP 端到端验证**：POST 201 → GET 200（JSON 列解码回数组）→ PATCH（版本 0→1）→
+  PATCH 过期版本 **409** → DELETE 200 → GET 404 → SIGTERM 优雅退出 ✓。
+
+**这一轮发现并修掉的两个真问题**（都不是"新功能"，而是既有缺口）：
+1. **5xx 在服务端完全不可见**：错误映射会把异常变成 `internal error` 响应，但服务端没有任何线索
+   （我在调试 app-db 时就被卡住）→ 新增 `dispatch({ onError })` + `httpPlugin` 转成 `app.emit('http:error', …)`
+   （只对 5xx 触发；4xx 是业务语义不报），并补了测试。库代码不自己写 stdout。
+2. **指南里我写错了一句**："provider 可以异步：app 解析依赖时会 await" ✗ —— provider 是**同步**解析的，
+   所以正确写法是"同步建句柄 + 返回仓储（惰性 runner 让它可以先拿），connect/sync 放 onStart"。
+   示例与指南都已改正（示例的错误正是被 `http:error` 事件暴露出来的）。
+
+### 待做
+ —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。

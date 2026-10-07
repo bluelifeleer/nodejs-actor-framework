@@ -1,0 +1,14 @@
+{
+  "name": "example-app-db",
+  "private": true,
+  "type": "module",
+  "description": "示例：用 @actor/db 接数据库（sqlite 真库 + model 声明 + 乐观锁仓储 + 接进 @actor/app 的 providers）",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@actor/app": "*",
+    "@actor/db": "*",
+    "@actor/web": "*"
+  }
+}

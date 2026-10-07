@@ -58,6 +58,14 @@ export interface DispatchOptions {
   get?: (name: string) => unknown;
   config?: unknown;
   log?: unknown;
+  /**
+   * 控制器抛异常时的回调（**审计/可观测性**）。
+   *
+   * 为什么需要它：错误映射会把异常变成 4xx/5xx 响应，但**服务端此前没有任何线索** ——
+   * 排查时只能看到一句 `internal error`。httpPlugin 会把它转成 `app.emit('http:error', …)`，
+   * 使用者接一条日志即可（库代码不自己写 stdout）。
+   */
+  onError?: (error: unknown, info: { requestId: string; route?: Route; status: number }) => void;
 }
 
 /** 派发结果：响应 + 匹配信息（后者便于 httpPlugin 写访问日志）。 */
@@ -171,6 +179,8 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     };
   } catch (error) {
     const response = toErrorResponse(error);
+    // 只在"服务端问题"上报事件：4xx 是业务语义（调用方能自己处理），5xx 才需要人看
+    if (response.status >= 500) options.onError?.(error, { requestId, route, status: response.status });
     return { matched: true, route, status: response.status, requestId, response };
   }
 }

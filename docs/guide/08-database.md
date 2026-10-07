@@ -1,0 +1,346 @@
+# 数据库（@actor/db）
+
+`@actor/db` 是**应用层**的数据库能力：方言（PostgreSQL 默认 / MySQL / SQLite）、连接与连接池管理、
+model 声明、以及实体 ↔ 行的 ORM 映射。设计见 [M6 设计](../design/m6-db-package.md)。
+
+## 先装驱动（框架不引任何运行时依赖）
+
+框架**不带**数据库驱动，按你要用的方言在自己项目里装：
+
+| 方言 | 装什么 | 说明 |
+|---|---|---|
+| `sqlite`（默认可用） | **不用装** | Node 24 内置 `node:sqlite`，零依赖 |
+| `pgsql`（默认方言） | `npm i pg` | 懒加载；没装时启动会明确告诉你装什么 |
+| `mysql` | `npm i mysql2` | 同上 |
+
+驱动是从**你自己项目的 node_modules** 解析的（不是从框架包里），所以 pnpm/yarn 的严格布局也没问题。
+
+## 连接配置：DSN 或字段式
+
+```js verify
+import { createDatabase, describeConnection } from '@actor/db';
+
+// 1) DSN（推荐放环境变量）
+const fromUrl = createDatabase({ connection: { url: 'pgsql://app:secret@db.internal:5432/appdb' } });
+console.log('url  →', fromUrl.dialect, describeConnection(fromUrl.connection));
+
+// 2) 字段式
+const fromFields = createDatabase({
+  dialect: 'mysql',
+  connection: { host: 'db.internal', user: 'app', password: 'secret', database: 'appdb' },
+  pool: { max: 20, idleTimeoutMs: 30_000, connectionTimeoutMs: 5_000 },
+});
+console.log('fields →', fromFields.dialect, describeConnection(fromFields.connection));
+
+// 密码**不会**出现在 describeConnection / 错误信息里（有测试盯着）
+if (describeConnection(fromFields.connection).includes('secret')) throw new Error('密码泄漏了');
+
+// 3) 不写 dialect 时默认 pgsql；sqlite 用 filename（:memory: 是内存库）
+const lite = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+console.log('sqlite →', describeConnection(lite.connection));
+```
+
+连接的建立、探活、优雅关闭都由框架负责：
+
+```js verify
+import { createDatabase } from '@actor/db';
+
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();                        // 建池 + 一次 SELECT 1（失败即抛，不静默降级）
+console.log('health →', JSON.stringify(await db.healthCheck()));
+console.log('stats  →', JSON.stringify(db.stats()));
+
+await db.close();                          // 幂等；关闭后 healthCheck() 会如实返回 ok:false
+console.log('after close →', (await db.healthCheck()).ok);
+if ((await db.healthCheck()).ok) throw new Error('关闭后不该还报健康');
+```
+
+## model 层：你写声明，框架生成表
+
+```js verify
+import { defineModel } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  fields: {
+    id: { type: 'uuid', primaryKey: true },              // uuid 主键由仓储自动生成
+    title: { type: 'string', length: 200, notNull: true },
+    tags: { type: 'json', default: [] },                 // JSON 列（三方言统一编解码）
+    ownerId: { type: 'string', column: 'owner_id' },     // 列名映射
+    archived: { type: 'boolean', default: false },
+    createdAt: { type: 'timestamp', auto: 'create' },    // 插入时自动写
+    updatedAt: { type: 'timestamp', auto: 'update' },    // 每次更新自动写
+    version: { type: 'integer', version: true },         // 乐观锁
+  },
+  indexes: [{ fields: ['ownerId'] }],
+});
+
+// DDL 是纯函数：不连库也能看清框架会发什么 SQL（这里看 PostgreSQL 与 MySQL 的差别）
+console.log(Note.createTableSql('pgsql'));
+console.log(Note.createTableSql('mysql'));
+```
+
+支持的逻辑类型：`uuid / string / text / integer / bigint / real / boolean / timestamp / json / blob`
+（每个都会映射成方言正确的列类型）。
+
+## sync：建表、检测漂移、（可选）自动迁移
+
+```js verify
+import { createDatabase, defineModel } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    title: { type: 'string', notNull: true },
+    ownerId: { type: 'string', column: 'owner_id' },
+  },
+});
+
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();
+
+console.log('首次 sync:', JSON.stringify(await db.sync([Note])));   // → created: ["notes"]
+console.log('再次 sync:', JSON.stringify(await db.sync([Note])));   // → created: []（幂等）
+
+// 手工造一个"少了 owner_id"的同名表 → 框架必须**明确报错**，而不是静默继续
+await db.rawRun('DROP TABLE "notes"');
+await db.rawRun('CREATE TABLE "notes" ("id" text NOT NULL PRIMARY KEY, "title" text NOT NULL)');
+try {
+  await db.sync([Note]);
+  throw new Error('漂移没有被发现');
+} catch (err) {
+  console.log('漂移被拒:', err.name, '|', err.message.split('.').slice(0, 1).join(''));
+}
+await db.close();
+```
+
+想让它自动补**安全**的列，就在配置里显式打开（默认是关的）：
+
+```js verify
+import { createDatabase, defineModel } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    title: { type: 'string', notNull: true },
+    ownerId: { type: 'string', column: 'owner_id' },
+  },
+});
+
+// migrations.auto 只在**显式**配置时为 true：默认 sync() 只建不改
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' }, migrations: { auto: true } });
+await db.connect();
+await db.rawRun('CREATE TABLE "notes" ("id" text NOT NULL PRIMARY KEY, "title" text NOT NULL)');
+console.log('自动补列:', JSON.stringify(await db.sync([Note])));     // → altered: ["notes"]
+console.log('列:', (await db.inspectTable('notes')).columns.map((c) => c.name).join(','));
+
+// 不安全的三件事一定被拒绝：删列、改类型、加"NOT NULL 且无默认值"的列
+const Strict = defineModel({
+  name: 'strict',
+  fields: { id: { type: 'uuid', primaryKey: true }, must: { type: 'string', notNull: true } },
+});
+await db.rawRun('CREATE TABLE "strict" ("id" text NOT NULL PRIMARY KEY)');
+await db.sync([Strict]).then(
+  () => { throw new Error('不安全的自动迁移不该成功'); },
+  (err) => console.log('不安全被拒:', err.name),
+);
+await db.close();
+```
+
+## 仓储：CRUD + 乐观锁 + 关联
+
+```js verify
+import { createDatabase, defineModel, DbConflictError } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    title: { type: 'string', notNull: true },
+    tags: { type: 'json', default: [] },
+    version: { type: 'integer', version: true },
+  },
+  relations: { comments: { kind: 'hasMany', model: 'comments', foreignKey: 'noteId' } },
+});
+const Comment = defineModel({
+  name: 'comments',
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    noteId: { type: 'string', column: 'note_id', notNull: true },
+    body: { type: 'text', notNull: true },
+  },
+});
+
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();
+await db.sync([Note, Comment]);           // sync 会注册 model，关联才能按名字解析
+
+const notes = db.repository(Note);
+const comments = db.repository(Comment);
+
+const created = await notes.insert({ title: 'hello', tags: ['a', 'b'] });
+console.log('插入 →', created.id, created.version, JSON.stringify(created.tags));
+
+const updated = await notes.update(String(created.id), { title: 'hello v2' }, { expectedVersion: 0 });
+console.log('更新 →', updated.title, 'version =', updated.version);
+
+try {
+  await notes.update(String(created.id), { title: 'stale' }, { expectedVersion: 0 });
+  throw new Error('过期版本不该成功');
+} catch (err) {
+  if (!(err instanceof DbConflictError)) throw err;
+  console.log('乐观锁 →', err.name);
+}
+
+await comments.insert({ noteId: String(created.id), body: 'first' });
+const related = await notes.related(created, 'comments');
+console.log('关联 →', (await related.many()).map((c) => c.body).join(','));
+
+console.log('删除 →', await notes.delete(String(created.id)), await notes.findById(String(created.id)));
+await db.close();
+```
+
+`findMany` 的条件键必须是 **model 的字段名**（框架会校验，值全部走参数占位符）：
+
+```js verify
+import { createDatabase, defineModel } from '@actor/db';
+
+const Note = defineModel({
+  name: 'notes',
+  fields: { id: { type: 'uuid', primaryKey: true }, title: { type: 'string', notNull: true }, ownerId: { type: 'string', column: 'owner_id' } },
+});
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();
+await db.sync([Note]);
+const notes = db.repository(Note);
+await notes.insert({ title: 'b', ownerId: 'u1' });
+await notes.insert({ title: 'a', ownerId: 'u1' });
+await notes.insert({ title: 'c', ownerId: 'u2' });
+
+console.log('过滤+排序:', (await notes.findMany({ where: { ownerId: 'u1' }, orderBy: [{ field: 'title', direction: 'asc' }] })).map((n) => n.title).join(','));
+await notes.findMany({ where: { 'title = 1 OR 1=1 --': 'x' } }).then(
+  () => { throw new Error('未知字段名不该被当成 SQL 片段'); },
+  (err) => console.log('未知条件被拒:', err.name),
+);
+await db.close();
+```
+
+## 用户可写的两层映射
+
+字段级（列 ↔ 领域值）与整行级（行 ↔ 实体）都能自己写。这是"把已有表接进领域模型"的关键：
+
+```js verify
+import { createDatabase, defineModel } from '@actor/db';
+
+const Item = defineModel({
+  name: 'items',
+  fields: {
+    id: { type: 'string', primaryKey: true },
+    // 库里存的是逗号串，领域里是数组：两个钩子都由你写
+    tags: {
+      type: 'text',
+      parse: (raw) => (raw ? String(raw).split(',') : []),
+      serialize: (value) => (Array.isArray(value) ? value.join(',') : String(value)),
+    },
+    level: { type: 'integer', default: 1 },
+  },
+  // 整行级：把 level 映射成领域里的 grade（虚拟字段，不落库）
+  parseRow: (row) => ({ ...row, grade: Number(row.level) >= 5 ? 'high' : 'low' }),
+  serializeRow: (entity) => (entity.grade === 'high' ? { ...entity, level: 9 } : entity),
+});
+
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();
+await db.sync([Item]);
+const items = db.repository(Item);
+await items.insert({ id: 'i1', tags: ['x', 'y'], grade: 'high' });
+
+const found = await items.findById('i1');
+console.log('映射回来 →', JSON.stringify(found.tags), found.grade);
+console.log('落盘的 level →', (await db.raw('SELECT level FROM "items" WHERE id = ?', ['i1']))[0].level);
+await db.close();
+```
+
+> 注意：提供了 `serializeRow` 时，领域实体**允许**带虚拟字段；没有提供时，多写一个不存在的字段名会**直接报错**
+> （避免"看起来插入了"其实什么都没写）。
+
+## 逃生通道：`raw()` 与 `@actor/data` 组合
+
+```js verify
+import { createDatabase, defineModel } from '@actor/db';
+import { createSqlRepository } from '@actor/data';
+
+const Note = defineModel({
+  name: 'notes',
+  // 注意：@actor/data 的仓储按约定需要 version 列（乐观锁），所以这里带上它
+  fields: {
+    id: { type: 'uuid', primaryKey: true },
+    title: { type: 'string', notNull: true },
+    version: { type: 'integer', version: true },
+  },
+});
+const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+await db.connect();
+await db.sync([Note]);
+
+// 手写 SQL（仍然参数化）
+await db.rawRun('INSERT INTO "notes" (id, title, version) VALUES (?, ?, ?)', ['n1', 'raw', 0]);
+console.log('raw →', (await db.raw('SELECT title FROM "notes" WHERE id = ?', ['n1']))[0].title);
+
+// db.runner() 与 @actor/data 的 SqlRunner **结构兼容**：需要游标分页/outbox/投影时直接用那边
+const repo = createSqlRepository({ runner: db.runner(), table: 'notes', fields: ['id', 'version', 'title'] });
+console.log('@actor/data 仓储 →', (await repo.findById('n1'))?.title);
+await db.close();
+```
+
+**分工**：`@actor/db` 管连接、方言、model 与映射；`@actor/data` 管仓储语义（游标分页、outbox、
+投影、迁移 runner、事件演进）。两边用上面的 `runner()` 组合，不需要二选一。
+
+## 接进 `@actor/app`
+
+`@actor/db` 本体是库级 API；接应用时在 module 的 `providers` 里建一个 db（或仓储），
+在生命周期钩子里关池（可跑示例见 [`examples/app-db`](../../examples/app-db/README.md)）：
+
+```js
+// src/module.ts（片段）
+import { createDatabase, defineModel } from '@actor/db';
+
+const Note = defineModel({ name: 'notes', fields: { /* … */ } });
+let db;
+
+export default defineModule({
+  name: 'db',
+  providers: {
+    // ⚠️ provider 是**同步**解析的（app 解析依赖时不会 await 你的 promise）：
+    //    这里只同步建句柄并返回仓储，需要等待的 connect()/sync() 放到 onStart。
+    //    这能成立是因为 db.repository() 用惰性 runner：拿到仓储时不需要已连接。
+    notes: ({ config }) => {
+      db = createDatabase({
+        connection: { url: config.get('databaseUrl') },   // 例如 APP_DATABASE_URL=pgsql://…
+        pool: { max: config.get('plugins.db.poolMax') },
+      });
+      return db.repository(Note);
+    },
+  },
+  async onStart() {
+    await db.connect();
+    await db.sync([Note]);              // 生产里建议显式跑迁移，而不是依赖 auto
+  },
+  async onStop() {
+    await db?.close();                  // 优雅关池：等查询结束再释放
+  },
+});
+```
+
+## 诚实的边界（请先读这段）
+
+- **SQLite 是"真库验证"**：本仓库的测试用 Node 内置 `node:sqlite` 跑真实 SQL（建表、漂移、乐观锁、关联、事务）。
+- **PostgreSQL / MySQL 目前只到"契约级验证"**：本仓库**离线且不引驱动**，所以那两个方言验证的是
+  **池参数映射、占位符与引号风格、DDL/内省 SQL 文本、事务是否用专用连接并归还**——
+  **真连库行为未经本仓库验证**。上生产前请在你的环境里跑一次 `db.connect()` + `db.sync([...])`。
+- **自动迁移只做安全操作**：加可空列 / 有默认值的列 / 建索引。删列、改类型、加 `NOT NULL` 无默认值的列
+  一律拒绝并要求你写迁移 —— 这是运维决策，不该由框架替你决定。
+- **`sync()` 的类型比较是"规范化后的宽松比较"**：它抓明显不一致（例如 `text` vs `integer`），
+  不做完整的类型系统（方言别名、精度差异可能不报）。

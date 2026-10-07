@@ -272,6 +272,7 @@ const PACKAGES = [
   { name: '@actor/app', entry: 'packages/app/src/index.ts', src: 'packages/app/src' },
   { name: '@actor/web', entry: 'packages/web/src/index.ts', src: 'packages/web/src' },
   { name: '@actor/data', entry: 'packages/data/src/index.ts', src: 'packages/data/src' },
+  { name: '@actor/db', entry: 'packages/db/src/index.ts', src: 'packages/db/src' },
 ];
 
 /** 内核公开面来自手写的 .d.ts（内部实现文件仍有 @ts-nocheck，见"类型覆盖"一节）。 */

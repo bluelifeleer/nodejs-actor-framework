@@ -120,6 +120,16 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               get: (name: string) => app.get(name),
               config: app.config,
               log: { info: console.info, warn: console.warn, error: console.error },
+              // 5xx 必须在服务端可见：转成应用事件（由使用者决定怎么记日志）
+              onError: (error, info) => {
+                app.emit('http:error', {
+                  requestId: info.requestId,
+                  status: info.status,
+                  path: info.route?.path ?? null,
+                  method: info.route?.method ?? null,
+                  error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+                });
+              },
             });
 
             const headers: Record<string, string> = { ...result.response.headers };

@@ -351,19 +351,21 @@ export const INTERNAL_MEMBERS = new Set([
  * `repo.get` 这些都会命中，设计文档里的未来 API（`ctx.stash`、`ctx.stateMachine`）也被算成"缺声明"。
  * 代码块 + 只扫面向使用者的文档（README/guide/quickstart），才让这条门禁有意义。
  */
-export function extractMembersFromCodeBlocks(markdown) {
-  const text = [];
-  for (const match of markdown.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) text.push(match[1]);
-  return extractDocumentedMembers(text.join('\n'));
+export function extractMembersFromCodeBlocks(markdown, receivers = DOC_RECEIVERS) {
+  return extractDocumentedMembers(codeBlocksOf(markdown), receivers);
 }
 
 /** 从文本里抽 `receiver.member` 用法。 */
-export function extractDocumentedMembers(text) {
-  const found = new Map(); // member -> [文件:行]（调用方自己填文件信息）
-  for (const receiver of DOC_RECEIVERS) {
+export function extractDocumentedMembers(text, receivers = DOC_RECEIVERS) {
+  const found = new Map(); // member -> 出现次数
+  for (const receiver of receivers) {
     // 前面不能是词字符、`.`、`/`、`-`：否则 `packages/app/test`、`examples/app-data` 这类**路径**
     // 会被当成 `app.test` / `app.data` 用法（第一版就是这么误报的）。
-    const re = new RegExp(`(?<![\\w./-])${receiver}\\.([a-zA-Z_][a-zA-Z0-9_]*)`, 'g');
+    // 前面不能是：词字符、`.`、`/`、`-`、`@`、`:`、引号。
+    //   - `packages/app/test`、`examples/app-data` 这类**路径**；
+    //   - `pgsql://app:secret@db.internal:5432` 这类 **URL 主机名**；
+    //   - `host: 'db.internal'` 这类**字符串字面量**（引号一围就说明它不是成员访问）。
+    const re = new RegExp(`(?<![\\w./@:'"\u0060-])${receiver}\\.([a-zA-Z_][a-zA-Z0-9_]*)`, 'g');
     for (const match of text.matchAll(re)) {
       const member = match[1];
       if (INTERNAL_MEMBERS.has(member) || APP_LAYER_MEMBERS.has(member)) continue;
@@ -387,14 +389,22 @@ export function declaredMemberNames(declarationText) {
  * 返回"文档在用、但公开类型声明里没有"的成员。
  * 结果为空 = 文档里出现的公开成员都有类型声明。
  */
-export function checkDocumentedMembers(docs, declarationText) {
+export function checkDocumentedMembers(docs, declarationText, options = {}) {
+  const receivers = options.receivers ?? DOC_RECEIVERS;
   const declared = declaredMemberNames(declarationText);
   const missing = [];
   for (const doc of docs) {
-    const members = doc.codeOnly === false ? extractDocumentedMembers(doc.text) : extractMembersFromCodeBlocks(doc.text);
-    for (const member of members) {
+    const codeText = doc.codeOnly === false ? doc.text : codeBlocksOf(doc.text);
+    for (const member of extractDocumentedMembers(codeText, receivers)) {
       if (!declared.has(member)) missing.push({ member, file: doc.file });
     }
   }
   return missing;
+}
+
+/** 取出 markdown 里所有围栏代码块的内容。 */
+export function codeBlocksOf(markdown) {
+  const parts = [];
+  for (const match of String(markdown).matchAll(/```[^\n]*\n([\s\S]*?)```/g)) parts.push(match[1]);
+  return parts.join('\n');
 }

@@ -127,3 +127,15 @@ test('examples: app-web 能启动 HTTP 并优雅停机', async () => {
   assert.match(result.stdout, /stopped gracefully/, 'app-web 没有走优雅停机');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('examples: app-db 能启动（数据库接进应用 + 优雅关池）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-app-db-'));
+  const result = await runExample(['examples/app-db/main.ts'], {
+    env: { APP_DATA_DIR: dir, APP_DATABASE__FILE: path.join(dir, 'app-db.sqlite') },
+    readyMs: 6000,
+  });
+  assertNoCrash('examples/app-db', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-db 没起来：\n${result.stdout.slice(0, 400)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-db 没有走优雅停机（关池应当在 onStop 里）');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
