@@ -132,6 +132,27 @@ actor migrate                                                 # 不变
 | **M9c** | `actor add` + `doctor` 扩展 + `--dry-run` | `add` 非破坏性用例；doctor 能诊断"声明未接线" |
 | **M9d** | `actor new plugin <name> --kind …` + 仓库内矩阵接线清单 | 生成四种骨架，各自跑通对应契约套件 |
 
+## 9.5 已知欠账：`examples/` 尚未纳入 typecheck
+
+**事实（已核实）**：根 `tsconfig.json` 的 `include` 里没有 `examples/`，所以示例的 `main.ts` / `src/*.ts`
+**不在类型检查矩阵里** —— 也就是说示例里的类型错误只有靠冒烟/e2e **跑起来**才发现。
+
+**试探结果（2026-10 实测）**：把 `examples/**/*.ts` 加进 include 会暴露 **14 处**类型错误、涉及 7 个示例。
+其中两类**不是示例写得松，而是框架类型的真问题**，必须修类型而不是改示例：
+
+1. `examples/app-db/src/app.ts:29` —— `DatabasePluginSpec` **不能赋给** `PluginSpec`：
+   `config: Record<string, unknown>` 与 `ConfigSchema` 不兼容。用户直接把 `dbPlugin(...)` 放进
+   `plugins: []` 就会吃到这个类型错误；
+2. `examples/app-mail/src/app.ts:53` —— `MailPluginSpec` 同样不能赋给 `PluginSpec`（`exactOptionalPropertyTypes`
+   下，`config` 的可选性/形状不匹配）。
+
+其余主要是"provider 的 `deps` 是 `Record<string, unknown>`，`config` 用前要显式收窄"这类**已知的边界松散**
+（与脚手架模板里同样的处理方式：在边界显式收窄一次，而不是把 `src/` 放宽）。
+
+**计划**：先修 1、2 两处**插件 spec 类型与 `PluginSpec` 的兼容性**（这是框架的问题，会影响所有用户），
+再把 `examples/**/*.ts` 接进 include；接进去之后若仍有少量"边界收窄"类错误，就逐个按模板的既有做法修掉
+（像 cli/testkit 那次一样：先记账、再还债、最后把例外清空）。
+
 ## 10. 已确认（用户拍板）
 
 1. ✅ `server.ts` 用这个名字（装配层；`main.ts` 是进程入口）—— M9a 已按此实现；
