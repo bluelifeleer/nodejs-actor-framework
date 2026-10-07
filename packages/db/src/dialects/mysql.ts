@@ -1,5 +1,6 @@
 import { DbConfigError } from '../errors.ts';
 import {
+  normalizeTypeText,
   numericLiteral,
   sqlString,
   typeRendererFor,
@@ -92,4 +93,34 @@ export const mysql: DialectSpec = {
   commentStatements: () => [],
   indexIfNotExists: false, // MySQL 没有 CREATE INDEX IF NOT EXISTS
   isDuplicateIndexError: (error: unknown) => /ER_DUP_KEYNAME|Duplicate key name/i.test(error instanceof Error ? error.message : String(error)),
+
+  introspection: {
+    tableExists: (table) => ({
+      sql: 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = ? AND table_schema = DATABASE()',
+      params: [table],
+    }),
+    columns: (table) => ({
+      sql:
+        'SELECT column_name, is_nullable, column_type, column_default ' +
+        'FROM information_schema.columns WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ordinal_position',
+      params: [table],
+    }),
+    toColumn: (row) => {
+      // MySQL 的 column_type 带长度（tinyint(1)），data_type 不带 → 优先 data_type（若有）再回退
+      const rawType = String(row.data_type ?? row.column_type ?? '');
+      return {
+        name: String(row.column_name),
+        type: normalizeTypeText(rawType),
+        rawType,
+        notNull: String(row.is_nullable).toUpperCase() === 'NO',
+        hasDefault: row.column_default !== null && row.column_default !== undefined,
+      };
+    },
+  },
+
+  // MySQL 的 information_schema 基本就是它自己的类型名 → 只做通用规范化
+  normalizeDbType: (rawType, options) => normalizeTypeText(rawType, options.length),
+  serializeBoolean: (value) => (value ? 1 : 0),
+  serializeTimestamp: (date) => date,
+  comments: 'inline',
 };

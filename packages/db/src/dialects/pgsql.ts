@@ -1,4 +1,5 @@
 import {
+  normalizeTypeText,
   numericLiteral,
   sqlString,
   typeRendererFor,
@@ -38,6 +39,18 @@ const TYPES: TypeRenderers = {
   blob: () => 'bytea',
   binary: () => 'bytea',
 };
+
+/**
+ * pg 的 information_schema 用的是"听起来对"的名字：`character varying` / `timestamp with time zone`。
+ * 先做方言别名映射，再走通用规则（小写 + 需要时补长度）。
+ */
+function normalizeDbType(rawType: string, options: { length?: number | null }): string {
+  let text = String(rawType).toLowerCase().trim();
+  if (text === 'character varying') text = 'varchar';
+  if (text === 'timestamp with time zone') text = 'timestamptz';
+  if (text === 'timestamp without time zone') text = 'timestamp';
+  return normalizeTypeText(text, options.length);
+}
 
 function quote(name: string): string {
   return `"${String(name).split('"').join('""')}"`;
@@ -87,4 +100,37 @@ export const pgsql: DialectSpec = {
   indexIfNotExists: true,
   // 只有 MySQL 需要"索引已存在"的补偿
   isDuplicateIndexError: () => false,
+
+  introspection: {
+    tableExists: (table) => ({
+      sql: 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = $1',
+      params: [table],
+    }),
+    columns: (table) => ({
+      sql:
+        'SELECT column_name, is_nullable, data_type, character_maximum_length, column_default ' +
+        'FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position',
+      params: [table],
+    }),
+    toColumn: (row) => {
+      const rawType = String(row.data_type ?? row.column_type ?? '');
+      const length =
+        row.character_maximum_length === undefined || row.character_maximum_length === null
+          ? null
+          : Number(row.character_maximum_length);
+      return {
+        name: String(row.column_name),
+        type: normalizeDbType(rawType, { length }),
+        rawType,
+        notNull: String(row.is_nullable).toUpperCase() === 'NO',
+        hasDefault: row.column_default !== null && row.column_default !== undefined,
+      };
+    },
+  },
+
+  normalizeDbType,
+
+  serializeBoolean: (value) => Boolean(value), // pg 的 boolean 列不接受 1/0
+  serializeTimestamp: (date) => date,
+  comments: 'statements',
 };

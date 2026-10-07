@@ -1,4 +1,5 @@
 import {
+  normalizeTypeText,
   numericLiteral,
   sqlString,
   typeRendererFor,
@@ -78,4 +79,30 @@ export const sqlite: DialectSpec = {
   commentStatements: () => [],
   indexIfNotExists: true,
   isDuplicateIndexError: () => false,
+
+  introspection: {
+    tableExists: (table) => ({
+      sql: 'SELECT name FROM sqlite_master WHERE type = ? AND name = ?',
+      params: ['table', table],
+    }),
+    // PRAGMA 不支持占位符 → 用 { pragma } 形状（表名走引号转义，标识符注入不可能）
+    columns: (table) => ({ pragma: `PRAGMA table_info(${quote(table)})` }),
+    toColumn: (row) => {
+      const rawType = String(row.type ?? '');
+      return {
+        name: String(row.name),
+        type: normalizeTypeText(rawType),
+        rawType,
+        notNull: Number(row.notnull) === 1 || Number(row.pk) === 1,
+        hasDefault: row.dflt_value !== null && row.dflt_value !== undefined,
+      };
+    },
+  },
+
+  // sqlite 的类型名就是类型亲和性（integer/text/real/blob/numeric）→ 只做通用规范化
+  normalizeDbType: (rawType, options) => normalizeTypeText(rawType, options.length),
+  serializeBoolean: (value) => (value ? 1 : 0),
+  // sqlite 的 timestamp 列是 TEXT：统一存 ISO 串（字典序 == 时间序）
+  serializeTimestamp: (date) => date.toISOString(),
+  comments: 'none',
 };

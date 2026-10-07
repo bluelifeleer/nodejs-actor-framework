@@ -60,88 +60,45 @@ export class DbSchemaDriftError extends DbError {
   }
 }
 
-/** mysql 里"索引已存在"的错误码；mysql 不支持 CREATE INDEX IF NOT EXISTS，只能容忍它。 */
-function quoteIdent(dialect: Dialect, name: string): string {
-  const ch = dialect === 'mysql' ? '`' : '"';
-  return `${ch}${String(name).split(ch).join(ch + ch)}${ch}`;
-}
-
 /**
  * 类型规范化：只为了让"model 说的类型"与"数据库报告的类型"可比。
  * 这是**宽松**比较（文档里写明），目的是抓"明显不一致"，不是做完整的类型系统。
+ * 实现已搬到方言描述符（pg 的别名映射 + 三方言共用的通用规则）。
  */
 export function normalizeDbType(dialect: Dialect, rawType: string, options: { length?: number | null } = {}): string {
-  let text = String(rawType).toLowerCase().trim();
-  if (dialect === 'pgsql') {
-    if (text === 'character varying') text = 'varchar';
-    if (text === 'timestamp with time zone') text = 'timestamptz';
-    if (text === 'timestamp without time zone') text = 'timestamp';
-  }
-  const length = options.length ?? null;
-  const needsLength = /^(varchar|char|character)$/.test(text) && length !== null && !text.includes('(');
-  return needsLength ? `${text}(${length})` : text;
+  return dialectSpec(dialect).normalizeDbType(rawType, options);
 }
 
-/** 内省 SQL（按方言不同；sqlite 用 sqlite_master + PRAGMA，pg/mysql 用 information_schema）。 */
-export function tableExistsSql(dialect: Dialect): string {
-  if (dialect === 'sqlite') return 'SELECT name FROM sqlite_master WHERE type = ? AND name = ?';
-  if (dialect === 'pgsql') return 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = $1';
-  return 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = ? AND table_schema = DATABASE()';
+/**
+ * 表存在性 SQL（按方言不同；由方言描述符提供）。
+ * `table` 省略时用占位符，便于展示 SQL 形状。
+ */
+export function tableExistsSql(dialect: Dialect, table = '?'): string {
+  return dialectSpec(dialect).introspection.tableExists(table).sql;
 }
 
-export function columnsSql(dialect: Dialect): string {
-  if (dialect === 'sqlite') return ''; // PRAGMA 不支持参数，单独处理
-  if (dialect === 'pgsql') {
-    return (
-      'SELECT column_name, is_nullable, data_type, character_maximum_length, column_default ' +
-      'FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position'
-    );
-  }
-  return (
-    'SELECT column_name, is_nullable, column_type, column_default ' +
-    'FROM information_schema.columns WHERE table_name = ? AND table_schema = DATABASE() ORDER BY ordinal_position'
-  );
+/**
+ * 列内省 SQL（sqlite 是 PRAGMA 形状 —— 它不支持占位符，所以单独处理）。
+ * `table` 省略时用占位符。
+ */
+export function columnsSql(dialect: Dialect, table = '?'): string {
+  const columns = dialectSpec(dialect).introspection.columns(table);
+  return 'sql' in columns ? columns.sql : columns.pragma;
 }
 
-/** 读一张表的实况（表不存在时 `exists: false`）。 */
+/** 读一张表的实况（表不存在时 `exists: false`）；SQL 与行形状都由方言描述符给。 */
 export async function inspectTable(dialect: Dialect, runner: Runner, table: string): Promise<TableInfo> {
-  if (dialect === 'sqlite') {
-    const found = await runner.all(tableExistsSql('sqlite'), ['table', table]);
-    if (found.length === 0) return { table, exists: false, columns: [] };
-    // PRAGMA 不支持占位符；表名走引号转义（标识符注入不可能）
-    const rows = await runner.all(`PRAGMA table_info(${quoteIdent('sqlite', table)})`);
-    return {
-      table,
-      exists: true,
-      columns: rows.map((row: Row) => ({
-        name: String(row.name),
-        type: normalizeDbType('sqlite', String(row.type ?? '')),
-        rawType: String(row.type ?? ''),
-        notNull: Number(row.notnull) === 1 || Number(row.pk) === 1,
-        hasDefault: row.dflt_value !== null && row.dflt_value !== undefined,
-      })),
-    };
-  }
-
-  const found = await runner.all(tableExistsSql(dialect), [table]);
+  const impl = dialectSpec(dialect);
+  const existence = impl.introspection.tableExists(table);
+  const found = await runner.all(existence.sql, existence.params);
   if (found.length === 0) return { table, exists: false, columns: [] };
-  const rows = await runner.all(columnsSql(dialect), [table]);
+
+  const columns = impl.introspection.columns(table);
+  const rows = 'pragma' in columns ? await runner.all(columns.pragma) : await runner.all(columns.sql, columns.params);
   return {
     table,
     exists: true,
-    columns: rows.map((row: Row) => {
-      const rawType = String(row.data_type ?? row.column_type ?? '');
-      const length = row.character_maximum_length === undefined || row.character_maximum_length === null
-        ? null
-        : Number(row.character_maximum_length);
-      return {
-        name: String(row.column_name),
-        type: normalizeDbType(dialect, rawType, { length }),
-        rawType,
-        notNull: String(row.is_nullable).toUpperCase() === 'NO',
-        hasDefault: row.column_default !== null && row.column_default !== undefined,
-      };
-    }),
+    columns: rows.map((row) => impl.introspection.toColumn(row as Record<string, unknown>)),
   };
 }
 
@@ -227,6 +184,7 @@ export async function syncModels(
   models: readonly Model[],
   options: SyncOptions = {},
 ): Promise<SyncReport> {
+  const impl = dialectSpec(dialect);
   const commentMode: CommentMode = options.comments ?? 'create';
   const report: SyncReport = {
     created: [],
@@ -293,9 +251,9 @@ export async function syncModels(
         report.unsupportedComments.push(
           ...declaredComments.map((target) => `${target} (comments disabled: comments: 'never')`),
         );
-      } else if (dialect === 'sqlite') {
-        report.unsupportedComments.push(...declaredComments.map((target) => `${target} (sqlite has no column/table comments)`));
-      } else if (dialect === 'pgsql') {
+      } else if (impl.comments === 'none') {
+        report.unsupportedComments.push(...declaredComments.map((target) => `${target} (${dialect} has no column/table comments)`));
+      } else if (impl.comments === 'statements') {
         const shouldApply = commentMode === 'always' || wasCreated;
         if (shouldApply) {
           for (const statement of model.commentSql(dialect)) await runner.run(statement);
@@ -314,7 +272,7 @@ export async function syncModels(
         report.commentsApplied = true;
       } else {
         report.unsupportedComments.push(
-          ...declaredComments.map((target) => `${target} (mysql comments are only applied at CREATE TABLE)`),
+          ...declaredComments.map((target) => `${target} (${dialect} comments are only applied at CREATE TABLE)`),
         );
       }
     }

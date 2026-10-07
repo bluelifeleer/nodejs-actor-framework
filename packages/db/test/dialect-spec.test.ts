@@ -112,3 +112,66 @@ test('dialect-spec: 列定义的方言片段 —— 自增身份 / 默认值 / �
   assert.strictEqual(dialectSpec('mysql').isDuplicateIndexError(new Error('connection reset')), false);
   assert.strictEqual(dialectSpec('pgsql').isDuplicateIndexError(new Error('ER_DUP_KEYNAME')), false, '只有 MySQL 需要这种补偿');
 });
+
+test('dialect-spec: 内省 SQL 与行映射（sqlite 的 PRAGMA 形状特殊，不能硬塞进 {sql,params}）', () => {
+  // 表存在性：pg 用 $1，mysql 限定当前库，sqlite 查 sqlite_master
+  const pgExists = dialectSpec('pgsql').introspection.tableExists('notes');
+  assert.deepStrictEqual(pgExists.params, ['notes']);
+  assert.match(pgExists.sql, /information_schema\.tables/);
+  assert.match(pgExists.sql, /\$1/);
+  const mysqlExists = dialectSpec('mysql').introspection.tableExists('notes');
+  assert.match(mysqlExists.sql, /DATABASE\(\)/);
+  const sqliteExists = dialectSpec('sqlite').introspection.tableExists('notes');
+  assert.deepStrictEqual(sqliteExists.params, ['table', 'notes']);
+  assert.match(sqliteExists.sql, /sqlite_master/);
+
+  // 列内省：sqlite 是 PRAGMA（不支持占位符）→ 用 { pragma } 形状
+  const sqliteColumns = dialectSpec('sqlite').introspection.columns('notes');
+  assert.ok('pragma' in sqliteColumns, 'sqlite 的列内省应当是 PRAGMA 形状');
+  assert.strictEqual(sqliteColumns.pragma, 'PRAGMA table_info("notes")');
+  const pgColumns = dialectSpec('pgsql').introspection.columns('notes');
+  assert.ok('sql' in pgColumns && pgColumns.sql.includes('ordinal_position'));
+
+  // 行映射：两种行形状各自归一
+  assert.deepStrictEqual(
+    dialectSpec('sqlite').introspection.toColumn({ name: 'id', type: 'integer', notnull: 1, pk: 1, dflt_value: null }),
+    { name: 'id', type: 'integer', rawType: 'integer', notNull: true, hasDefault: false },
+  );
+  assert.deepStrictEqual(
+    dialectSpec('pgsql').introspection.toColumn({
+      column_name: 'title', data_type: 'character varying', character_maximum_length: 200, is_nullable: 'YES', column_default: null,
+    }),
+    { name: 'title', type: 'varchar(200)', rawType: 'character varying', notNull: false, hasDefault: false },
+  );
+  assert.deepStrictEqual(
+    dialectSpec('mysql').introspection.toColumn({
+      column_name: 'flag', column_type: 'tinyint(1)', is_nullable: 'NO', column_default: '0',
+    }),
+    { name: 'flag', type: 'tinyint(1)', rawType: 'tinyint(1)', notNull: true, hasDefault: true },
+  );
+
+  // 类型规范化：pg 的别名要归一，长度只在需要时补
+  assert.strictEqual(dialectSpec('pgsql').normalizeDbType('character varying', { length: 4 }), 'varchar(4)');
+  assert.strictEqual(dialectSpec('pgsql').normalizeDbType('timestamp with time zone', {}), 'timestamptz');
+  assert.strictEqual(dialectSpec('pgsql').normalizeDbType('timestamp without time zone', {}), 'timestamp');
+  assert.strictEqual(dialectSpec('sqlite').normalizeDbType('INTEGER', {}), 'integer', '要大小写归一');
+  assert.strictEqual(dialectSpec('mysql').normalizeDbType('tinyint(1)', {}), 'tinyint(1)');
+});
+
+test('dialect-spec: 值表示只搬**真正有差异**的部分（写库的布尔 1/0、时间戳的 ISO 文本）', () => {
+  // 解析布尔是通用的（Number(value) === 1），不进描述符 —— 接口只描述真实存在的差异
+  assert.strictEqual(dialectSpec('pgsql').serializeBoolean(true), true, 'pg 的 boolean 列不接受 1/0');
+  assert.strictEqual(dialectSpec('mysql').serializeBoolean(true), 1);
+  assert.strictEqual(dialectSpec('sqlite').serializeBoolean(false), 0);
+
+  const when = new Date('2026-10-07T13:45:06.000Z');
+  assert.strictEqual(dialectSpec('sqlite').serializeTimestamp(when), when.toISOString(), 'sqlite 的 timestamp 列是 TEXT');
+  assert.strictEqual(dialectSpec('pgsql').serializeTimestamp(when), when);
+  assert.strictEqual(dialectSpec('mysql').serializeTimestamp(when), when);
+});
+
+test('dialect-spec: 注释能力用能力位表达，而不是在 schema 层写方言名', () => {
+  assert.strictEqual(dialectSpec('pgsql').comments, 'statements');
+  assert.strictEqual(dialectSpec('mysql').comments, 'inline');
+  assert.strictEqual(dialectSpec('sqlite').comments, 'none');
+});

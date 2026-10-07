@@ -116,6 +116,37 @@ export interface AutoIncrementPieces {
   afterNotNull?: string;
 }
 
+/** 内省出来的一列（各方言的行形状不同，由各自 `toColumn` 归一）。 */
+export interface IntrospectedColumn {
+  name: string;
+  /** 规范化后的类型（用于与 model 声明比较）。 */
+  type: string;
+  /** 数据库原样报告的类型（报错时给人看）。 */
+  rawType: string;
+  notNull: boolean;
+  hasDefault: boolean;
+}
+
+/** 内省：表存在性与列信息（SQLite 的 PRAGMA 不支持占位符，所以形状允许 `{ pragma }`）。 */
+export interface Introspection {
+  tableExists(table: string): { sql: string; params: readonly unknown[] };
+  columns(table: string): { sql: string; params: readonly unknown[] } | { pragma: string };
+  /** 把驱动返回的一行归一成列信息。 */
+  toColumn(row: Record<string, unknown>): IntrospectedColumn;
+}
+
+/**
+ * 类型文本的**通用**规范化：小写、去空格、需要时补长度。
+ *
+ * 各方言只需在 `normalizeDbType` 里先做自己的别名映射（pg 的 `character varying` → `varchar` 等），
+ * 再调这里 —— 避免把同一段规则抄三遍。
+ */
+export function normalizeTypeText(rawType: string, length?: number | null): string {
+  const text = String(rawType).toLowerCase().trim();
+  const size = length ?? null;
+  return /^(varchar|char|character)$/.test(text) && size !== null && !text.includes('(') ? `${text}(${size})` : text;
+}
+
 /** SQL 字符串字面量：单引号翻倍（三个方言通用）。 */
 export function sqlString(text: string): string {
   return `'${String(text).split("'").join("''")}'`;
@@ -171,6 +202,20 @@ export interface DialectSpec {
   readonly indexIfNotExists: boolean;
   /** 这个错误是否只是"索引已存在"（MySQL 没有 IF NOT EXISTS 的补偿）。 */
   isDuplicateIndexError(error: unknown): boolean;
+
+  // --- 内省 -------------------------------------------------------------
+  introspection: Introspection;
+  /** 把数据库报告的类型规范化到可比形式（先做方言别名映射，再走通用规则）。 */
+  normalizeDbType(rawType: string, options: { length?: number | null }): string;
+
+  // --- 值的表示（只放**真正随方言而异**的部分）--------------------------
+  /** 写进库里的布尔：pg 用 `true/false`，mysql/sqlite 用 `1/0`。 */
+  serializeBoolean(value: unknown): boolean | number;
+  /** timestamp 列的写法：sqlite 是 TEXT（ISO 串），pg/mysql 直接给 `Date`。 */
+  serializeTimestamp(date: Date): Date | string;
+
+  // --- 注释能力位（代替 schema 层写方言名）-----------------------------
+  readonly comments: 'statements' | 'inline' | 'none';
 }
 
 /** 每个方言一张类型表：`Record<LogicalType, …>` 让 TypeScript 强制补齐，漏一个就编译报错。 */

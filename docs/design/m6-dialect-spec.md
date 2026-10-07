@@ -238,7 +238,22 @@ MySQL 的 `insertId`（没有 RETURNING）。这些最终会退化成 `if (name 
 - **顺带收口一处方言遗漏**：MySQL 的 TEXT 家族（`tinyText`/`mediumText`/`bigText`）此前不在
   "不给默认值"的名单里，会生成 MySQL 不接受的 `DEFAULT`；现在名单覆盖整个 TEXT/JSON/BLOB 家族。
 
-## 13. 验收
+## 13. 实施进度（续 2）
+
+- **Step 3（已完成）**：`DialectSpec` 补上 `introspection`（`tableExists`/`columns`/`toColumn` ——
+  SQLite 的 PRAGMA 用 `{ pragma }` 形状，行形状也由各方言自己归一）、`normalizeDbType`
+  （方言别名映射 + 三方言共用的 `normalizeTypeText`）、`serializeBoolean`、`serializeTimestamp`、
+  `comments` 能力位。`schema.ts` 与 `mapping.ts` 的方言分支全部搬走。
+  **方言分支 14 → 3**（`model.ts`/`schema.ts`/`mapping.ts` 全部归零，只剩 `dialect.ts` 的 3 处连接形状属于 Step 4）。
+  全量 709/709 绿（`tableExistsSql`/`columnsSql` 保持导出，SQL 文本对 pg/mysql **一字不变**，
+  sqlite 从"返回空串"改成返回 `PRAGMA` 形状 —— 更诚实）。
+- **设计澄清（重要）**：接口里最初写的 `parseValue`/`serializeValue` 太大 —— 实际只有**两处**真正随方言而异
+  （写库的布尔 `true/false` vs `1/0`、sqlite 的时间戳要 ISO 文本），而**解析**布尔是通用的
+  （`Number(value) === 1`）、JSON/日期/数字的处理也是通用的。按"接口只描述真实存在的差异"的原则，
+  最终只加 `serializeBoolean`/`serializeTimestamp`（我自己写的测试先按老草图断言了 `coerceBoolean`，
+  发现它在三方言下没有差异后删掉了 —— 不为想象出来的差异造接口）。
+
+## 14. 验收
 
 - [ ] `dialects/` 之外 grep 不到 `dialect === '`（门禁测试，可证伪）。
 - [ ] 契约测试覆盖 3 方言 × 23 类型（TS 的 `Record` 保证不遗漏）。

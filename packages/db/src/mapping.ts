@@ -1,4 +1,5 @@
 import { DbConfigError } from './errors.ts';
+import { dialectSpec } from './dialects/index.ts';
 import type { Dialect } from './dialect.ts';
 import type { Field, Model } from './model.ts';
 
@@ -63,14 +64,14 @@ export function defaultSerializeValue(dialect: Dialect, field: Field, value: unk
       // 三个方言都接受字符串：pg 会把它转成 jsonb，mysql/sqlite 直接存文本
       return typeof value === 'string' ? value : JSON.stringify(value);
     case 'boolean':
-      if (dialect === 'pgsql') return Boolean(value); // pg 的 boolean 列不接受 1/0
-      return value ? 1 : 0;
+      // pg 的 boolean 列不接受 1/0；mysql/sqlite 用 1/0（差异由方言描述符给）
+      return dialectSpec(dialect).serializeBoolean(value);
     case 'dateTime':
     case 'timestamp': {
       const date = value instanceof Date ? value : new Date(String(value));
       if (Number.isNaN(date.getTime())) throw new DbConfigError(`cannot serialize "${String(value)}" as a timestamp`);
-      // sqlite 的 timestamp 列是 TEXT：统一存 ISO 串（字典序 == 时间序）
-      return dialect === 'sqlite' ? date.toISOString() : date;
+      // sqlite 的 timestamp 列是 TEXT（ISO 串，字典序 == 时间序）；pg/mysql 直接给 Date
+      return dialectSpec(dialect).serializeTimestamp(date);
     }
     case 'date': {
       const text = value instanceof Date ? value.toISOString().slice(0, 10) : String(value);
