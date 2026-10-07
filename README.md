@@ -145,7 +145,8 @@ worker 隔离的取舍（框架会直接报错而不是静默降级）：
 // 节点 A
 const a = createSystem({ name: 'node-a' });
 await a.spawn(Player, { id: 'player_001' });
-await a.listen({ host: '0.0.0.0', port: 9000 });     // 对外提供本节点 Actor
+await a.listen({ host: '0.0.0.0', port: 9000, tls }); // 对外提供本节点 Actor（非回环必须配 TLS，
+                                                     // 否则直接拒绝启动；确需裸奔用 allowInsecureBinding: true）
 
 // 节点 B
 const b = createSystem({ name: 'node-b' });

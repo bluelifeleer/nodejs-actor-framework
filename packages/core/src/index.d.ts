@@ -307,6 +307,8 @@ export interface SystemOptions {
   clock?: Clock;
   /** Span sink: receives one span per handled message. Without it no spans are created. */
   spanSink?: SpanSink;
+  /** 对等体数量上限（审计 F7），默认 128。 */
+  maxPeers?: number;
 }
 
 export interface DeadLetter {

@@ -42,6 +42,8 @@ export interface WebSocketServerOptions {
   port?: number;
   path?: string;
   maxPayloadBytes?: number;
+  /** 连接数上限（审计 S5），默认 1000：每条连接都会持有最多 maxPayloadBytes 的缓冲。 */
+  maxConnections?: number;
   /** Advertised/required subprotocol, e.g. 'game.v1'. */
   subprotocol?: string | string[];
   /** Return false (or a rejecting promise) to refuse the upgrade. */
@@ -240,10 +242,19 @@ class WebSocketConnection extends EventEmitter {
 
   _handleFrame({ fin, opcode, payload }: { fin: boolean; opcode: number; payload: Buffer }) {
     switch (opcode) {
-      case OPCODE.PING:
+      case OPCODE.PING: {
+        // 审计 S9：控制帧必须 ≤125 字节且不可分片（RFC 6455 §5.5）。过去 1 MiB 的 PING
+        // 会被原样回成 1 MiB 的 PONG，分片 PING 也被当成完整帧。
+        // 注意 `emit('ping')` 必须保留 —— 第一版我在这里多写了一个 return，把它变成了死代码，
+        // keepalive 测试立刻变红（"timed out waiting for the server to see the ping"）。
+        if (fin !== true || payload.length > 125) {
+          this._fail(1002, 'control frames must be <=125 bytes and must not be fragmented');
+          return;
+        }
         this.pong(payload);
         this.emit('ping', payload);
         return;
+      }
       case OPCODE.PONG:
         this.emit('pong', payload);
         return;
@@ -278,6 +289,14 @@ class WebSocketConnection extends EventEmitter {
           return;
         }
         this._fragment.chunks.push(payload);
+        /**
+         * 审计 S3：`maxPayloadBytes` 原本只校验**单帧**，分片累加没有任何上限 ——
+         * 客户端永不发 FIN、每片 ≤4 MiB，就能把内存耗尽（"硬上限"是假的）。
+         */
+        if (this._fragment.length + payload.length > this.maxPayloadBytes) {
+          this._fail(1009, 'fragmented message exceeds maxPayloadBytes');
+          return;
+        }
         this._fragment.length += payload.length;
         if (!fin) return;
         const { opcode: initial, chunks, length } = this._fragment;
@@ -320,6 +339,10 @@ class WebSocketServer extends EventEmitter {
     /** Optional hook: return false/throw to reject the upgrade (auth, origin check). */
     this.verifyClient = options.verifyClient || null;
     this.connections = new Set();
+    // 审计 S5：连接数上限 + "已进入 upgrade 且 socket 还活着"的计数（握手完成的连接只在
+    // 成功后才登记进 connections，只看它挡不住同时到达的一批连接）。
+    this.maxConnections = options.maxConnections ?? 1000;
+    this._upgrading = 0;
     this.server = null;
     this.boundPort = null;
     this._tls = options.tls || null;
@@ -330,7 +353,25 @@ class WebSocketServer extends EventEmitter {
     return Boolean(this._tls && this._tls.key && this._tls.cert);
   }
 
+  /**
+   * 审计 S5：README 一直声称"没有 TLS 时绑定非回环地址会直接拒绝启动"，但那道守卫**只写在
+   * `examples/access-node.js` 里**（库本身不拦）。这里把它做成与 `Gateway` / `TelnetConsole`
+   * 一致的库级守卫：非回环 + 无 TLS + 无 verifyClient → 拒绝启动，除非显式 opt-in。
+   */
+  assertSafeBinding(): void {
+    const host = this.host;
+    const loopback = host === '127.0.0.1' || host === '::1' || host === 'localhost' || host.startsWith('127.');
+    if (loopback) return;
+    const tlsEnabled = this._tls !== null && this._tls !== undefined;
+    if (tlsEnabled || this.verifyClient !== null || this.allowInsecureBinding) return;
+    throw new Error(
+      `refusing to bind the websocket server on ${host} without TLS or a verifyClient: it would be an ` +
+        'unauthenticated entry point. Configure tls, verifyClient, or pass allowInsecureBinding: true.',
+    );
+  }
+
   listen() {
+    this.assertSafeBinding();
     return new Promise((resolve, reject) => {
       const handler = (req: any, res: any) => {
         if (this._httpHandler) return this._httpHandler(req, res);
@@ -349,7 +390,13 @@ class WebSocketServer extends EventEmitter {
         this.emit('tlsClientError', err);
         socket.destroy();
       });
-      this.server.on('upgrade', (req: any, socket: any, head: Buffer) => this._onUpgrade(req, socket, head));
+      this.server.on('upgrade', (req: any, socket: any, head: Buffer) => {
+        this._upgrading += 1;
+        socket.once('close', () => {
+          this._upgrading -= 1;
+        });
+        void this._onUpgrade(req, socket, head);
+      });
       const onListening = () => {
         this.boundPort = this.server.address().port;
         this.port = this.boundPort;
@@ -366,6 +413,16 @@ class WebSocketServer extends EventEmitter {
   }
 
   async _onUpgrade(req: any, socket: any, head: Buffer) {
+    // 审计 S5：连接数上限。超限直接拒绝（503 + 断开），并如实记一条事件。
+    if (this._upgrading > this.maxConnections) {
+      this.emit('connection_rejected', { limit: this.maxConnections });
+      try {
+        socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      } catch {
+        socket.destroy();
+      }
+      return;
+    }
     const fail = (status: number, message: string) => {
       socket.write(`HTTP/1.1 ${status} ${message}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
@@ -722,15 +779,26 @@ class ClientConnection extends EventEmitter {
 
   _handleFrame({ fin, opcode, payload }: { fin: boolean; opcode: number; payload: Buffer }) {
     switch (opcode) {
-      case OPCODE.PING:
+      case OPCODE.PING: {
+        // 审计 S9（客户端侧同理）：控制帧必须 ≤125 字节且不可分片
+        if (fin !== true || payload.length > 125) {
+          this._fail(1002, 'control frames must be <=125 bytes and must not be fragmented');
+          return;
+        }
         this._frame(OPCODE.PONG, payload);
         if (this.listenerCount('ping') > 0) this.emit('ping', payload);
         else this._pingInbox.push(payload);
         return;
-      case OPCODE.PONG:
+      }
+      case OPCODE.PONG: {
+        if (fin !== true || payload.length > 125) {
+          this._fail(1002, 'control frames must be <=125 bytes and must not be fragmented');
+          return;
+        }
         if (this.listenerCount('pong') > 0) this.emit('pong', payload);
         else this._pongInbox.push(payload);
         return;
+      }
       case OPCODE.CLOSE: {
         const code = payload.length >= 2 ? payload.readUInt16BE(0) : 1005;
         if (!this._closeSent) this._frame(OPCODE.CLOSE, payload.subarray(0, Math.min(2, payload.length)));
@@ -752,6 +820,14 @@ class ClientConnection extends EventEmitter {
       case OPCODE.CONTINUATION: {
         if (!this._fragment) return;
         this._fragment.chunks.push(payload);
+        /**
+         * 审计 S3：`maxPayloadBytes` 原本只校验**单帧**，分片累加没有任何上限 ——
+         * 客户端永不发 FIN、每片 ≤4 MiB，就能把内存耗尽（"硬上限"是假的）。
+         */
+        if (this._fragment.length + payload.length > this.maxPayloadBytes) {
+          this._fail(1009, 'fragmented message exceeds maxPayloadBytes');
+          return;
+        }
         this._fragment.length += payload.length;
         if (!fin) return;
         const { opcode: initial, chunks, length } = this._fragment;

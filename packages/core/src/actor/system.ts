@@ -118,6 +118,8 @@ interface ActorSystemOptions {
   maxDeadLetters?: number;
   plugins?: PluginLike[];
   shutdownTimeoutMs?: number;
+  /** 对等体数量上限（审计 F7），默认 128。 */
+  maxPeers?: number;
 }
 
 class ActorSystem extends EventEmitter {
@@ -259,6 +261,7 @@ class ActorSystem extends EventEmitter {
 
     /** How long a graceful actor stop may take before it is forced. */
     this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? (config.actor.shutdownTimeoutMs as number);
+    this.maxPeers = options.maxPeers ?? 128;
   }
 
   /**
@@ -517,6 +520,20 @@ class ActorSystem extends EventEmitter {
     const key = `${options.host}:${options.port}`;
     const existing = this.peers.get(key);
     if (existing) return existing;
+
+    /**
+     * 审计 F7：`peers` 过去只有 `stop()` 一条清理路径，而集群会用**入站帧里的 sender 地址**
+     * 调 `connect()`（`cluster/remote.ts`）——对端每次换地址，本节点就多一个永不释放的
+     * Peer+Gateway，并主动向该地址发起连接。这里给一个界：满了就**明确拒绝**（可见），
+     * 而不是无声增长。
+     */
+    if (this.peers.size >= this.maxPeers) {
+      this._log('peer_limit_reached', { limit: this.maxPeers, key });
+      throw new Error(
+        `peer limit reached (${this.maxPeers}); refusing to add ${key}. ` +
+          'Raise maxPeers if this is legitimate fan-out.',
+      );
+    }
 
     const peer = new Peer({
       system: this,

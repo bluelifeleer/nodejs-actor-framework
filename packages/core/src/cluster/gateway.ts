@@ -116,6 +116,10 @@ interface GatewayOptions {
     peerSupportsFencing: boolean;
   }) => { ok: boolean; reason?: string } | null | undefined) | null;
   epochFor?: ((target: string) => number | null) | null;
+  /** 在非回环地址上裸奔绑定的**显式**许可（默认拒绝，见 `assertSafeBinding`）。 */
+  allowInsecureBinding?: boolean;
+  /** 每个连接的在途入站请求上限（默认 1000）：超限即断开并记一条 `overloaded`。 */
+  maxInflightPerConnection?: number;
 }
 
 function encodeFrame(obj: GatewayFrame, codec: number = CODEC.PROTOBUF): Buffer {
@@ -152,6 +156,8 @@ class Gateway extends EventEmitter {
   readonly shardCount: number | null;
   readonly requireFencing: boolean;
   verifyOwnership: GatewayOptions['verifyOwnership'];
+  readonly allowInsecureBinding: boolean;
+  readonly maxInflightPerConnection: number;
   readonly epochFor: GatewayOptions['epochFor'];
   _inflight: number;
   server: import('node:net').Server | import('node:tls').Server | null;
@@ -198,6 +204,8 @@ class Gateway extends EventEmitter {
     this.requireFencing = options.requireFencing === true;
     /** 所有权判定钩子：网关不认识守卫，只把 (kind, target, epoch, peer) 交给它。 */
     this.verifyOwnership = options.verifyOwnership ?? null;
+    this.allowInsecureBinding = options.allowInsecureBinding === true;
+    this.maxInflightPerConnection = options.maxInflightPerConnection ?? 1000;
     /** 出站时"本节点认为目标 shard 是第几代"（没装守卫时返回 null，即不带字段）。 */
     this.epochFor = options.epochFor ?? null;
     /** 正在处理的入站请求数（离场排空时要用；不做按 shard 细分——那是保守但诚实的简化）。 */
@@ -218,12 +226,87 @@ class Gateway extends EventEmitter {
     return CODEC_NAME[this.codec];
   }
 
+  /**
+   * 审计 S1/S7：**默认零认证**的绑定必须被拦住，而不是靠"使用者自己会配 TLS"。
+   *
+   * 三条规则：
+   *   1. 非回环 + 未启用 TLS → 拒绝启动（除非显式 `allowInsecureBinding: true`）；
+   *   2. TLS 开着但 `requestCert === false` **且** `verifyNodeId === false` → 拒绝启动
+   *      （两个开关一起关掉 = TLS 开着却零客户端认证，是很容易配出来的假安全）；
+   *   3. 只配了 `verifyNodeId: false`（滚动升级场景）→ 放行但**大声记一条**日志（降级可见）。
+   *
+   * 与 `ops/telnet-console.ts` 的 `assertSafeBinding` 同一套语义——同类服务行为要一致。
+   */
+  assertSafeBinding(): void {
+    const host = this.host;
+    const loopback = host === '127.0.0.1' || host === '::1' || host === 'localhost' || host.startsWith('127.');
+    const tlsEnabled = tlsUtil.isEnabled(this.tls);
+    if (!loopback && !tlsEnabled && !this.allowInsecureBinding) {
+      throw new Error(
+        `refusing to bind the actor gateway on ${host} without TLS: every peer on that network could ` +
+          'tell/deliver/stop your actors. Enable TLS (ACTOR_TLS_ENABLED=1) or pass ' +
+          'allowInsecureBinding: true if you really mean it.',
+      );
+    }
+    if (tlsEnabled && (this.tls as { requestCert?: unknown }).requestCert === false && (this.tls as { verifyNodeId?: unknown }).verifyNodeId === false) {
+      throw new Error(
+        'refusing to start: TLS with requestCert=false AND verifyNodeId=false accepts any client without a ' +
+          'certificate (zero client authentication). Drop one of the two switches.',
+      );
+    }
+    if (tlsEnabled && (this.tls as { verifyNodeId?: unknown }).verifyNodeId === false) {
+      this._logSafe('tls_node_id_verification_disabled', {
+        hint: 'verifyNodeId=false：持有任一合法证书的对端可以冒充其它 nodeId（只应在滚动升级窗口内使用）',
+      });
+    }
+  }
+
+  /**
+   * 发事件但**绝不让监听器把内核拖下水**（审计：Gateway 的 `emit('error')` 在无监听者时会抛
+   * `ERR_UNHANDLED_ERROR`，而抛点在 net server 的 error 回调里 → `reject(err)` 永远不执行、
+   * 进程还可能直接退出）。
+   */
+  _logSafe(event: string, meta?: Record<string, unknown>): void {
+    for (const listener of this.listeners('log')) {
+      try {
+        (listener as (e: string, m?: Record<string, unknown>) => void)(event, meta);
+      } catch {
+        /* 监听器坏了不能影响内核 */
+      }
+    }
+  }
+
+  /** 安全发事件：有监听者才发，且吞掉监听器的异常。 */
+  _safeEmit(event: string, ...args: unknown[]): void {
+    const listeners = this.listeners(event);
+    if (listeners.length === 0) {
+      if (event === 'error') {
+        // 没有监听者的 error 事件：记一条（如果装了 log 监听），但绝不抛
+        this._logSafe('gateway_error_unhandled', { err: args[0] instanceof Error ? args[0].message : String(args[0]) });
+      }
+      return;
+    }
+    for (const listener of listeners) {
+      try {
+        (listener as (...a: unknown[]) => void)(...args);
+      } catch (err) {
+        this._logSafe('gateway_listener_failed', { event, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
   listen(): Promise<number> {
     return new Promise<number>((resolve, reject) => {
+      try {
+        this.assertSafeBinding();
+      } catch (err) {
+        reject(err);
+        return;
+      }
       const server = tlsUtil.createServer(this.tls, (socket: import('node:net').Socket) => this._handleInbound(socket));
       this.server = server;
       server.on('error', (err: Error) => {
-        this.emit('error', err);
+        this._safeEmit('error', err);
         reject(err);
       });
       server.listen(this.port, this.host, () => {
@@ -384,6 +467,17 @@ class Gateway extends EventEmitter {
       return;
     }
 
+    /**
+     * 审计 S4：单连接可以堆积无限在途请求 —— 一条连接就能让节点同时处理任意多 handler
+     * （每份 payload 最大 maxFrameBytes），而且 `inflight()` 是集群优雅离场判断"排空了没有"的依据，
+     * 无界在途会让 drain 永远等不到排空。
+     */
+    if (this._inflight >= this.maxInflightPerConnection) {
+      this._safeEmit('overloaded', { inflight: this._inflight, limit: this.maxInflightPerConnection });
+      this._logSafe('gateway_overloaded', { inflight: this._inflight, limit: this.maxInflightPerConnection });
+      socket.destroy();
+      return;
+    }
     if (this.requireHello && !state.helloOk) {
       this.emit('auth_error', `peer sent "${frame.kind}" before completing the hello handshake`);
       socket.destroy();

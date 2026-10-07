@@ -68,9 +68,22 @@ interface GossipOptions {
   maxFrameBytes?: number;
   tls?: unknown;
   codec?: number | string;
+  /** 注册表条目上限（默认 10000）：注册表是整体复制的，无界 = 一条连接就能把内存灌满。 */
+  maxRegistryEntries?: number;
+  /** 对等地址表上限（默认 256）：gossip 会**真的去拨**学到的地址。 */
+  maxPeers?: number;
+  /** 允许的时钟偏移（默认 60s）：ts 超前本机超过它就拒绝（否则未来时间戳可以永久压住 LWW）。 */
+  maxClockSkewMs?: number;
 }
 
 class Gossip extends EventEmitter {
+  /** 注册表条目上限（审计 S2：注册表是整体复制的，无界 = 一条连接就能灌满内存）。 */
+  readonly maxRegistryEntries: number;
+  /** 对等地址表上限（审计 S2：gossip 会真的去拨学到的地址）。 */
+  readonly maxPeers: number;
+  /** 允许的时钟偏移（审计 S2）。 */
+  readonly maxClockSkewMs: number;
+
   /**
    * @param nodeId 本节点 id
    * @param port 监听端口
@@ -95,6 +108,9 @@ class Gossip extends EventEmitter {
       : codecFromName(opts.codec || config.gossip.codec);
     // The registry map is trimmed to maxPayloadBytes, so allow for envelope framing overhead.
     this.maxFrameBytes = opts.maxFrameBytes || this.maxPayloadBytes + 64 * 1024;
+    this.maxRegistryEntries = opts.maxRegistryEntries ?? 10000;
+    this.maxPeers = opts.maxPeers ?? 256;
+    this.maxClockSkewMs = opts.maxClockSkewMs ?? 60_000;
 
     /** key -> 记录（含墓碑）。 */
     this.localRegistry = new Map<string, RegistryEntry>();
@@ -113,6 +129,15 @@ class Gossip extends EventEmitter {
   }
 
   addSeed(seed: string | { host: string; port: number }): boolean {
+    // 审计 S2：gossip 会**主动拨号**学到的地址；没有上限时对端每次换地址就能让本节点
+    // 无限增长对等表（并向外连任意地址）。满了就拒绝新地址并如实记一条。
+    if (this.peers.size >= this.maxPeers) {
+      const known = this._describeSeed(seed);
+      if (!this.peers.has(known)) {
+        this.emit('peer_limit_reached', { limit: this.maxPeers });
+        return false;
+      }
+    }
     if (!seed) return false;
     let host;
     let port;
@@ -145,13 +170,20 @@ class Gossip extends EventEmitter {
   }
 
   /** Local view (tombstones included) as a plain object. */
+  /** "host:port" 形式的键（addSeed 与 peers 表都用它）。 */
+  _describeSeed(seed: string | { host: string; port: number }): string {
+    if (typeof seed === 'string') return seed;
+    return `${String(seed.host)}:${Number(seed.port)}`;
+  }
+
   exportState(): Record<string, RegistryEntry> {
     const out: Record<string, RegistryEntry> = {};
     let bytes = 2;
     // newest first, so trimming drops the least useful entries
     const entries = [...this.localRegistry.values()].sort((a, b) => b.ts - a.ts);
     for (const entry of entries) {
-      const size = JSON.stringify(entry).length + 1;
+      // 审计 S12：`.length` 是 UTF-16 码元数，多字节值最多差 3 倍 → 预算是假的。
+      const size = Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
       if (bytes + size > this.maxPayloadBytes) {
         this.emit('state_truncated', this.localRegistry.size - Object.keys(out).length);
         break;
@@ -173,9 +205,24 @@ class Gossip extends EventEmitter {
   mergeState(remoteEntries: Record<string, RegistryEntry> | null | undefined, senderNodeId?: string): string[] {
     const applied: string[] = [];
     if (remoteEntries === null || remoteEntries === undefined || typeof remoteEntries !== 'object') return applied;
+    const now = Date.now();
     for (const [key, incoming] of Object.entries(remoteEntries)) {
       if (incoming === null || typeof incoming !== 'object' || incoming.key !== key) continue;
+      // 审计 S2：value 形状、条目数上限、时间戳不能跑到未来。
+      //
+      // 这里只拒"确实无效"的值（undefined / 函数 / symbol）：注册表里**合法地**存在墓碑
+      // （`deleted: true`，value 为 null）与**布尔值**（例如 `leaving:<nodeId>` 用 `true` 当标记）。
+      // 我前两版分别把这两种拒掉了，各自打红一批集群测试——这是"校验写窄了"的代价。
+      if (incoming.value === undefined || typeof incoming.value === 'function' || typeof incoming.value === 'symbol') continue;
+      if (!Number.isFinite(incoming.ts) || (incoming.ts as number) > now + this.maxClockSkewMs) {
+        this.emit('registry_rejected', { key, reason: 'timestamp_in_future' });
+        continue;
+      }
       const current = this.localRegistry.get(key);
+      if (current === undefined && this.localRegistry.size >= this.maxRegistryEntries) {
+        this.emit('registry_rejected', { key, reason: 'registry_full' });
+        continue;
+      }
       if (current !== undefined && !this._isNewer(incoming, current)) continue;
       this.localRegistry.set(key, incoming);
       applied.push(key);
