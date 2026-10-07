@@ -24,7 +24,7 @@ export interface AddResult {
   /** 已经有对应片段、这次跳过的（升序）。 */
   readonly skipped: FragmentName[];
   /** 需要写进 package.json 的依赖（升序）。 */
-  readonly packages: string[];
+  readonly packages: readonly string[];
   /** 会被写/改的文件（相对路径，升序）——测试就是靠它证明"没碰别的东西"。 */
   readonly files: string[];
   /** 需要人工确认/配置的事项（打印给用户）。 */

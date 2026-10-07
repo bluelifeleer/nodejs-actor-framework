@@ -56,13 +56,12 @@ const KERNEL_COVERED = ['nodejs-actor-framework']; // 内核有专门的门禁�
 /**
  * **已记录的 typecheck 例外**（带自清机制，见下一条门禁）。
  *
- * 这两个包的 `src/` 目前**没有**进根 tsconfig —— 本门禁第一次跑就证明了这不是"故意的省略"，
- * 而是**遗留缺口**：把它们加进去会暴露 **11 处**类型错误（大多是 `exactOptionalPropertyTypes`
- * 下把 `string | undefined` 塞进可选属性），全都是"从没被 typecheck 过"积累的（含 M9c 新写的
- * `commands/add.ts` 一处）。修它们是一项独立工作，不该混进 M9d 提交里，所以先**显式记录**，
- * 并且：**一旦哪天它们进了 tsconfig，这条门禁会要求你把例外删掉**（防止例外变成永久的洞）。
+ * 曾经的例外：`packages/cli` 与 `packages/testkit`（本门禁第一次跑就证明那不是"故意的省略"，而是
+ * **遗留缺口** —— 接进 tsconfig 会暴露 11 处类型错误，全是"从没被 typecheck 过"积累的）。
+ * 这 11 处已经修完、两个包也真的接进了 tsconfig，所以名单**清空**了 —— 这正是"例外必须能自清"的用法：
+ * 下面那条用例保证"例外包一旦进了 tsconfig 就必须把例外删掉"，防止例外变成永久的洞。
  */
-const TYPECHECK_EXCEPTIONS = ['packages/cli', 'packages/testkit'];
+const TYPECHECK_EXCEPTIONS = [];  // 曾经有 cli/testkit（11 处类型错误）——已修完并接进 tsconfig，例外自清机制要求清空
 
 function readPackages() {
   const packages = [];

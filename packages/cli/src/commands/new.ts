@@ -42,7 +42,7 @@ export interface NewAppResult {
   /** 追加的能力（升序；基础模板自带 web + data）。 */
   capabilities: Capability[];
   /** 写进生成项目 package.json 的依赖（升序）。 */
-  packages: string[];
+  packages: readonly string[];
   files: string[];
   nextSteps: string[];
 }

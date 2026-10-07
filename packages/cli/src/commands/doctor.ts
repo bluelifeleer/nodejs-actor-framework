@@ -20,7 +20,7 @@ export interface Check {
   /** 通过时的简短说明；失败时是**问题描述**。 */
   detail: string;
   /** 失败时给出"下一步该做什么"。 */
-  fix?: string;
+  fix?: string | undefined;
 }
 
 export interface DoctorResult {

@@ -35,7 +35,8 @@ export function createHttpClient(baseUrl: string, defaults: { timeoutMs?: number
   const base = String(baseUrl).replace(/\/+$/, '');
   const timeoutMsDefault = defaults.timeoutMs ?? 10_000;
 
-  const request: HttpClient['request'] = async (method, path, options = {}) => {
+  // 实现按 unknown body 写（运行时不关心泛型），在边界上断言成接口的泛型签名
+  const request = (async (method: string, path: string, options: { body?: unknown; headers?: Record<string, string>; timeoutMs?: number } = {}) => {
     const timeoutMs = options.timeoutMs ?? timeoutMsDefault;
     const response = await fetch(`${base}${path.startsWith('/') ? path : `/${path}`}`, {
       method,
@@ -56,7 +57,7 @@ export function createHttpClient(baseUrl: string, defaults: { timeoutMs?: number
       }
     }
     return { status: response.status, ok: response.ok, headers: response.headers, body, text };
-  };
+  }) as HttpClient['request'];
 
   const api: HttpClient = {
     request,

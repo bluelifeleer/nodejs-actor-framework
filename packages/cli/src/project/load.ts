@@ -44,7 +44,7 @@ async function exists(file: string): Promise<boolean> {
 }
 
 /** 从 `<dir>` 向上找 package.json？不——只用给定的目录，避免"跑到父目录去动别人的项目"。 */
-export async function loadProject(dir: string, options: { data?: string } = {}): Promise<ProjectInfo> {
+export async function loadProject(dir: string, options: { data?: string | undefined } = {}): Promise<ProjectInfo> {
   const root = path.resolve(dir);
   const stat = await fs.stat(root).catch(() => null);
   if (stat === null || !stat.isDirectory()) {
