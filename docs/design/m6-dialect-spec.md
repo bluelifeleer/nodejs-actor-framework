@@ -221,7 +221,24 @@ MySQL 的 `insertId`（没有 RETURNING）。这些最终会退化成 `if (name 
   期间自我修正一处：守卫最初自己造了个平行错误类 `DialectConfigError`，被既有测试抓到
   （断言 `instanceof DbConfigError`）——已改为复用公开的 `DbConfigError`（`errors.ts` 是叶子模块，无循环依赖）。
 
-## 12. 验收
+## 12. 实施进度（续）
+
+- **Step 2（已完成）**：`DialectSpec` 补上 `autoIncrementPieces`（**结构化**返回而不是拼字符串：
+  PG 的 `beforeNotNull`、MySQL 的 `afterNotNull`、SQLite 的 `override` 接管整列，位置差异由共享骨架保证）、
+  `defaultLiteral`（含"这个方言不给这种列写默认值"的 `null`）、`inlineComment`、`tableSuffix`、
+  `commentStatements`、`indexIfNotExists`、`isDuplicateIndexError`；新增 `RenderableField`/`RenderableModel`
+  **视图类型**（`Field`/`Model` 结构上满足它们），这样 `dialects/` 不必反向 import `model.ts`（避免循环依赖）。
+  `model.ts` 的列定义改成"**共享骨架 + 方言数据**"：`列名 类型 [NOT NULL 前的片段] NOT NULL [后的片段] 约束
+  [DEFAULT] [内联注释]` —— 三方言一致的约束（主键隐含 NOT NULL、PRIMARY KEY 与 UNIQUE 互斥）只写一遍，
+  方言只提供片段；`schema.ts` 的"索引已存在"容忍也改为 `spec.isDuplicateIndexError()`。
+  **方言分支 25 → 14，`model.ts` 归零（10 → 0）**；全量 709/709 绿。
+- **顺带修掉一个真 bug**：`precision`/`scale` 只写在 `FieldSpec` 上、从没拷进 `Field`，也从没进过 DDL ——
+  声明 `{ type: 'decimal', precision: 18, scale: 4 }` 会被**静默忽略**成 `numeric(10, 2)`。
+  现在真的传下去了（并补了三方言 DDL 断言 + sqlite 真库插入断言）。
+- **顺带收口一处方言遗漏**：MySQL 的 TEXT 家族（`tinyText`/`mediumText`/`bigText`）此前不在
+  "不给默认值"的名单里，会生成 MySQL 不接受的 `DEFAULT`；现在名单覆盖整个 TEXT/JSON/BLOB 家族。
+
+## 13. 验收
 
 - [ ] `dialects/` 之外 grep 不到 `dialect === '`（门禁测试，可证伪）。
 - [ ] 契约测试覆盖 3 方言 × 23 类型（TS 的 `Record` 保证不遗漏）。

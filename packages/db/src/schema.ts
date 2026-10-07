@@ -1,6 +1,7 @@
 import { type Dialect } from './dialect.ts';
 import { DbError } from './errors.ts';
 import { columnTypeFor } from './dialect.ts';
+import { dialectSpec } from './dialects/index.ts';
 import type { Field, Model } from './model.ts';
 import type { Row, Runner } from './drivers/types.ts';
 
@@ -60,8 +61,6 @@ export class DbSchemaDriftError extends DbError {
 }
 
 /** mysql 里"索引已存在"的错误码；mysql 不支持 CREATE INDEX IF NOT EXISTS，只能容忍它。 */
-const MYSQL_DUPLICATE_INDEX = /ER_DUP_KEYNAME|Duplicate key name/i;
-
 function quoteIdent(dialect: Dialect, name: string): string {
   const ch = dialect === 'mysql' ? '`' : '"';
   return `${ch}${String(name).split(ch).join(ch + ch)}${ch}`;
@@ -326,7 +325,7 @@ export async function syncModels(
         report.indexes.push(index.name);
       } catch (err) {
         // mysql 没有 CREATE INDEX IF NOT EXISTS：已存在就当成功（如实不报进 indexes）
-        if (dialect === 'mysql' && MYSQL_DUPLICATE_INDEX.test(err instanceof Error ? err.message : String(err))) {
+        if (dialectSpec(dialect).isDuplicateIndexError(err)) {
           options.logger?.('db_index_exists', { table: model.table, index: index.name });
           continue;
         }

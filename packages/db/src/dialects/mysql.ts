@@ -1,4 +1,33 @@
-import { typeRendererFor, type ColumnTypeOptions, type DialectSpec, type LogicalType, type TypeRenderers } from './types.ts';
+import { DbConfigError } from '../errors.ts';
+import {
+  numericLiteral,
+  sqlString,
+  typeRendererFor,
+  type ColumnTypeOptions,
+  type DialectSpec,
+  type LogicalType,
+  type RenderableField,
+  type TypeRenderers,
+} from './types.ts';
+
+/** MySQL 的列/表注释上限（超出会被数据库静默截断，所以在生成 DDL 时就报错）。 */
+const COMMENT_MAX = 1024;
+
+/**
+ * MySQL 对 TEXT / JSON / BLOB 家族**不给列默认值**（8.0.13 之前直接不允许；
+ * 这里统一不写，文档写明）。`binary` 是 `varbinary`，可以有默认值。
+ */
+const NO_DEFAULT_TYPES = new Set(['text', 'tinyText', 'mediumText', 'bigText', 'json', 'blob']);
+
+/** 注释字面量：转义 + 长度上限提前检查（不留给数据库静默截断）。 */
+function commentValue(text: string, what: string): string {
+  if (text.length > COMMENT_MAX) {
+    throw new DbConfigError(
+      `${what} comment is too long for MySQL (${text.length} > ${COMMENT_MAX} chars) — shorten it or use PostgreSQL`,
+    );
+  }
+  return sqlString(text);
+}
 
 /** MySQL 的类型表（方案 A）。MySQL 有最丰富的文本家族与 `tinyint(1)` 布尔。 */
 const TYPES: TypeRenderers = {
@@ -39,4 +68,28 @@ export const mysql: DialectSpec = {
   quoteTable: (schema, table) => (schema === undefined ? quote(table) : `${quote(schema)}.${quote(table)}`),
   supportsReturning: false, // MySQL 没有 RETURNING：自增主键靠结果里的 insertId
   columnType: (logical: LogicalType, options: ColumnTypeOptions) => typeRendererFor(TYPES, logical, 'mysql')(options),
+
+  // AUTO_INCREMENT 必须是 NOT NULL 之后、主键约束之前
+  autoIncrementPieces: (field: RenderableField) => (field.autoIncrement ? { afterNotNull: 'AUTO_INCREMENT' } : null),
+
+  defaultLiteral: (field: RenderableField) => {
+    if (!field.hasDefault) return null;
+    if (NO_DEFAULT_TYPES.has(field.type)) return null; // TEXT/JSON/BLOB 家族不给默认值
+    const value = field.defaultValue;
+    if (value === null) return 'NULL';
+    if (typeof value === 'number' || typeof value === 'bigint') return numericLiteral(field.name, value);
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    return sqlString(String(text));
+  },
+
+  // MySQL 只支持"建表时内联列注释"（已存在的表不会被自动改注释）
+  inlineComment: (field: RenderableField) =>
+    field.comment === undefined ? null : commentValue(field.comment, `column "${field.column}"`),
+  tableSuffix: (model, options) =>
+    options.withComments && model.comment !== undefined ? ` COMMENT=${commentValue(model.comment, `table "${model.table}"`)}` : '',
+  // 注释已经内联在建表语句里 → 没有独立语句
+  commentStatements: () => [],
+  indexIfNotExists: false, // MySQL 没有 CREATE INDEX IF NOT EXISTS
+  isDuplicateIndexError: (error: unknown) => /ER_DUP_KEYNAME|Duplicate key name/i.test(error instanceof Error ? error.message : String(error)),
 };

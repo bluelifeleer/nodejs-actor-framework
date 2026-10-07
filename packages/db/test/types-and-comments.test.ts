@@ -282,3 +282,30 @@ test('comments: 模式 —— create（默认）只在建表时写，always 才�
     await c.db.close();
   }
 });
+
+test('decimal: precision/scale 必须真的进 DDL（此前只写在 FieldSpec 里、被静默忽略）', async () => {
+  const Money = defineModel({
+    name: 'money',
+    fields: {
+      id: { type: 'integer', primaryKey: true, autoIncrement: true },
+      amount: { type: 'decimal', precision: 18, scale: 4 },
+      rate: { type: 'decimal' }, // 不给就用默认 (10, 2)
+    },
+  });
+  assert.match(Money.createTableSql('pgsql'), /"amount" numeric\(18, 4\)/, 'pg 没有用上 precision/scale');
+  assert.match(Money.createTableSql('mysql'), /`amount` decimal\(18, 4\)/, 'mysql 没有用上 precision/scale');
+  assert.match(Money.createTableSql('sqlite'), /"amount" numeric\(18, 4\)/, 'sqlite 没有用上 precision/scale');
+  assert.match(Money.createTableSql('pgsql'), /"rate" numeric\(10, 2\)/, '没给 precision/scale 时应当用默认值');
+
+  // 真的能建出来（sqlite 真库）
+  const db = createDatabase({ dialect: 'sqlite', connection: { filename: ':memory:' } });
+  await db.connect();
+  try {
+    assert.deepStrictEqual((await db.sync([Money])).created, ['money']);
+    const money = db.repository(Money);
+    const created = await money.insert({ amount: 12.3456, rate: 1.5 });
+    assert.strictEqual(Number(created.amount), 12.3456);
+  } finally {
+    await db.close();
+  }
+});
