@@ -5,7 +5,7 @@ node packages/cli/src/cli.ts new app my-app     # 仓库内；发布后就是 `a
 cd my-app && npm install && npm start && npm test
 ```
 
-生成 10 个文件，**开箱即跑**：`npm start` 起 HTTP，`npm test` 跑 4 条端到端用例
+默认生成 **layered 布局**的 16 个文件（按业务分层，见下一节），**开箱即跑**：`npm start` 起 HTTP，`npm test` 跑 4 条端到端用例
 （CRUD 201/200/409/204、Actor、**重启后持久化**、400/404/405）。骨架里没有 TODO、没有注释掉的代码，
 每一处都是当前真实可用的写法。
 
@@ -26,10 +26,27 @@ const dir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-'));
 try {
   const cli = path.join(process.cwd(), 'packages', 'cli', 'src', 'cli.ts');
   const { stdout } = await run(process.execPath, [cli, 'new', 'app', dir]);
-  assert.match(stdout, /已生成 10 个文件/);
+  assert.match(stdout, /已生成 16 个文件/);   // 默认 layered
 
-  for (const file of ['package.json', 'main.ts', 'config/default.ts', 'src/app.ts', 'src/module.ts', 'src/notes.ts', 'src/counter.ts', 'test/app.test.ts']) {
+  // layered：进程入口与装配分开，业务按层分目录
+  for (const file of [
+    'package.json', 'tsconfig.json', 'main.ts', 'server.ts', 'config/default.ts',
+    'src/module.ts', 'src/controller/notes.controller.ts', 'src/controller/counter.controller.ts',
+    'src/controller/health.controller.ts', 'src/actor/counter.actor.ts', 'src/model/note.ts',
+    'src/schema/note.schema.ts', 'src/service/notes.repository.ts', 'test/api.test.ts',
+  ]) {
     assert.ok(fs.existsSync(path.join(dir, file)), `缺少 ${file}`);
+  }
+
+  // flat：保留旧的扁平形状（最小示例/老项目用）——文件数不同、装配文件是 src/app.ts
+  const flatDir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-flat-'));
+  try {
+    const { stdout: flatOut } = await run(process.execPath, [cli, 'new', 'app', flatDir, '--layout', 'flat']);
+    assert.match(flatOut, /已生成 10 个文件/);
+    assert.ok(fs.existsSync(path.join(flatDir, 'src', 'app.ts')), 'flat 布局应当有 src/app.ts');
+    assert.ok(!fs.existsSync(path.join(flatDir, 'server.ts')), 'flat 布局不该有 server.ts');
+  } finally {
+    fs.rmSync(flatDir, { recursive: true, force: true });
   }
 
   // 非空目录必须拒绝（脚手架不覆盖已有项目）
@@ -40,27 +57,35 @@ try {
 console.log('ok');
 ```
 
-## 生成了什么
+## 生成了什么（layered 布局，默认）
 
 ```
 my-app/
-├── package.json          # 依赖 @actor/app @actor/data @actor/web（用户项目不直接依赖内核）
-├── config/default.ts     # 配置 = 默认值 + 校验（APP_* 环境变量覆盖）
-├── main.ts               # 启动入口：SIGTERM/SIGINT 优雅停止
+├── main.ts                 进程入口：信号注册、优雅停、启动日志（最薄的一层）
+├── server.ts               应用装配：createApp + 插件/模块接线，导出 http 实例（测试直接 import 它）
+├── config/default.ts       配置定义（schema + 默认值）
+├── tsconfig.json           生成的项目自带类型检查配置（`npx tsc -p . --noEmit`）
 ├── src/
-│   ├── app.ts            # defineApp：配置 / 模块 / 插件
-│   ├── module.ts         # defineModule：providers（仓储）+ actors + routes
-│   ├── notes.ts          # CRUD 控制器（仓储 + 游标分页 + 乐观锁 → 409）
-│   └── counter.ts        # Actor（mode: 'snapshot'）：写路径在这里
-├── test/app.test.ts      # 端到端：真 HTTP + 真重启
-└── README.md
+│   ├── controller/         HTTP 语义：notes / counter / health
+│   ├── actor/              Actor 定义（有状态、串行、可持久化）
+│   ├── model/              领域类型与映射
+│   ├── schema/             数据层声明（集合名、排序键；换 SQL 时这里是 defineModel/迁移的落点）
+│   ├── service/            仓储/外部依赖的装配（换存储只改这一个文件）
+│   └── module.ts           接线：providers + actors + routes
+└── test/api.test.ts        端到端（真 HTTP + 真重启）
 ```
 
-| 路径 | 走哪一层 |
-|---|---|
-| `POST /notes`、`GET /notes?limit=&cursor=`、`PATCH /notes/:id`、`DELETE /notes/:id` | **仓储**（文件适配器；换 SQL 只改 `module.ts` 一行） |
-| `POST /counter/add`、`GET /counter` | **Actor**（`mode: 'snapshot'`，状态落盘） |
-| `GET /health` | 函数式控制器（无输入无依赖时最简） |
+**谁放哪是写死的**：`main.ts` 只做进程级的事，`server.ts` 只做装配，业务在 `src/` 各层里。
+这样项目长大后不会出现"所有东西都在一个文件里"。
+
+### 另一种布局：`--layout flat`
+
+```bash
+actor new app my-app --layout flat     # 10 个文件的最小扁平形状（老项目/最小示例用）
+```
+
+flat 是**保留的旧形状**（`src/app.ts` + `src/{notes,counter,module}.ts`），没有 `tsconfig.json`；
+新项目建议用默认的 layered。
 
 ## 迁移与体检
 

@@ -65,16 +65,24 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
     fix: 'npm install @actor/app @actor/web（用户项目不直接依赖内核 nodejs-actor-framework）',
   });
 
-  // 3) 关键文件在不在
-  for (const [relative, why] of [
-    ['src/app.ts', '应用定义（defineApp）'],
-    ['config/default.ts', '配置（defineConfig）'],
-    ['main.ts', '启动入口'],
-  ] as const) {
-    const present = await fs
+  // 3) 关键文件在不在（**两种布局都认**：layered 用 server.ts，flat 用 src/app.ts）
+  const exists = (relative: string): Promise<boolean> =>
+    fs
       .access(path.join(project.dir, relative))
       .then(() => true)
       .catch(() => false);
+  const layered = await exists('server.ts');
+  checks.push({
+    name: '布局',
+    ok: true,
+    detail: layered ? 'layered（server.ts 装配 + 按业务分层）' : 'flat（src/app.ts + 扁平 src/）',
+  });
+  for (const [relative, why] of [
+    [layered ? 'server.ts' : 'src/app.ts', layered ? '应用装配（defineApp + 插件接线）' : '应用定义（defineApp）'],
+    ['config/default.ts', '配置（defineConfig）'],
+    ['main.ts', '启动入口'],
+  ] as const) {
+    const present = await exists(relative);
     checks.push({
       name: `文件 ${relative}`,
       ok: present,

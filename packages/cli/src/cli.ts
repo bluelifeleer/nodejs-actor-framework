@@ -9,6 +9,7 @@
 import path from 'node:path';
 
 import { UsageError, parseArgs } from './args.ts';
+import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
 import { migrate } from './commands/migrate.ts';
 import { newApp } from './commands/new.ts';
@@ -21,7 +22,9 @@ function usage(): string {
     'actor —— actor 框架的命令行工具',
     '',
     '用法：',
-    '  actor new app <dir> [--force]                生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
+    '  actor new app <dir> [--layout layered|flat] [--force]',
+    '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
+    '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
     '  actor doctor                                 体检：Node/依赖/配置/数据目录/迁移/端口',
     '  actor --help | --version                     帮助与版本',
@@ -59,7 +62,11 @@ async function main(argv: readonly string[]): Promise<number> {
 
   const [first, second] = parsed.command;
   if (first === 'new' && second === 'app') {
-    const result = await newApp(parsed.positionals[0] ?? '', { force: parsed.flags.force === true });
+    const layout = typeof parsed.flags.layout === 'string' ? (parsed.flags.layout as Layout) : undefined;
+    const result = await newApp(parsed.positionals[0] ?? '', {
+      force: parsed.flags.force === true,
+      ...(layout === undefined ? {} : { layout }),
+    });
     process.stdout.write(`已生成 ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
     for (const file of result.files) process.stdout.write(`  ${file}\n`);
     process.stdout.write(`\n下一步：\n${result.nextSteps.map((step) => `  ${step}`).join('\n')}\n`);

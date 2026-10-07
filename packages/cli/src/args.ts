@@ -25,7 +25,7 @@ export interface ParsedArgs {
 }
 
 /** 已知的开关（有这些才算 flag，其余 `--x` 会报错——错拼一个选项不该被静默忽略）。 */
-const KNOWN_FLAGS = new Set(['force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port']);
+const KNOWN_FLAGS = new Set(['force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout']);
 
 /**
  * `commands` 是命令表：`{ new: ['app'], migrate: ['status', 'up', 'down'], doctor: [] }`。

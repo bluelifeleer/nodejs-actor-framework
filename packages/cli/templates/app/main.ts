@@ -1,6 +1,6 @@
 import { createApp } from '@actor/app';
 
-import app, { http } from './src/app.ts';
+import app, { http } from './server.ts';
 
 // 数据目录与内核持久化同源：配置读不到时用环境变量兜底（两者必须指向同一个目录）
 const dataDir = process.env.APP_DATA_DIR ?? './data';

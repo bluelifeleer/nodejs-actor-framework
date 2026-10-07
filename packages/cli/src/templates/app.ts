@@ -9,7 +9,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const TEMPLATE_ROOT = path.join(import.meta.dirname, '..', '..', 'templates', 'app');
+/** 支持的布局：`layered`（默认，按业务分层）/ `flat`（最小扁平形状）。 */
+export const LAYOUTS = ['layered', 'flat'] as const;
+export type Layout = (typeof LAYOUTS)[number];
+
+const TEMPLATE_ROOTS: Record<Layout, string> = {
+  layered: path.join(import.meta.dirname, '..', '..', 'templates', 'app'),
+  flat: path.join(import.meta.dirname, '..', '..', 'templates', 'app-flat'),
+};
 
 /** 需要做占位符替换的文本文件。 */
 const SUBSTITUTE = new Set(['package.json', 'README.md']);
@@ -32,10 +39,10 @@ async function walk(dir: string, prefix = ''): Promise<{ relative: string; absol
   return found;
 }
 
-/** 生成文件清单（含占位符替换）。`projectName` 用于 package.json / README。 */
-export async function appTemplates(projectName = 'my-actor-app'): Promise<TemplateFile[]> {
+/** 生成文件清单（含占位符替换）。`projectName` 用于 package.json / README；`layout` 选模板形状。 */
+export async function appTemplates(projectName = 'my-actor-app', layout: Layout = 'layered'): Promise<TemplateFile[]> {
   const files: TemplateFile[] = [];
-  for (const { relative, absolute } of await walk(TEMPLATE_ROOT)) {
+  for (const { relative, absolute } of await walk(TEMPLATE_ROOTS[layout])) {
     const raw = await fs.readFile(absolute, 'utf8');
     const content = SUBSTITUTE.has(relative) ? raw.replaceAll('__PROJECT_NAME__', projectName) : raw;
     files.push({ relative, content });
@@ -43,4 +50,5 @@ export async function appTemplates(projectName = 'my-actor-app'): Promise<Templa
   return files;
 }
 
-export const templateRoot = TEMPLATE_ROOT;
+export const templateRoot = TEMPLATE_ROOTS.layered;
+export const templateRootOf = (layout: Layout = 'layered'): string => TEMPLATE_ROOTS[layout];
