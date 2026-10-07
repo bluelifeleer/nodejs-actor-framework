@@ -23,6 +23,13 @@ export interface RunAppOptions {
   exit?: (code: number) => void;
   /** 日志（默认写 stdout）。 */
   log?: (message: string) => void;
+  /**
+   * **启动前**要做的事（例如"迁移门"：有未应用迁移就拒绝启动）。
+   *
+   * 它在**信号处理器注册之后**执行 —— 这一点很重要：如果把这类 await 放在 runApp **之前**，
+   * 启动窗口内收到 SIGTERM 就会走 Node 默认行为（直接退出、不做优雅停），也就是把性质弄丢了。
+   */
+  beforeStart?: (app: Application) => void | Promise<void>;
   /** 启动完成后回调（例如打印监听地址：示例里用的是 web 插件的 http 句柄）。 */
   onStarted?: (app: Application) => void | Promise<void>;
 }
@@ -60,6 +67,7 @@ export async function runApp(spec: unknown, options: RunAppOptions = {}): Promis
     });
   }
 
+  await options.beforeStart?.(application);
   await application.start();
   await options.onStarted?.(application);
   return application;
