@@ -96,7 +96,8 @@ export interface DialectSpec {
   describeConnection(connection: NormalizedConnection): string;
 }
 
-export const DIALECTS: Record<Dialect, DialectSpec>;
+// 注意命名：公开的 `DIALECTS` 是 `readonly Dialect[]`（保持不变），描述符注册表另起名
+export const DIALECT_SPECS: Record<Dialect, DialectSpec>;
 export function dialectSpec(dialect: Dialect): DialectSpec;  // 未知方言 → DbConfigError
 ```
 
@@ -201,13 +202,26 @@ MySQL 的 `insertId`（没有 RETURNING）。这些最终会退化成 `if (name 
 ## 10. 以后加方言的 checklist（这就是这次重构的产出）
 
 1. 复制 `dialects/sqlite.ts` 起手；实现 `DialectSpec`（TypeScript 会逐项提示）。
-2. 在 `DIALECTS` 注册表加一行；`DIALECTS`/`DEFAULT_PORTS`/`DRIVER_PACKAGES` 自动包含它。
+2. 在 `DIALECT_SPECS` 注册表加一行；`DIALECTS`/`DEFAULT_PORTS`/`DRIVER_PACKAGES` 自动包含它。
 3. 写驱动（`drivers/<name>.ts`）：`all/run/insertReturning/transaction/healthCheck/close`。
 4. 跑契约测试（3 方言 × 23 类型自动扩到 4 方言 × 23 类型）。
 5. 文档：指南的类型对照表加一列。
    —— 不需要碰 `model.ts` / `schema.ts` / `repository.ts` / `mapping.ts`（门禁会保证这点）。
 
-## 11. 验收
+## 11. 实施进度
+
+- **Step 1（已完成）**：新增 `dialects/types.ts`（`DialectSpec` 接口 + 类型定义 + 三方言共用的
+  "未知类型要报错"守卫）与 `dialects/{pgsql,mysql,sqlite}.ts`（各一张 `Record<LogicalType, Render>`
+  类型表 + `placeholder`/`quote`/`quoteTable`/`supportsReturning`/`defaultPort`/`driverPackage`），
+  以及 `DIALECT_SPECS` 注册表 + `dialectSpec()`。`dialect.ts` 的公开函数改为**委托**
+  （`columnTypeFor`/`placeholderFor`/`quoteIdentifier`/`quoteTable`/`supportsReturning`），
+  `DEFAULT_PORTS`/`DRIVER_PACKAGES` 由描述符派生（单一事实来源）；类型定义搬到 `dialects/types.ts`
+  后再导出，公开 API 一字不改。新增契约测试 3 条（注册表覆盖、未知方言报错、公开函数与描述符结果一致）。
+  **方言分支 52 → 25**（`dialect.ts` 30 → 3，剩下 3 处是连接形状，属于 Step 4）；全量 707/707 绿。
+  期间自我修正一处：守卫最初自己造了个平行错误类 `DialectConfigError`，被既有测试抓到
+  （断言 `instanceof DbConfigError`）——已改为复用公开的 `DbConfigError`（`errors.ts` 是叶子模块，无循环依赖）。
+
+## 12. 验收
 
 - [ ] `dialects/` 之外 grep 不到 `dialect === '`（门禁测试，可证伪）。
 - [ ] 契约测试覆盖 3 方言 × 23 类型（TS 的 `Record` 保证不遗漏）。

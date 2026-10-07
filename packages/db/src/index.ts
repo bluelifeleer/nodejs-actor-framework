@@ -23,6 +23,10 @@ export {
   type NormalizedConnection,
 } from './dialect.ts';
 
+// 方言描述符（设计见 docs/design/m6-dialect-spec.md）：加方言＝加一个文件 + 注册表一行
+export { DIALECT_SPECS, dialectSpec } from './dialects/index.ts';
+export type { DialectSpec, TypeRenderers } from './dialects/types.ts';
+
 export { DbConflictError, DbNotFoundError } from './errors.ts';
 export {
   defaultParseValue,

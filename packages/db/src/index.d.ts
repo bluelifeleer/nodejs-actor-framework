@@ -63,6 +63,25 @@ export declare const DRIVER_PACKAGES: Record<Dialect, string>;
  */
 export declare function supportsReturning(dialect: Dialect): boolean;
 
+/** 一个方言的差异点（详见 docs/design/m6-dialect-spec.md）。 */
+export interface DialectSpec {
+  readonly name: Dialect;
+  /** 懒加载的驱动包名（sqlite 是内置模块，不需要安装）。 */
+  readonly driverPackage: string;
+  readonly defaultPort: number | null;
+  placeholder(index: number): string;
+  quote(name: string): string;
+  quoteTable(schema: string | undefined, table: string): string;
+  readonly supportsReturning: boolean;
+  columnType(logical: LogicalType, options?: ColumnTypeOptions): string;
+}
+
+/** 方言描述符注册表（加方言＝加一个文件 + 这里加一行）。 */
+export declare const DIALECT_SPECS: Record<Dialect, DialectSpec>;
+
+/** 取一个方言的描述符；未知方言明确报错。 */
+export declare function dialectSpec(dialect: Dialect): DialectSpec;
+
 /** 占位符风格：pg 用 `$n`，mysql/sqlite 用 `?`。 */
 export declare function placeholderFor(dialect: Dialect): (index: number) => string;
 /** 标识符引号 + 转义（pg/sqlite 双引号，mysql 反引号）。 */
