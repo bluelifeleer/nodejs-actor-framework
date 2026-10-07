@@ -128,3 +128,25 @@ export {
   uploadPlugin,
   type UploadPluginOptions,
 } from './upload/plugin.ts';
+
+// --- 鉴权（M8c1）------------------------------------------------------------
+export {
+  HMAC_ALGORITHMS,
+  JwtError,
+  SIGNING_ALGORITHMS,
+  decodeJwt,
+  signJwt,
+  verifyJwt,
+  type JwtAlgorithm,
+  type JwtFailureReason,
+  type JwtKey,
+  type JwtPayload,
+  type JwtVerifyOptions,
+} from './auth/jwt.ts';
+
+export {
+  authPlugin,
+  requireRole,
+  type AuthPluginOptions,
+  type AuthUser,
+} from './auth/plugin.ts';

@@ -182,11 +182,14 @@ export const reply = {
 export class HttpError extends Error {
   readonly status: number;
   readonly details: unknown;
-  constructor(status: number, message: string, details?: unknown) {
+  /** 错误响应也要带的头（例如 401 的 `WWW-Authenticate`）。 */
+  readonly headers: Record<string, string>;
+  constructor(status: number, message: string, details?: unknown, headers?: Record<string, string>) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.details = details;
+    this.headers = headers ?? {};
   }
 }
 
@@ -217,7 +220,10 @@ export function toResponse(result: unknown): HttpResponse {
 /** 把任意异常映射成响应（错误映射表见设计 §4）。 */
 export function toErrorResponse(error: unknown): HttpResponse {
   if (error instanceof HttpError) {
-    return reply.json({ error: { status: error.status, message: error.message, details: error.details } }, { status: error.status });
+    return reply.json(
+      { error: { status: error.status, message: error.message, details: error.details } },
+      { status: error.status, headers: error.headers },
+    );
   }
   const name = (error as { name?: string } | null)?.name;
   const message = (error as { message?: string } | null)?.message ?? 'internal error';

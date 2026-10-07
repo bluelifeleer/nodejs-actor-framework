@@ -273,6 +273,25 @@ export function runMailTransportContract(...): void;                      // 契
    另外两处是我的**测试写法**错：在断言消息里读 body（`Body has already been read`）、
    用 `app.get('http')` 取端口（服务名不是 `http`，且失败后 `stop()` 会挂）。
 
+### M8c1（已完成）：鉴权 / JWT
+
+- `packages/web/src/auth/jwt.ts`：零依赖 JWT（`node:crypto`）——HS256/384/512（**常量时间比较**）、
+  RS256/384/512、ES256/384（`dsaEncoding: 'ieee-p1363'`，JWS 用原始 R||S）；**拒绝 `alg=none`**；
+  算法**白名单**；`exp/nbf/iat` + `clockToleranceSec`（默认 0，不偷偷放宽）；`iss`/`aud`；`kid` 多密钥轮换；
+  `verifyExtra` 钩子（撤销/黑名单）；失败抛 `JwtError` 带 `reason`（**只给服务端日志用**）；
+  `decodeJwt()` 明确命名"只解码不校验"。
+- `authPlugin()`：中间件跑在 **auth 阶段**（在解析 body 之前）；token 来源 = Bearer / cookie / 自定义 extractor；
+  用户放进 `ctx.user`（`{ sub, roles, scopes, claims }`）；每路由声明 `defineController({ auth: { required, roles } })`
+  （由 `dispatch` 把当前控制器声明放进 `ctx.state.route` 供中间件读取 ✓ 不反向依赖）；`requireRole(...roles)`；
+  **401 + `WWW-Authenticate: Bearer`** 且**对外不区分原因**（明细只进 `logger`）；角色不符 403；
+  密钥缺失/太短（HMAC < 32 字节）**拒绝启动**，且永不进日志。
+- `HttpError` 支持 `headers` 并真的落到错误响应上（否则 `WWW-Authenticate` 就是假承诺 —— 测试里断言响应头存在）。
+- `orderMiddleware` 现在也尊重**函数上的 `phase` 属性**：`requireRole()` 自带 `phase: 'auth'`，
+  否则默认 `pre` 会让它跑在 `authPlugin` 之前（`ctx.user` 还没设 → 全部 401）。
+- 测试 8 条：JWT（三档 HMAC 往返/篡改/`alg=none`/算法混淆/ES256/RS256/exp·nbf·iat·容差/iss·aud/kid/verifyExtra）+
+  插件端到端（401 带头且不暴露原因、服务端记明细、`ctx.user`、角色 403、cookie 来源（用 `node:http` 发原始请求 ——
+  fetch 不允许设 cookie 头）、自定义 extractor、撤销、启动期拒短密钥）。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

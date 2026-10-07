@@ -24,6 +24,11 @@ import { matchRoute, type HttpMethod, type Route } from './routes.ts';
 export interface ControllerSpec {
   /** 依赖的 provider 名字（由 httpPlugin 在启动时解析并注入 ctx.get）。 */
   deps?: readonly string[];
+  /**
+   * 鉴权要求（由 authPlugin 解释；没装 authPlugin 时它只是个声明）。
+   * `required: true` 要求已认证；`roles` 还要求具备其中之一（不符 403）。
+   */
+  auth?: { readonly required?: boolean; readonly roles?: readonly string[] };
   /** 控制器级中间件（在全局与路由级之后）。 */
   middleware?: readonly Middleware[];
   /**
@@ -166,6 +171,9 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     // 流式路由：把原始请求流交给 ctx（httpPlugin 对这些路由不做缓冲）
     ...(options.stream === undefined ? {} : { stream: options.stream }),
   });
+
+  // 当前路由的控制器声明：中间件（例如 authPlugin）据此决定"这条路要不要鉴权"
+  ctx.state.route = spec;
 
   // 插件贡献的上下文（每个请求执行一次；失败即 500，不静默）
   for (const hook of options.contextHooks ?? []) {

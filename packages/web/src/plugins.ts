@@ -120,7 +120,10 @@ export function defineWebPlugin(spec: WebPluginSpec): WebPluginSpec {
 export function orderMiddleware(chain: readonly unknown[]): Middleware[] {
   const ranked = chain.map((item, index) => {
     if (typeof item === 'function') {
-      return { handler: item as Middleware, rank: MIDDLEWARE_PHASES.indexOf('pre'), index };
+      // 函数可以自带 `phase` 属性（例如 requireRole()）——没有就按 pre（既有行为不变）
+      const declared = (item as { phase?: unknown }).phase;
+      const rank = typeof declared === 'string' ? MIDDLEWARE_PHASES.indexOf(declared as MiddlewarePhase) : -1;
+      return { handler: item as Middleware, rank: rank < 0 ? MIDDLEWARE_PHASES.indexOf('pre') : rank, index };
     }
     const phased = item as { handler?: unknown; phase?: unknown };
     if (typeof phased.handler === 'function') {
