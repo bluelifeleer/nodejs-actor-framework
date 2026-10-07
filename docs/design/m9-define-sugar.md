@@ -28,10 +28,20 @@ defineUploadStorage defineWebPlugin
 2. **规范名 = 短名**（应用层）；`defineXxx` 保留为**永久别名**（老代码、文档、教程都不用改）。
    *理由*：短名是新代码推荐写法；但"让 `defineRoutes` 与 `routes` 谁是真身"这种问题必须有唯一答案。
 3. **内核不参与**（`@actor/core` 的 `defineActor` 等不加短名）—— 与用户决策一致。
-4. **大小写**：函数一律 **camelCase**（仓库既有约定）。你举例写了 `Model`（大写）—— 需要你确认：
-   `Model` 在 `@actor/db` 里**已经是类型名**（`packages/db/src/model.ts:135`、`packages/db/src/index.d.ts:362`）。
-   TypeScript 允许"值 + 类型"同名，但会让 `import { Model }` 到底拿到哪个变得含糊。
-   → **推荐 `model()`（小写）**；若你坚持 `Model`，我照做，但会在文档里明确标注这个副作用。
+4. **大小写：一律小写（已确认）**。函数名统一 camelCase —— `model()` / `controller()` / `routes()` / `config()` /
+   `module()` / `plugin()` / `middleware()` / `router()` / `webPlugin()` / `uploadStorage()` / `collection()` /
+   `aggregate()` / `eventSchema()` / `evolution()` / `mailTransport()`。
+   理由：`Model` 在 `@actor/db` 里**已经是类型名**（`packages/db/src/model.ts:135`、`packages/db/src/index.d.ts:362`），
+   值/类型同名会让 `import { Model }` 含义含糊；而且**一致性**要求所有短名同一风格。
+
+   两处澄清（你举的例子里有 `actor` / `schema`，但应用层没有对应物）：
+   - **`actor`**：`defineActor` 在**内核**（`@actor/core`），而内核不加糖（已定）；应用层没有独立的"注册 actor"入口
+     （actor 通过 `defineModule({ actors: { … } })` 注册），所以**不存在** `actor()` 短名。若将来要给模块里的
+     actor 注册加糖，那应该是 `module()` 的**参数简写**（属 T2），而不是新造 `actor()`。
+   - **`schema`**：19 个 `define*` 里**没有** `defineSchema` —— 数据层声明是 `defineModel`（db）与
+     `defineAggregate`/`defineEventSchema`/`defineEvolution`（data），所以 `schema()` 也不存在；
+     脚手架里的 `src/schema/` 是**目录**名，保持小写（现状即如此）。
+   两条都只是把"小写一致性"落到**真实存在的短名**上，不为整齐造名字。
 
 ## 3. 短名映射表（含**冲突审计**，基于实测的现有导出）
 
@@ -98,11 +108,12 @@ defineUploadStorage defineWebPlugin
 
 现状：`debugPlugin({ enabled, token })` 是**全局**的（挂 `/__debug/*`）。
 
-推荐模型 —— **可见性作用域 + 继承**（三层，默认 `inherit`）：
+推荐模型 —— **可见性作用域 + 继承**（**四层**，默认 `inherit`；用户已确认粒度）：
 
 | 层 | 写法 | 效果 |
 |---|---|---|
-| 全局 | `debugPlugin({ enabled: true, token })` | 挂 `/__debug/*`（默认关闭、需 token、生产拒绝启动，维持 M8d 三层门禁） |
+| 全局 | `debugPlugin({ enabled: true, token, expose: { hidePrefixes: ['/internal'] } })` | 挂 `/__debug/*`（默认关闭、需 token、生产拒绝启动，维持 M8d 三层门禁）；`hidePrefixes` 里的前缀不出现在诊断输出里 |
+| 路由前缀 | 全局 `expose.hidePrefixes`，模块上可叠加 `defineModule({ debug: { hidePrefixes: [...] } })` | 按**前缀**批量隐藏（如 `/internal/*`、`/admin/*`），比一条条标 `debug:'off'` 省事 |
 | 模块 | `defineModule({ debug: { expose: false } })` | 该模块的路由**不出现在** `/__debug/routes`；其配置节在 `/__debug/config` 里打码到只剩"已设置" |
 | 控制器 | `defineController({ debug: 'off' })` | 该条路由不出现在 `/__debug/routes`（内部端点用） |
 
@@ -131,9 +142,11 @@ defineUploadStorage defineWebPlugin
 | 文档只教一种写法 | 指南 verify 块同时跑两种并断言相等 |
 | 内核被顺手加糖 | 明确列出"内核不参与"，并在 review 时按包核对 |
 
-## 9. 待你确认
+## 9. 已确认（用户拍板）
 
-1. `model()` 小写可以吗？（`Model` 在 `@actor/db` 已是类型名）
-2. `routes()` 定为规范名、`defineRoutes` 降为别名 —— 同意吗？（这是"收口两套方言"的唯一一处破坏性语义调整，但**代码零破坏**）
-3. `runApp` 这个名字可以吗？（备选 `startApp` / `serve`）
-4. debug 的三层作用域（全局/模块/控制器）粒度够吗？要不要再加"按路由前缀"？
+1. ✅ `model()` **小写**（`Model` 在 `@actor/db` 已是类型名）；且**所有短名统一小写**（见 §2 第 4 条）；
+2. ✅ `routes()` 定为**规范名**、`defineRoutes` 降为**永久别名**（代码零破坏，只是文档改推荐写法）；
+3. ✅ `runApp` 用这个名字；
+4. ✅ debug 作用域粒度 = **全局 / 路由前缀 / 模块 / 控制器**（四层，见 §6）。
+
+> §2 第 4 条对 `actor` / `schema` 的两处澄清一并记录：应用层没有这两个入口，不为整齐造名字。
