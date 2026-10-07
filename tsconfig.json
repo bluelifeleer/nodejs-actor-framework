@@ -22,6 +22,7 @@
     "packages/db/src/**/*.ts",
     "packages/redis/src/**/*.ts",
     "packages/mongodb/src/**/*.ts",
+    "packages/mail/src/**/*.ts",
     "packages/core/index.d.ts"
   ]
 }

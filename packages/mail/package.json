@@ -1,0 +1,24 @@
+{
+  "name": "@actor/mail",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "邮件：消息模型 + MIME/.eml 渲染 + transport 契约（fileTransport 离线真验 / smtpTransport 懒加载）+ mailPlugin",
+  "main": "src/index.ts",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@actor/resource": "*"
+  },
+  "keywords": [
+    "actor",
+    "mail",
+    "smtp",
+    "mime",
+    "email"
+  ]
+}

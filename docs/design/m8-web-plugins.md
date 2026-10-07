@@ -353,6 +353,29 @@ export function runMailTransportContract(...): void;                      // 契
 另有三条测试期望是我自己写错的（`slowMs: 1` 把 2ms 请求也算"慢"、`get` 路由被 POST 请求、
 健康聚合返回的是**受管资源** stats（含 `state`+`driver`，比只看驱动更全）），已按真实行为修正。
 
+### M8e（已完成）：`@actor/mail`
+
+- 新包 `packages/mail`（`@actor/mail`，只依赖 `@actor/resource` 拿 `supervise`）：
+  - `message.ts`：消息模型（from/to/cc/bcc/replyTo/subject/text/html/attachments/headers）+
+    **MIME 渲染**（非 ASCII 主题与显示名走 **RFC 2047** encoded-word；纯文本+HTML → `multipart/alternative`；
+    有附件 → 外层 `multipart/mixed` + base64（76 列）；`Message-ID`/`Date`/`MIME-Version` 齐备）+
+    **头部注入防御**（地址/主题/附件名/自定义头里的 CR/LF 一律拒绝 —— 否则 `To: a@b\r\nBcc: x@y` 就能偷偷加 Bcc）+
+    `parseMailHeaders()`（诊断/测试用的粗解析，名字里写明不是完整 MIME 解析器）；
+  - `render.ts`：极简占位渲染 `{{key}}`（支持嵌套取值、缺键**保留原文**便于发现漏配）+
+    **默认 HTML 转义**（不转义就是 XSS 直通车）+ `renderer` 注入点（要用 EJS/Handlebars 自己接，框架不内建）；
+  - `transport.ts`：`MailTransport` 契约 + `defineMailTransport` + **`fileTransport`（写 `.eml`）** +
+    **`runMailTransportContract`** 契约套件；
+  - `smtp.ts`：懒加载 `nodemailer`（从应用根解析 + 缺了给安装提示）+ 选项映射（`smtp://` DSN / host / port /
+    secure / auth）+ 错误包成 `DbConnectionError`；**不自己写 SMTP**（AUTH/STARTTLS/编码坑太多，
+    自己写只会做出"看起来能用"的实现）；
+  - `plugin.ts`：`mailPlugin()` —— 配置节 `plugins.mail.*`（driver/url/dir），生命周期交给 `supervise()`，
+    注册 `mail` + `mail:resource` + 进**受管资源注册表**（于是 `/__debug/health` 自动包含邮件）。
+- 测试 13 条（11 pass / 2 可见跳过）：RFC 2047 编解码往返、multipart/alternative 与 mixed+base64、
+  **注入与非法地址全拒**、模板默认转义/缺键保留/嵌套、`runMailTransportContract`（fileTransport 真跑）、
+  `fileTransport` 写出可解析 `.eml`（**离线真验**）、插件端到端（服务注册 + 注册表 + 生命周期事件 + close 幂等）、
+  `smtpTransport` 用**假 nodemailer** 验证懒加载/选项映射/raw 投递（真发不发由 env 决定）、
+  真服务投递与真服务契约套件（`ACTOR_TEST_SMTP_URL`，缺了**可见跳过**）。
+
 ## 9. 分期与验收
 
 | 期 | 内容 | 验收 |

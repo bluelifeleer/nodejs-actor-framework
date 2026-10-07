@@ -117,6 +117,18 @@ const BASELINE = {
     "redisAdapter",
     "resolveRedisDriver",
   ],
+  "@actor/mail": [
+    "createRenderer",
+    "defineMailTransport",
+    "escapeHtml",
+    "fileTransport",
+    "mailPlugin",
+    "parseMailHeaders",
+    "renderMail",
+    "renderTemplate",
+    "runMailTransportContract",
+    "smtpTransport",
+  ],
   "@actor/mongodb": [
     "DEFAULT_MONGO_DRIVER",
     "checkCollectionDrift",
