@@ -58,6 +58,9 @@ export const sqlite: DialectSpec = {
   supportsReturning: true, // SQLite 3.35+（node:sqlite 实测支持）
   columnType: (logical: LogicalType, options: ColumnTypeOptions) => typeRendererFor(TYPES, logical, 'sqlite')(options),
 
+  createTable: (model, columns) => `CREATE TABLE IF NOT EXISTS ${quote(model.table)} (${columns})`,
+  alterAddColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
+
   /**
    * SQLite 的自增是 **rowid 别名**，写法必须是 `INTEGER PRIMARY KEY AUTOINCREMENT`：
    * 中间不能夹 `NOT NULL`（夹了就不再是 rowid 别名）——所以整列由这里接管。

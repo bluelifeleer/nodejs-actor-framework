@@ -53,6 +53,7 @@ export {
 
 export { createAppRequire, loadDriverModule, type DriverResolver } from './drivers/resolve.ts';
 export { createSqliteDriver } from './drivers/sqlite.ts';
+export { createMssqlDriver } from './drivers/mssql.ts';
 export { createPgDriver } from './drivers/pg.ts';
 export { createMysqlDriver } from './drivers/mysql.ts';
 export type { DriverFactory, DriverPool, PoolOptions, Row, Runner } from './drivers/types.ts';

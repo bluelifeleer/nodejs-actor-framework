@@ -1,4 +1,5 @@
 import { DIALECT_SPECS, dialectSpec } from './dialects/index.ts';
+import type { DialectSpec } from './dialects/types.ts';
 import {
   type ColumnTypeOptions,
   type Dialect,
@@ -15,21 +16,21 @@ export type {
   NormalizedConnection,
 } from './dialects/types.ts';
 
-export const DIALECTS: readonly Dialect[] = ['pgsql', 'mysql', 'sqlite'];
+/** 支持的方言（**由描述符注册表派生**：加方言只需在 dialects/index.ts 加一行）。 */
+export const DIALECTS: readonly Dialect[] = Object.keys(DIALECT_SPECS) as Dialect[];
 
-/** 各方言的默认端口（由描述符派生，单一事实来源：sqlite 没有端口）。 */
-export const DEFAULT_PORTS: Record<Dialect, number | null> = {
-  pgsql: DIALECT_SPECS.pgsql.defaultPort,
-  mysql: DIALECT_SPECS.mysql.defaultPort,
-  sqlite: DIALECT_SPECS.sqlite.defaultPort,
-};
+/** 从描述符里挑一个字段拼成 `Record<Dialect, T>`（避免逐方言手写，加方言不用回来改）。 */
+function pickFromSpecs<T>(pick: (spec: DialectSpec) => T): Record<Dialect, T> {
+  const result = {} as Record<Dialect, T>;
+  for (const [dialect, spec] of Object.entries(DIALECT_SPECS)) result[dialect as Dialect] = pick(spec);
+  return result;
+}
+
+/** 各方言的默认端口（由描述符派生；sqlite 没有端口 → null）。 */
+export const DEFAULT_PORTS: Record<Dialect, number | null> = pickFromSpecs((spec) => spec.defaultPort);
 
 /** 各方言默认懒加载的驱动包名（由描述符派生）。 */
-export const DRIVER_PACKAGES: Record<Dialect, string> = {
-  pgsql: DIALECT_SPECS.pgsql.driverPackage,
-  mysql: DIALECT_SPECS.mysql.driverPackage,
-  sqlite: DIALECT_SPECS.sqlite.driverPackage,
-};
+export const DRIVER_PACKAGES: Record<Dialect, string> = pickFromSpecs((spec) => spec.driverPackage);
 
 /** 值是不是已知方言（注册表驱动，不写方言名）。 */
 export function isDialect(value: unknown): value is Dialect {

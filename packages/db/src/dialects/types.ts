@@ -12,7 +12,7 @@ import { DbConfigError } from '../errors.ts';
  */
 
 /** 支持的方言。默认 `pgsql`。 */
-export type Dialect = 'pgsql' | 'mysql' | 'sqlite';
+export type Dialect = 'pgsql' | 'mysql' | 'sqlite' | 'mssql';
 
 /** 逻辑字段类型：model 层写的是它，方言层负责映射成真实列类型。 */
 export type LogicalType =
@@ -145,7 +145,9 @@ export interface Introspection {
 export function normalizeTypeText(rawType: string, length?: number | null): string {
   const text = String(rawType).toLowerCase().trim();
   const size = length ?? null;
-  return /^(varchar|char|character)$/.test(text) && size !== null && !text.includes('(') ? `${text}(${size})` : text;
+  // 需要"补长度才能与 DDL 对上"的类型名（含 SQL Server 的 n 前缀与二进制类型）
+  const needsLength = /^(n?varchar|n?char|character|varbinary|binary)$/.test(text);
+  return needsLength && size !== null && !text.includes('(') ? `${text}(${size})` : text;
 }
 
 /** SQL 字符串字面量：单引号翻倍（三个方言通用）。 */
@@ -193,6 +195,18 @@ export interface DialectSpec {
   // --- 类型层面 ---------------------------------------------------------
   /** 逻辑类型 → 真实列类型（实现是每个方言一张类型表，见设计文档 §4）。 */
   columnType(logical: LogicalType, options: ColumnTypeOptions): string;
+
+  // --- 语句装配（有些方言连"建表/加列"的关键字都不一样，所以留缝）----------
+  /**
+   * 建表语句。
+   *
+   * 为什么必须由方言给：`CREATE TABLE IF NOT EXISTS` 并不是所有方言都有 ——
+   * SQL Server 要写成 `IF OBJECT_ID(N'…') IS NULL EXEC(N'CREATE TABLE …')`（T-SQL 的
+   * CREATE TABLE 必须是批次首句，所以得走动态 SQL）。
+   */
+  createTable(model: RenderableModel, columns: string, options: { withComments: boolean }): string;
+  /** 加列语句（`table` 已经引号转义过）：T-SQL 是 `ALTER TABLE t ADD col …`，**不写** `COLUMN`。 */
+  alterAddColumn(table: string, column: string): string;
 
   // --- 列定义与注释 -----------------------------------------------------
   /** 自增身份的方言写法；非自增字段返回 `null`。 */

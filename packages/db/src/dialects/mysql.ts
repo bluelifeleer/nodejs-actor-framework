@@ -62,6 +62,13 @@ const TYPES: TypeRenderers = {
 
 const DEFAULT_PORT = 3306;
 
+/** 建表语句的表级后缀（MySQL 的 `COMMENT='…'`；其它方言没有这种东西）。 */
+function tableSuffixFor(model: { table: string; comment?: string }, options: { withComments: boolean }): string {
+  return options.withComments && model.comment !== undefined
+    ? ` COMMENT=${commentValue(model.comment, `table "${model.table}"`)}`
+    : '';
+}
+
 function quote(name: string): string {
   return `\`${String(name).split('`').join('``')}\``;
 }
@@ -76,6 +83,10 @@ export const mysql: DialectSpec = {
   quoteTable: (schema, table) => (schema === undefined ? quote(table) : `${quote(schema)}.${quote(table)}`),
   supportsReturning: false, // MySQL 没有 RETURNING：自增主键靠结果里的 insertId
   columnType: (logical: LogicalType, options: ColumnTypeOptions) => typeRendererFor(TYPES, logical, 'mysql')(options),
+
+  createTable: (model, columns, options) =>
+    `CREATE TABLE IF NOT EXISTS ${quote(model.table)} (${columns})${tableSuffixFor(model, options)}`,
+  alterAddColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
 
   // AUTO_INCREMENT 必须是 NOT NULL 之后、主键约束之前
   autoIncrementPieces: (field: RenderableField) => (field.autoIncrement ? { afterNotNull: 'AUTO_INCREMENT' } : null),
@@ -94,8 +105,7 @@ export const mysql: DialectSpec = {
   // MySQL 只支持"建表时内联列注释"（已存在的表不会被自动改注释）
   inlineComment: (field: RenderableField) =>
     field.comment === undefined ? null : commentValue(field.comment, `column "${field.column}"`),
-  tableSuffix: (model, options) =>
-    options.withComments && model.comment !== undefined ? ` COMMENT=${commentValue(model.comment, `table "${model.table}"`)}` : '',
+  tableSuffix: tableSuffixFor,
   // 注释已经内联在建表语句里 → 没有独立语句
   commentStatements: () => [],
   indexIfNotExists: false, // MySQL 没有 CREATE INDEX IF NOT EXISTS

@@ -50,8 +50,15 @@ test('dialect-spec: 公开函数与描述符结果一致（重构不改行为）
         `${dialect}.${logical}: 公开函数与描述符结果不一致`,
       );
     }
-    assert.strictEqual(spec.placeholder(3), dialect === 'pgsql' ? '$3' : '?');
-    assert.strictEqual(spec.quote('x'), dialect === 'mysql' ? '`x`' : '"x"');
+    // 期望值按方言查表（加方言时这里要跟着加一行 —— 这是**测试**的清单，不是实现的）
+    const expected: Record<string, { placeholder: string; quoted: string }> = {
+      pgsql: { placeholder: '$3', quoted: '"x"' },
+      mysql: { placeholder: '?', quoted: '`x`' },
+      sqlite: { placeholder: '?', quoted: '"x"' },
+      mssql: { placeholder: '@p3', quoted: '[x]' },
+    };
+    assert.strictEqual(spec.placeholder(3), expected[dialect].placeholder, `${dialect} 占位符`);
+    assert.strictEqual(spec.quote('x'), expected[dialect].quoted, `${dialect} 引号`);
   }
 });
 
@@ -244,6 +251,8 @@ test('gate: 假第 4 方言只需要实现 DialectSpec —— 共享装配器就
     autoIncrementPieces: (field) => (field.autoIncrement ? { beforeNotNull: 'IDENTITY(1,1)' } : null),
     defaultLiteral: (field) => (field.hasDefault ? String(field.defaultValue) : null),
     inlineComment: (field) => (field.comment === undefined ? null : `'${field.comment}'`),
+    createTable: (model, columns) => `MAKETABLE [${model.table}] (${columns})`,
+    alterAddColumn: (table, column) => `ALTER ${table} PLUS ${column}`,
     tableSuffix: () => ' SUFFIXED',
     commentStatements: () => [],
     indexIfNotExists: false,
@@ -289,8 +298,10 @@ test('gate: 假第 4 方言只需要实现 DialectSpec —— 共享装配器就
 
   // 建表 / 索引 / 内省：全都走共享装配器与描述符，不需要任何"方言专用代码"
   const ddl = assembleCreateTable(fake, model, { withComments: true });
-  assert.match(ddl, /^CREATE TABLE IF NOT EXISTS \[things\] /);
-  assert.match(ddl, / SUFFIXED$/, '表级后缀没有生效');
+  // 语句本身由方言给（假方言用自己的写法，证明"建表语句"也是方言的缝）
+  assert.match(ddl, /^MAKETABLE \[things\] /);
+  assert.match(ddl, /\[id\] FAKETYPE IDENTITY\(1,1\) NOT NULL PRIMARY KEY/, '列定义要由共享装配器给出');
+  assert.strictEqual(fake.alterAddColumn('[things]', '[x] FAKETYPE'), 'ALTER [things] PLUS [x] FAKETYPE');
   assert.strictEqual(
     assembleIndex(fake, 'things', { name: 'things_title', columns: ['title'], unique: false }),
     'CREATE INDEX [things_title] ON [things] ([title])',

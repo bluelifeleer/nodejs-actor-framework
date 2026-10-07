@@ -39,10 +39,16 @@ export function typeOptionsFor(field: RenderableField): { length?: number; preci
   };
 }
 
-/** 建表语句（含方言的表级后缀，如 MySQL 的 `COMMENT='…'`）。 */
+/**
+ * 建表语句：列定义由共享装配器拼，**语句本身由方言给**。
+ *
+ * 为什么语句也要方言给：`CREATE TABLE IF NOT EXISTS` 不是所有方言都有 ——
+ * SQL Server 要写成 `IF OBJECT_ID(N'…') IS NULL EXEC(N'CREATE TABLE …')`（T-SQL 的
+ * CREATE TABLE 必须是批次首句，只能走动态 SQL），MySQL 还有表级 `COMMENT='…'` 后缀。
+ */
 export function assembleCreateTable(spec: DialectSpec, model: RenderableModel, options: { withComments: boolean }): string {
   const columns = model.fields.map((field) => assembleColumn(spec, field, options)).join(', ');
-  return `CREATE TABLE IF NOT EXISTS ${spec.quote(model.table)} (${columns})${spec.tableSuffix(model, options)}`;
+  return spec.createTable(model, columns, options);
 }
 
 /** 索引语句（`IF NOT EXISTS` 由方言能力位决定）。 */

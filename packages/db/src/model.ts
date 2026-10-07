@@ -325,8 +325,9 @@ export function defineModel(spec: ModelSpec): Model {
       return assembleIndex(dialectSpec(dialect), table, index);
     },
     addColumnSql(dialect: Dialect, field: Field): string {
+      // 加列的写法也是方言差异（T-SQL 不写 COLUMN 关键字）
       const impl = dialectSpec(dialect);
-      return `ALTER TABLE ${impl.quote(table)} ADD COLUMN ${columnDefinition(dialect, field)}`;
+      return impl.alterAddColumn(impl.quote(table), columnDefinition(dialect, field));
     },
   };
   return model;

@@ -261,6 +261,11 @@ export declare function loadDriverModule<T>(
 
 export declare function createSqliteDriver(loadModule?: () => unknown): DriverFactory;
 export declare function createPgDriver(loadModule?: (resolve?: DriverResolver) => Promise<unknown>): DriverFactory;
+export declare function createMssqlDriver(
+  loadModule?: (resolve?: DriverResolver) => Promise<unknown>,
+): DriverFactory;
+export declare function buildMssqlPool(pool: unknown): DriverPool;
+
 export declare function createMysqlDriver(loadModule?: (resolve?: DriverResolver) => Promise<unknown>): DriverFactory;
 
 // --- model 层（用户写声明，框架生成 DDL）-------------------------------------
