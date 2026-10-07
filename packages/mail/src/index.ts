@@ -30,6 +30,7 @@ export {
 
 export {
   defineMailTransport,
+  defineMailTransport as mailTransport,
   fileTransport,
   runMailTransportContract,
   type MailSendResult,

@@ -21,6 +21,7 @@ export {
   createEventRegistry,
   defaultLegacyReader,
   defineEventSchema,
+  defineEventSchema as eventSchema,
   EventSchemaError,
   isEventEnvelope,
   validateEventSchema,
@@ -45,6 +46,7 @@ export {
 
 export {
   defineEvolution,
+  defineEvolution as evolution,
   type EvolutionSpec,
   type PersistenceEvolution,
 } from './evolution.ts';
@@ -140,6 +142,7 @@ export {
   AggregateEvolutionError,
   defaultCommandOf,
   defineAggregate,
+  defineAggregate as aggregate,
   UnknownCommandError,
   type AggregateCommand,
   type AggregateCommandResult,

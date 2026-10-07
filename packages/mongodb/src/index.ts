@@ -36,6 +36,7 @@ export {
 export {
   checkCollectionDrift,
   defineCollection,
+  defineCollection as collection,
   inspectCollection,
   syncCollections,
   type CollectionDriftItem,

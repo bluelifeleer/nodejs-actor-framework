@@ -186,3 +186,6 @@ export interface MongoAdapterOptions {
 export declare function parseMongoUrl(url: string): MongoConnection;
 export declare function describeMongo(connection: MongoConnection): string;
 export declare function mongoAdapter(options?: MongoAdapterOptions): DatabaseAdapter<DocumentClient, MongoConnection>;
+
+/** T1 短名：与 `defineCollection` **同一个对象**（恒等断言见 test/unit-sugar-aliases.test.js）。 */
+export declare const collection: typeof defineCollection;

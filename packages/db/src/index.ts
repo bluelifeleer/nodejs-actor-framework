@@ -75,6 +75,7 @@ export { createDatabase, defaultPortFor, DEFAULT_POOL, type Database, type Datab
 // --- model 层（用户写声明，框架生成 DDL / 做漂移检测）-------------------------
 export {
   defineModel,
+  defineModel as model,
   type Field,
   type FieldHooks,
   type FieldSpec,

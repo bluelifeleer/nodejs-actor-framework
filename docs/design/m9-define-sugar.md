@@ -30,7 +30,9 @@ defineUploadStorage defineWebPlugin
 3. **内核不参与**（`@actor/core` 的 `defineActor` 等不加短名）—— 与用户决策一致。
 4. **大小写：一律小写（已确认）**。函数名统一 camelCase —— `model()` / `controller()` / `routes()` / `config()` /
    `module()` / `plugin()` / `middleware()` / `router()` / `webPlugin()` / `uploadStorage()` / `collection()` /
-   `aggregate()` / `eventSchema()` / `evolution()` / `mailTransport()`。
+   `aggregate()` / `eventSchema()` / `evolution()` / `mailTransport()` / `managedResource()`
+   （最后这个按同一规则补：`defineManagedResource` 也要短名；而 `defineResourceAdapter` 的候选短名
+   `resourceAdapter` **已被占用** —— 同名的插件装载函数 —— 所以它没有短名，与 `routes` 同类，如实标注）。
    理由：`Model` 在 `@actor/db` 里**已经是类型名**（`packages/db/src/model.ts:135`、`packages/db/src/index.d.ts:362`），
    值/类型同名会让 `import { Model }` 含义含糊；而且**一致性**要求所有短名同一风格。
 

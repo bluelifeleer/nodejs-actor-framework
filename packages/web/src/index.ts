@@ -6,6 +6,7 @@
  */
 export {
   defineWebPlugin,
+  defineWebPlugin as webPlugin,
   MIDDLEWARE_PHASES,
   orderMiddleware,
   runWebPluginContract,
@@ -29,9 +30,10 @@ export {
   type WsConnections,
 } from './connections.ts';
 
-export { composeMiddleware, defineMiddleware, type Middleware } from './middleware.ts';
+export { composeMiddleware, defineMiddleware, defineMiddleware as middleware, type Middleware } from './middleware.ts';
 export {
   defineRouter,
+  defineRouter as router,
   flattenRouter,
   flattenRoutes,
   routes,
@@ -47,6 +49,7 @@ export {
 
 export {
   defineController,
+  defineController as controller,
   dispatch,
   type Controller,
   type ControllerSpec,
@@ -106,6 +109,7 @@ export {
 
 export {
   defineUploadStorage,
+  defineUploadStorage as uploadStorage,
   localDiskStorage,
   memoryUploadStorage,
   runUploadStorageContract,

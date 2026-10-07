@@ -198,3 +198,6 @@ export declare function testWithResource(envVar: string, name: string, fn: () =>
 /** 兼容别名。 */
 export declare const realDatabaseUrl: typeof realResourceUrl;
 export declare const testWithDatabase: typeof testWithResource;
+
+/** T1 短名：与 `defineManagedResource` **同一个对象**（恒等断言见 test/unit-sugar-aliases.test.js）。 */
+export declare const managedResource: typeof defineManagedResource;

@@ -605,3 +605,6 @@ export interface Database {
 /** 建一个数据库句柄（此刻还不连接）。 */
 export declare function createDatabase(options: DatabaseOptions): Database;
 export declare function defaultPortFor(dialect: Dialect): number | null;
+
+/** T1 短名：与 `defineModel` **同一个对象**（恒等断言见 test/unit-sugar-aliases.test.js）。 */
+export declare const model: typeof defineModel;

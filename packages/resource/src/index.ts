@@ -35,6 +35,7 @@ export { mapPoolOptions, type BaseConnection, type PoolOptions } from './pool.ts
 
 export {
   defineManagedResource,
+  defineManagedResource as managedResource,
   defineResourceAdapter,
   type AdapterConnectInput,
   type ManagedConnection,

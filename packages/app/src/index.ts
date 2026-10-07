@@ -11,6 +11,7 @@
  */
 export {
   defineConfig,
+  defineConfig as config,
   loadConfig,
   validateValues,
   ConfigValidationError,
@@ -26,8 +27,11 @@ export {
 
 export {
   defineModule,
+  defineModule as module,
   definePlugin,
+  definePlugin as plugin,
   defineApp,
+  defineApp as app,
   createApp,
   Application,
   AssemblyError,
