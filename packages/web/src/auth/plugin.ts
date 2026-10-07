@@ -1,6 +1,6 @@
 import { DbConfigError } from '@actor/resource';
 
-import { HttpError } from '../context.ts';
+import { HttpError, routeSpecOf } from '../context.ts';
 import { defineWebPlugin, type WebPluginSpec } from '../plugins.ts';
 import type { Middleware } from '../middleware.ts';
 import { JwtError, verifyJwt, type JwtAlgorithm, type JwtKey, type JwtPayload } from './jwt.ts';
@@ -129,7 +129,7 @@ export function authPlugin(options: AuthPluginOptions): WebPluginSpec {
         name: 'auth',
         phase: 'auth',
         handler: async (ctx, next) => {
-          const spec = ctx.state.route as { auth?: { required?: boolean; roles?: readonly string[] } } | undefined;
+          const spec = routeSpecOf<{ auth?: { required?: boolean; roles?: readonly string[] } }>(ctx);
           const requirement = spec?.auth;
           const needsAuth =
             options.required === true || requirement?.required === true || (requirement?.roles?.length ?? 0) > 0;

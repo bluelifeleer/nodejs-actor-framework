@@ -9,6 +9,7 @@
 import { validateValues, type ConfigIssue, type ConfigSchema } from '@actor/app';
 
 import {
+  setRouteSpec,
   HttpError,
   createRequestContext,
   toErrorResponse,
@@ -174,8 +175,9 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     ...(options.stream === undefined ? {} : { stream: options.stream }),
   });
 
-  // 当前路由的控制器声明：中间件（例如 authPlugin）据此决定"这条路要不要鉴权"
-  ctx.state.route = spec;
+  // 当前路由的控制器声明：中间件（例如 authPlugin）据此决定"这条路要不要鉴权"。
+  // 存在 WeakMap 里（不进 ctx.state）：既不会被用户的 extend({route}) 覆盖，也不会污染用户的可变袋。
+  setRouteSpec(ctx, spec);
 
   // 插件贡献的上下文（每个请求执行一次；失败即 500，不静默）
   for (const hook of options.contextHooks ?? []) {

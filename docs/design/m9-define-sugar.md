@@ -174,8 +174,17 @@ defineUploadStorage defineWebPlugin
    或自己起别名 `import { defineConfig as config }`；
 2. 真撞了就 `import { config as appConfig }` —— 这是用户能自己解决的事，框架只需**守住保留位**。
 
-**分期**：上述 ② 并进 **M9e**（短名落地那一期，顺手修掉 `ctx.state.route` 这个洞）；③ 并进 doctor 扩展
-（与 M9c 余下/ M9d 一起）；本条结论写进指南的"命名与保留名"一节。
+**分期**：
+- ② 里的**那个洞已在 M9c 提前修掉**（它跟短名无关、触发条件很普通）。修法经过一次演进，记录下来：
+  最初改成命名空间键 `@actor/route`（放在 `ctx.state` 里），但实现中一条既有用例暴露了同一 bug 的**另一面** ——
+  它断言 `Object.keys(ctx.state)` 恰好是用户键 + `route`，也就是**框架内部槽泄漏进了用户的"每请求可变袋"**。
+  最终方案是**根本不放进 `ctx.state`**：用模块内 `WeakMap` 存（`setRouteSpec` / `routeSpecOf`，**包内**使用，
+  不进公开面）—— 键不存在，既不可能被覆盖，也不可能污染用户可见的 state。
+  同时新增**单一来源**的保留名单 `RESERVED_CONTEXT_KEYS`（`@actor/web` 公开导出，含 `route` 与 `@actor/route`）：
+  故意写这两个键会得到**明确报错**，而不是静默覆盖。
+  回归网：authPlugin 既有用例（真写方 + 真读方）+ 一条用**真实 `ctx.extend`** 写的"保留键不能被 extend 掉"用例。
+- ② 的**其余部分**（保留名常量扩到 service 名/路由前缀 + 启动期校验）并进 **M9e**（短名落地那一期）；
+- ③（用户代码与短名同名的启发式提示）并进 doctor 扩展（与 M9c 余下 / M9d 一起）；本条结论写进指南的"命名与保留名"一节。
 
 ## 9. 已确认（用户拍板）
 

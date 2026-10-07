@@ -38,10 +38,41 @@ export type HeaderValue = string | string[];
 import { DbConfigError } from '@actor/resource';
 
 /** 框架保留的 ctx 字段：插件扩展**不能**覆盖它们（覆盖了会让中间件/控制器拿到错东西）。 */
-const CORE_CONTEXT_KEYS = new Set([
+/**
+ * **框架保留的 ctx 字段**（唯一来源：`ctx.extend` 与文档都读它）。
+ *
+ * 提示为什么要有它：`route` 曾经不在这个名单里，而框架自己会往 `ctx.state.route` 写当前控制器的声明
+ * （authPlugin 靠它读 `auth: { required }`）—— 于是任何插件执行 `ctx.extend({ route: … })` 都会**静默覆盖**它，
+ * auth 随后读到错的声明。**编译器挡不住这种事故**，所以这里显式守住。
+ */
+export const RESERVED_CONTEXT_KEYS: readonly string[] = [
   'method', 'path', 'requestId', 'body', 'params', 'qs', 'headers', 'header',
-  'actor', 'get', 'config', 'state', 'extend', 'extension',
-]);
+  'actor', 'get', 'config', 'state', 'extend', 'extension', 'route',
+  // 框架内部槽用带命名空间的键：撞名概率极小，且**同样**受保留名单保护
+  '@actor/route',
+];
+
+/**
+ * 框架内部的"当前控制器声明"槽：**放在 WeakMap 里，不进 `ctx.state`**。
+ *
+ * 为什么不用 `ctx.state.xxx`：`ctx.state` 的语义是"每请求可变袋，中间件放鉴权结果等"（用户/插件的地盘）。
+ * 早先框架把当前路由声明写进 `ctx.state.route`，带来两个问题：① 用户的 `extend({ route })` 会**静默覆盖**它；
+ * ② 它还会出现在用户可见的 `Object.keys(ctx.state)` 里。WeakMap 两个问题一起解决（键不存在，也就不可能撞）。
+ * 保留名单里仍留着 `route` / `@actor/route`：故意写这两个键会得到**明确报错**，而不是静默覆盖。
+ *
+ * 这两个函数是**包内**用的（不在 `index.ts` 的公开面上）。
+ */
+const ROUTE_SPECS = new WeakMap<object, unknown>();
+
+export function setRouteSpec(ctx: object, spec: unknown): void {
+  ROUTE_SPECS.set(ctx, spec);
+}
+
+export function routeSpecOf<T = unknown>(ctx: object): T | undefined {
+  return ROUTE_SPECS.get(ctx) as T | undefined;
+}
+
+const CORE_CONTEXT_KEYS = new Set(RESERVED_CONTEXT_KEYS);
 
 export interface RequestContextInit {
   /** 流式路由的原始请求体。 */

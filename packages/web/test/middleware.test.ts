@@ -59,6 +59,9 @@ test('middleware: 顺序（全局 → 路由 → 控制器）、after-logic 逆�
     'route:after',
     'global:after',
   ]);
+  // 这里的 'route' 是**测试自己的**键（route 级中间件的标记），不是框架的槽。
+  // 框架的"当前路由声明"现在放在 WeakMap 里（不进 ctx.state），所以 'route' 这个普通名字对用户完全自由 ——
+  // 早先它会被框架占用，用户写 ctx.extend({ route }) 还会静默覆盖框架声明。
   assert.deepStrictEqual(JSON.parse(String(result.response.body)), { state: ['controller', 'global', 'route'] });
 });
 

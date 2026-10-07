@@ -3,6 +3,7 @@ import assert from 'node:assert';
 
 import { createApp, defineApp, defineModule } from '@actor/app';
 
+import { createRequestContext, routeSpecOf, setRouteSpec } from '../src/context.ts';
 import {
   defineController,
   defineRoutes,
@@ -154,3 +155,23 @@ test('web plugin: ctx.extend 不能覆盖框架保留字段（响亮报错）', 
 });
 
 void defineRoutes;
+
+test('web plugin: 保留键挡住"静默覆盖"（测真实的 ctx.extend，不用桩）', () => {
+  const ctx = createRequestContext({ method: 'GET', path: '/x', requestId: 'r-1' });
+  // 普通键照常可用
+  ctx.extend({ order: 'user-land-ok' });
+  assert.strictEqual(ctx.extension('order'), 'user-land-ok');
+
+  // 保留键：明确报错。`route` 曾经不在名单里 —— 那时任何插件 extend({route}) 都会静默覆盖
+  // 框架写的"当前控制器声明"，authPlugin 随后读到错的声明（编译器挡不住这种事故）。
+  assert.throws(() => ctx.extend({ route: 'evil' }), /保留字段/);
+  // 框架自己的命名空间槽同样受保护（故意写只会明确报错，而不是静默覆盖）
+  assert.throws(() => ctx.extend({ '@actor/route': 'evil' }), /保留字段/);
+  // 其余核心字段也照旧挡住
+  assert.throws(() => ctx.extend({ requestId: 'hijack' }), /保留字段/);
+
+  // 框架自己的槽在 WeakMap 里（既不可被 extend 覆盖，也不会出现在用户可见的 state 键里）
+  setRouteSpec(ctx, { auth: { required: true } });
+  assert.deepStrictEqual(routeSpecOf(ctx), { auth: { required: true } });
+  assert.ok(!Object.keys(ctx.state).includes('route'), '框架槽不该污染用户可变袋');
+});
