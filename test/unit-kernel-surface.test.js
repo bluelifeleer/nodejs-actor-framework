@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
   ROOT,
+  checkDeclarationDrift,
   checkPublicSurface,
   extractFromDeclarationFile,
   kernelUntypedFiles,
@@ -63,4 +65,42 @@ test('kernel surface: 声明里的 abstract class 也要被提取到（曾漏过
   assert.strictEqual(actor.kind, '类');
   // 泛型参数也要保留，否则 API 参考上会显示成无泛型的类
   assert.strictEqual(actor.signature ?? actor.returns, '实例');
+});
+
+test('kernel surface: 手写声明与源码不漂移（类别 + 函数参数个数）', async () => {
+  const names = await runtimeExports();
+  const drift = checkDeclarationDrift({ root: ROOT, runtimeNames: names });
+
+  assert.strictEqual(drift.ok, true, `声明与源码漂移：${JSON.stringify(drift.findings)}`);
+  assert.ok(drift.compared >= 20, `至少要能比对 20 项（实际 ${drift.compared}）——比不动就说明提取器退化了`);
+});
+
+test('kernel surface: 漂移门禁能证伪 —— 声明里少写一个参数必须报出来', async () => {
+  // 注入一份**故意写错**的声明文件：`createSystem(options, extra)` 比源码多一个参数。
+  const broken = fs.mkdtempSync(path.join(ROOT, '.tmp-drift-'));
+  try {
+    const real = fs.readFileSync(path.join(ROOT, 'packages/core/src/index.d.ts'), 'utf8');
+    const tampered = real.replace(
+      'export function createSystem(options?: SystemOptions): ActorSystem;',
+      'export function createSystem(options?: SystemOptions, extra?: string): ActorSystem;',
+    );
+    assert.notStrictEqual(tampered, real, '夹具必须真的改到了那一行（否则这条测试是空转）');
+    fs.writeFileSync(path.join(broken, 'index.d.ts'), tampered);
+
+    const names = await runtimeExports();
+    const drift = checkDeclarationDrift({
+      root: ROOT,
+      runtimeNames: names,
+      declarationFile: path.relative(ROOT, path.join(broken, 'index.d.ts')),
+    });
+
+    assert.strictEqual(drift.ok, false);
+    assert.deepStrictEqual(
+      drift.findings.map((finding) => finding.name),
+      ['createSystem'],
+    );
+    assert.match(drift.findings[0].reason, /参数个数不同/);
+  } finally {
+    fs.rmSync(broken, { recursive: true, force: true });
+  }
 });
