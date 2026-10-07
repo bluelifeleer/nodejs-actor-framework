@@ -16,6 +16,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/** 仓库根（门禁与页面都用它拼路径）。 */
+export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /** 从 `text[openIndex]` 开始读到配对的收尾括号，返回括号内的内容。 */
 function readBalanced(text, openIndex, open = '(', close = ')') {
@@ -91,7 +95,8 @@ const KIND_BY_KEYWORD = { function: '函数', class: '类', interface: '接口',
 /** 从一个文件里提取被导出的声明。 */
 export function extractFromSource(text, fileName) {
   const found = new Map();
-  const pattern = /^export\s+(?:declare\s+)?(?:async\s+)?(function|class|interface|type|const|let)\s+([A-Za-z_$][\w$]*)(<[^>{}()]*>)?/gm;
+  // `export abstract class` 之类的修饰都要覆盖：漏一个，公开面门禁就会误报"缺声明"
+  const pattern = /^export\s+(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(function|class|interface|type|const|let)\s+([A-Za-z_$][\w$]*)(<[^>{}()]*>)?/gm;
 
   for (const match of text.matchAll(pattern)) {
     const [full, keyword, name] = match;
@@ -191,4 +196,30 @@ export function untypedFiles(root, packageDir = 'packages/core') {
   return sourceFiles(root, packageDir)
     .filter((file) => fs.readFileSync(file, 'utf8').includes('@ts-nocheck'))
     .map((file) => path.relative(root, file));
+}
+
+/**
+ * 内核公开面门禁：**每个运行时导出都必须在手写声明文件里有声明**。
+ *
+ * 为什么值得单列一条检查：`index.d.ts` 是使用者看到的类型，而运行时导出才是真正存在的 API。
+ * 两者一旦漂移，使用者要么拿到"不存在的类型"，要么拿到 `any`——而这两种都不会让任何测试变红。
+ * 所以这里把它们逐名对齐，并且**门禁本身可被测试证伪**（喂一个假导出名，检查必须报缺）。
+ */
+export function checkPublicSurface({ root, runtimeNames, declarationFile = KERNEL_DECLARATION_FILE }) {
+  const declared = extractFromDeclarationFile(path.join(root, declarationFile)).found;
+  const missing = runtimeNames.filter((name) => !declared.has(name));
+  return {
+    ok: missing.length === 0,
+    total: runtimeNames.length,
+    declared: runtimeNames.length - missing.length,
+    missing,
+    declarationFile,
+  };
+}
+
+/** 内核源码里还带 `@ts-nocheck` 的文件（目标恒为 0；非 0 说明严格检查有盲区）。 */
+export const KERNEL_DECLARATION_FILE = 'packages/core/src/index.d.ts';
+
+export function kernelUntypedFiles(root) {
+  return untypedFiles(root, 'packages/core');
 }

@@ -119,7 +119,7 @@ test('release check: 端到端 —— 五项结果形状稳定（--skip-ci --all
     .then((result) => result.stdout)
     .catch((err) => err.stdout);
   const parsed = JSON.parse(stdout);
-  assert.strictEqual(parsed.results.length, 5);
+  assert.strictEqual(parsed.results.length, 6);
   for (const result of parsed.results) {
     assert.strictEqual(typeof result.name, 'string');
     assert.strictEqual(typeof result.ok, 'boolean');
@@ -127,7 +127,14 @@ test('release check: 端到端 —— 五项结果形状稳定（--skip-ci --all
     if (!result.ok) assert.strictEqual(typeof result.fix, 'string', '失败项必须给出下一步');
   }
   const names = parsed.results.map((result) => result.name);
-  for (const expected of ['工作区测试矩阵', 'npm pack 内容', 'CHANGELOG 版本一致', 'engines 一致', '工作区干净']) {
+  for (const expected of [
+    '工作区测试矩阵',
+    'npm pack 内容',
+    'CHANGELOG 版本一致',
+    'engines 一致',
+    '内核公开面与类型覆盖',
+    '工作区干净',
+  ]) {
     assert.ok(names.includes(expected), `缺少检查项 ${expected}`);
   }
 

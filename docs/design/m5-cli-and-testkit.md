@@ -287,3 +287,28 @@ API 页现在是：每项导出 → 类别 / **签名（含逐个参数的类型
 与 **API 页的真实性**（`createSystem(options?: SystemOptions) => ActorSystem`、`createLogAdapter(target: LogTarget…`
 `createSqlRepository<T…(options: SqlRepositoryOptions…`、`otlp` 出现在 `plugins` 成员里），
 以及"页面上的未补文件数**必须等于仓库真实数量**"——防止文档与代码漂移。
+
+### 9.4 补完了：内核 `@ts-nocheck` 归零（45/45）
+
+第 9 节开头那张表里的 9 个文件只是起点。之后按"去掉标记会报多少错"从低到高逐批推进，
+**15 个提交**后内核 50 个源码文件全部进入严格检查，最后一个 `actor/actor-cell.ts`（1049 行、
+432 个严格错误）按 A→D 批处理：
+
+| 批 | 拿掉多少错 | 关键动作 |
+|---|---|---|
+| A 字段层 | 432 → 117 | 359/432 是"字段未声明"：把 30 余个字段与结构类型（`CellSystem`/`CellDefinition`/`CellEnvelope`/`ActorCounters`/`ParentCell`）写清楚 |
+| B 方法签名 | 117 → ~40 | 47 个参数类型 |
+| C 持久化契约 | ~40 → 4 | `store`/`mailboxStore` 的内核视图写成可空 + 可选结构，缺方法**明确抛错** |
+| D 诊断/剩余 | 4 → 0 | `_warnOnce`/`_statePreview`/`_autoSnapshotIfDue`/`fetchState` |
+
+**两处门禁把它锁住**（`test/unit-kernel-surface.test.js` + `npm run release:check` 第 6 项）：
+
+- 运行时导出 **34/34** 都必须在 `index.d.ts` 里有声明——两者漂移时**没有任何测试会变红**，
+  发布出去就是"文档里的类型不存在"或"实际 API 全是 any"；
+- 内核源码 **0 个文件**可以带 `@ts-nocheck`——严格检查不许有盲区。
+
+门禁自己也被测试证伪（喂一个假导出名必须报缺）。写这条门禁时它立刻抓到一个真问题：
+提取器漏了 `export abstract class`，于是 `Actor` 被误报为"缺声明"——**提取器与门禁互为验证**。
+
+同一条断言也随目标更新过：`test/unit-docs-site.test.js` 里原本断言"内核**仍有**带 `@ts-nocheck`
+的文件（M0.1 进行中）"，目标达成后会变成假红，已改成断言**归零**。

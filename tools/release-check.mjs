@@ -22,7 +22,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { checkPublicSurface, kernelUntypedFiles } from './api-extract.mjs';
 
 const run = promisify(execFile);
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -187,7 +189,37 @@ export async function checkEngines({ root = ROOT, packages } = {}) {
   };
 }
 
-/** 检查 5：工作区干净。 */
+/**
+ * 检查 5：内核公开面与类型覆盖。
+ *
+ * `index.d.ts` 是使用者看到的类型、运行时导出才是真正存在的 API；两者漂移时**没有测试会变红**，
+ * 发布出去就是"文档里的类型不存在"或"实际 API 全是 any"。同时内核不应再有跳过严格检查的文件。
+ */
+export async function checkKernelSurface({ root = ROOT } = {}) {
+  const module = await import(pathToFileURL(path.join(root, 'packages/core/src/index.ts')).href);
+  const exported = module.default && typeof module.default === 'object' ? module.default : module;
+  const runtimeNames = Object.keys(exported).filter((key) => key !== 'default' && key !== '__esModule');
+  const surface = checkPublicSurface({ root, runtimeNames });
+  const untyped = kernelUntypedFiles(root);
+  const ok = surface.ok && untyped.length === 0;
+  return {
+    name: '内核公开面与类型覆盖',
+    ok,
+    detail: ok
+      ? `运行时导出 ${surface.declared}/${surface.total} 都有类型声明；内核源码 0 个文件跳过严格检查`
+      : [
+          surface.ok ? null : `缺少声明的导出：${surface.missing.join(', ')}`,
+          untyped.length === 0 ? null : `${untyped.length} 个内核文件仍带 @ts-nocheck：${untyped.slice(0, 5).join(', ')}`,
+        ]
+          .filter(Boolean)
+          .join('；'),
+    fix: ok ? undefined : '补 packages/core/src/index.d.ts 的声明，或补完类型后删掉 @ts-nocheck',
+    missing: surface.missing,
+    untyped,
+  };
+}
+
+/** 检查 6：工作区干净。 */
 export async function checkCleanTree({ root = ROOT, allowDirty = false } = {}) {
   if (allowDirty) return { name: '工作区干净', ok: true, detail: '按 --allow-dirty 跳过' };
   const { stdout } = await run('git', ['status', '--porcelain'], { cwd: root, timeout: 30_000 });
@@ -224,6 +256,7 @@ export async function runReleaseCheck(options = {}) {
   results.push(await checkPackContents({ root }));
   results.push(await checkChangelog({ root }));
   results.push(await checkEngines({ root }));
+  results.push(await checkKernelSurface({ root }));
   results.push(await checkCleanTree({ root, allowDirty: options.allowDirty === true }));
   return results;
 }
