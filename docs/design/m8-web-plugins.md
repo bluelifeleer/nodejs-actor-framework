@@ -1,0 +1,238 @@
+# M8 设计：Web 层插件（上传 / 鉴权 / 邮件 / 日志调试 / 用户插件）
+
+> 用户需求五条：(1.1) 文件上传（单/多文件）；(1.2) token 校验，支持 JWT；
+> (1.3) 邮件功能（**要回答"怎么拆"**：内核包？插件？）; (1.4) 日志与调试；(1.5) 提供用户自定义插件逻辑。
+>
+> 本文是**定稿设计**（先设计后实现），已按用户拍板写入决策（§2）。实现分期见 §9。
+
+## 1. 现状核对（实测，不是印象）
+
+| 事实 | 出处 | 含义 |
+|---|---|---|
+| `PluginSpec` 只有 `name/requires/provides/description/config/kernelPlugins/setup/onReady/onStopping/teardown` | `packages/app/src/assembly.ts:70` | **插件不能贡献路由，也不能贡献中间件** ✗ —— 这是 1.1/1.2/1.4 的共同前置缺口 |
+| `Middleware = (ctx, next) => unknown`，顺序 = 声明顺序 | `packages/web/src/middleware.ts:10` | 没有阶段/优先级元数据 ✗ —— "鉴权必须早于上传解析"只能靠人肉排顺序 |
+| `RequestContext` 有 `params/query/body/headers/get()/status/requestId` | `packages/web/src/context.ts` | `ctx.user`/`ctx.files`/`ctx.log` 无处安放 ✗ |
+| `httpPlugin` 已有 `maxBodyBytes`（默认 1 MiB）+ 413 分支；JSON 按 content-type 解析 | `packages/web/src/http.ts:23,41,90,100` | 上传只需**在旁边加一条多部分分支** ✓ |
+| `requestId` 回写、`http:error` 事件、`requestLogPlugin`、`metricsPlugin`、`wsPlugin` | `packages/web/src/*` | 1.4 的基础已具备 ✓，缺的是结构化字段/脱敏/诊断路由 |
+| `definePlugin(spec)` 是恒等函数 | `packages/app/src/assembly.ts:187` | 扩展 `PluginSpec` 的成本很低 ✓ |
+| `@actor/db-core` 的 `supervise()`/`runManagedConnectionContract()` 是**通用**资源生命周期 | M7 产出 | 邮件/上传也想要它 —— 但包名像数据库专属 ✗（用户已决定抽 `@actor/resource`，见 §2） |
+
+## 2. 已定决策（用户拍板）
+
+| # | 决策 | 影响 |
+|---|---|---|
+| 1 | 上传：**流式解析 + 边写边算大小**，超限立刻 413 | 要写一个最小 multipart 边界扫描器（零依赖） |
+| 2 | 上传存储：**只内置 local disk** + 发布契约与套件，S3/OSS 交给用户适配器 | 上传离线可真验 ✓；扩展点清晰 |
+| 3 | 鉴权：**JWT + JWE + refresh token 全都要** | 鉴权拆成三期（M8c1/M8c2/M8c3），refresh 需要存储（Redis 或内存） |
+| 4 | 邮件：**单包 `@actor/mail`**（基础能力 + `mailPlugin`），v1 直发，outbox 留文档 | 与 db/redis/mongodb 同层；`fileTransport` 让邮件离线可真验 |
+| 5 | **现在就抽 `@actor/resource`**（`supervise`/契约套件搬过去） | 动 4 个包的依赖与 re-export（有公开面基线 + 847 条测试兜底） |
+| 6 | 诊断路由：默认关闭 + 需 token + **生产环境拒绝启动**（除非显式允许） | 三层门禁 |
+| 7 | 分期：M8a→M8e 逐期，每期一次提交、全绿 | 与 M7 同节奏 |
+
+## 3. 前置机制（1.5 的答案）：web 插件 = PluginSpec + 三个贡献点
+
+```ts
+// @actor/web —— 结构化扩展（与 databaseAdapter 同构：不强行耦合 app 的内部类型）
+export type MiddlewarePhase = 'pre' | 'auth' | 'parse' | 'handler' | 'post' | 'error';
+
+export interface WebPluginSpec extends PluginSpec {
+  /** ① 贡献路由（冲突在**启动期**报错，不留到运行期） */
+  routes?: readonly Route[];
+  routePrefix?: string;
+  /** ② 贡献中间件，**带阶段**（不再依赖声明顺序） */
+  middleware?: readonly {
+    handler: Middleware;
+    phase: MiddlewarePhase;
+    before?: readonly string[];
+    after?: readonly string[];
+  }[];
+  /** ③ 请求上下文扩展槽：往 ctx 上挂派生值（ctx.user / ctx.files / ctx.log） */
+  context?: (ctx: RequestContext) => Record<string, unknown>;
+}
+export function defineWebPlugin(spec: WebPluginSpec): WebPluginSpec;
+```
+
+阶段语义（**顺序由框架保证，不靠使用者记得**）：
+
+| 阶段 | 典型用途 | 为什么在这 |
+|---|---|---|
+| `pre` | requestId、访问日志、CORS | 最早；此时 body 还没解析 |
+| `auth` | JWT/JWE 校验、权限 | **在解析 body 之前** —— 未授权请求不该触发上传落盘 |
+| `parse` | 上传解析、输入校验 | 只有确实要用时才做 |
+| `handler` | 控制器 | |
+| `post` | 响应头、压缩、审计 | |
+| `error` | 错误映射兜底 | |
+
+另外两件：
+- **`RequestExtensions` 接口**（手写 `.d.ts`）：`ctx.user?: User`、`ctx.files?: UploadedFile[]`、`ctx.log: RequestLogger`；
+- **`runWebPluginContract()`**：随包发布的契约套件（阶段顺序、`requires` 拓扑、config schema 生效、
+  `teardown` 必被调用、重复 name/`provides` 冲突报错）—— "用户自定义插件"能自证合规 ✓。
+
+**三个层次**（用户该写哪种）：app 插件（服务 + 生命周期）→ **web 插件**（再贡献路由/中间件/ctx 槽）→ 资源适配器
+（`defineResourceAdapter`/`defineMailTransport`/…）。**不做沙箱**：插件是与应用同进程的**可信代码**（文档写明）。
+
+## 4. `@actor/resource`：把通用资源生命周期从 db-core 抽出来（决策 5）
+
+```
+packages/resource/   @actor/resource   ← 新：与"数据库"无关的通用层
+  resource.ts        ResourceAdapter / ManagedResource / defineResourceAdapter / defineManagedResource
+  managed.ts         supervise()：状态机、事件、drain、快速失败、定时探活/保活
+  errors.ts          ResourceError / ResourceConfigError / ResourceUnavailableError / DriverMissingError
+  resolve.ts         createAppRequire / loadDriverModule（从应用根解析 + 安装提示）
+  plugin.ts          resourceAdapter()（= 现在的 databaseAdapter）
+  testing.ts         runManagedResourceContract()（= 现在的 runManagedConnectionContract）
+```
+
+迁移与兼容（**只增不减**，由公开面基线与测试保证）：
+
+| 包 | 变化 |
+|---|---|
+| `@actor/resource` | 新增；承载通用层 |
+| `@actor/db-core` | 依赖 resource；**保留** `Row/Runner/PoolOptions/DriverPool/DriverFactory`（SQL 形状）与 `DbError` 家族名（re-export resource 的基类），并 re-export 通用层（`supervise`/`createAppRequire`/… 与 `DatabaseAdapter`/`databaseAdapter`/`runManagedConnectionContract` 这些**已发布的名字**） |
+| `@actor/redis` / `@actor/mongodb` | 依赖从 db-core 改为 resource（它们只用通用层） |
+| `@actor/db` | 不变（依赖 db-core） |
+
+命名对齐（新名字更准，旧名字保留为别名）：
+`ResourceAdapter`（旧 `DatabaseAdapter`）、`ResourceUnavailableError`（旧 `DbUnavailableError`）、
+`resourceAdapter()`（旧 `databaseAdapter()`）、`runManagedResourceContract()`（旧 `runManagedConnectionContract()`）。
+
+## 5. 1.1 文件上传（`uploadPlugin`，落在 `@actor/web`）
+
+- **流式**：边扫边界边写（决策 1），三个上限 `maxFileSize` / `maxFiles` / `maxFieldSize`，超限**立刻** 413 并断开；
+- 与现有 body 处理按 **content-type 分流**：`multipart/form-data` → 上传分支；`application/json` → 现有分支；其它 → 415；
+- **存储是扩展点**（决策 2）：
+  ```ts
+  export interface UploadStorage {
+    put(stream: AsyncIterable<Uint8Array>, meta: { name: string; mimeType: string; size: number }): Promise<UploadedFile>;
+    get(key: string): Promise<{ stream: AsyncIterable<Uint8Array>; meta: UploadedFile } | null>;
+    delete(key: string): Promise<boolean>;
+    stat(key: string): Promise<UploadedFile | null>;
+  }
+  export function localDiskStorage(options: { dir: string; publicPrefix?: string }): UploadStorage;
+  export function defineUploadStorage(spec: UploadStorage): UploadStorage;
+  export function runUploadStorageContract(...): void;   // 随包发布的契约套件
+  ```
+- **默认安全**：key 由服务端生成（`uuid` + 白名单扩展名），原始文件名/MIME 只作**元数据**；
+  `allowedMimeTypes`/`allowedExtensions` 白名单；不信任任何客户端路径；
+- 控制器侧：`ctx.files('docs')`（多）、`ctx.file('avatar')`（单）、`ctx.body` 拿文本字段；
+- **多文件语义**：**全成功或全回滚**（任一失败即删掉已写入的）；
+- 自带路由：`POST /uploads`（多文件）、`GET /uploads/:key`（回读，带 content-type 与 `Content-Disposition`；
+  v1 不做 Range，文档写明）；
+- **离线可真验**：本地磁盘 storage → 真写/真读/限额/路径穿越尝试，全部在 CI 里跑。
+
+## 6. 1.2 鉴权 / JWT（决策 3：三期）
+
+### 6.1 M8c1：JWT 签发与校验
+- 零依赖（`node:crypto`）：**HS256/384/512**（HMAC + 常量时间比较）、**RS256/384/512**、**ES256/384**；
+  `alg: none` 显式拒绝；**算法白名单**（防 alg 混淆）；
+- 校验顺序：签名 → `exp`/`nbf`/`iat`（`clockToleranceMs`）→ `iss`/`aud` → `verifyExtra` 钩子（黑名单/撤销）；
+- 取值来源可配：`Authorization: Bearer` / cookie / 自定义 extractor；
+- 路由级：`defineController({ auth: { required: true, roles: ['admin'] } })` + `requireRole()`；
+  **明确写清"claims 是声明，不是授权"**；
+- 失败：`401` + `WWW-Authenticate`；**对外不区分原因**（防探测），服务端记明细（接 1.4）；
+- 密钥：配置 + env；**缺失/过短直接拒绝启动**；永不进日志（脱敏有测试）。
+
+### 6.2 M8c2：JWE（加密 JWT）
+- 支持**常见且安全**的组合：`RSA-OAEP-256` + `A256GCM`、`dir` + `A256GCM`；其它组合**显式拒绝**（不假装支持）；
+- 推荐**嵌套**（签名后加密：JWS in JWE）；解密后仍走 6.1 的完整校验链；
+- 密钥轮换：支持 `keys: [{ kid, key }]`（多密钥，按 `kid` 选，验签可用旧密钥）；
+- 明确不做：ECDH-ES 全套、密钥管理服务（KMS）集成（文档给出接入点）。
+
+### 6.3 M8c3：refresh token（需要存储）
+- **不透明随机串**（不是 JWT —— 要能撤销），含 `family`/`jti`/`expiresAt`；
+- **轮换 + 重放检测**：旧 token 再被使用 → **整族撤销**（标准防御）；
+- 存储契约（可注入）：
+  ```ts
+  export interface RefreshTokenStore { issue(...); consume(token): Promise<Result>; revokeFamily(id); revoke(token); }
+  export function memoryRefreshStore(): RefreshTokenStore;         // 单节点/测试
+  export function redisRefreshStore(client): RefreshTokenStore;    // 复用 @actor/redis（可选依赖）
+  export function runRefreshStoreContract(...): void;              // 契约套件
+  ```
+  内置内存实现会在多节点下**语义不成立**——这一点在启动时按 `NODE_ENV`/显式开关**警告或拒绝**（不静默糊过去）。
+
+## 7. 1.3 邮件：拆法（**回答"内核包还是插件"**）
+
+**结论：内核不要碰邮件；基础能力放独立包 `@actor/mail`，插件在同包里，投递语义单独一期。**
+
+理由（分层，不是工作量）：内核是**运行时原语**（actor/mailbox/scheduler，CJS、零依赖、不含 I/O 语义）；
+邮件是**应用级 I/O 能力**（SMTP/模板/重试/退信）。把 SMTP 放进内核会让内核知道"邮件"，破坏这个仓库一路守住的边界。
+
+| 层 | 落点 | 内容 |
+|---|---|---|
+| ① 基础能力 | `@actor/mail` | 消息模型（to/cc/bcc/subject/text/html/attachments/headers）、**transport 契约**、内置 transport、极简渲染、**契约套件** |
+| ② 应用接线 | 同包 `mailPlugin()` | 配置节 `plugins.mail.*`、**从应用根懒加载** `nodemailer`（缺失给 `npm i nodemailer`）、生命周期交给 `supervise()`、注册 `ctx.get('mail')` |
+| ③ 投递语义（单独一期） | 复用 `@actor/data` 的 **outbox** | 至少一次 + 重试 + 幂等；v1 **直发 + 文档说明怎么接** |
+
+```ts
+export interface MailTransport {
+  send(message: MailMessage): Promise<{ id: string; accepted: string[]; rejected: string[] }>;
+  verify?(): Promise<void>;
+  close?(): Promise<void>;
+}
+export function fileTransport(options: { dir: string }): MailTransport;   // ★ 内置零依赖：写 .eml
+export function smtpTransport(options: SmtpOptions): MailTransport;       // 懒加载 nodemailer
+export function defineMailTransport(spec): MailTransport;                 // 用户接 Resend/SES/Mailgun
+export function runMailTransportContract(...): void;                      // 契约套件
+```
+
+- **`fileTransport` 是关键设计**：它让邮件在**离线环境也能真验** —— 断言 `.eml` 的 MIME 结构、头部编码、
+  中文主题（RFC 2047）、附件 base64；
+- SMTP：契约级（假 nodemailer）+ **可选真验**（compose 加 **MailHog**，`ACTOR_TEST_SMTP_URL`，缺了**可见跳过**）；
+- **模板**：不内置模板引擎（不造轮子）—— 极简占位替换 + **默认转义**（防 XSS）+ `renderer` 注入点；
+- **v1 不做**：DKIM 签名、退信/投诉 webhook、限流与退避、批量个性化（各自都有替代路径，文档写清）。
+
+## 8. 1.4 日志与调试
+
+**不发明新抽象**：全仓库已用 `(event: string, meta?) => void` 这个接缝，就沿用它，补三样：
+
+1. **结构化请求日志**（扩 `requestLogPlugin`）：`method/path/status/durationMs/requestId/bytesIn/bytesOut/userId`
+   + 慢请求阈值 + 采样 + **脱敏名单**（`authorization`/`cookie`/`password`/`token`/`set-cookie` 一律打码，有测试）；
+2. **请求级子日志** `ctx.log`：自动带 `requestId`，业务日志能与访问日志对上；
+3. **诊断路由** `debugPlugin`（决策 6 的三层门禁：默认关闭 → 需 token → 生产拒绝启动除非显式允许）：
+   - `GET /__debug/routes`（路由表 + 每个路由的中间件阶段）
+   - `GET /__debug/health`（**聚合各受管资源健康**：直接问每个 `ManagedResource` 的 `stats()`/`healthCheck()`
+     —— 正好复用 M8a 抽出的 `@actor/resource`）
+   - `GET /__debug/config`（**只出 schema 与"已设置"标记，值打码**）
+4. 已有的 `http:error` 事件直接进日志；**5xx 永远带 requestId 记明细**。
+
+## 9. 分期与验收
+
+| 期 | 内容 | 验收 |
+|---|---|---|
+| **M8a0** | 抽 `@actor/resource`（通用层搬迁 + db-core 别名 re-export + redis/mongodb 改依赖） | 847+ 全绿；db-core/redis/mongodb 公开面**只增不减**（基线门禁）；新包进矩阵 |
+| **M8a** | web 插件机制（`routes`/`middleware(phase)`/`ctx` 扩展 + `defineWebPlugin` + `runWebPluginContract`）+ `examples/app-plugin` | 阶段顺序/拓扑/冲突/teardown 用例；示例冒烟 |
+| **M8b** | `uploadPlugin` + `UploadStorage` 契约 + `localDiskStorage` + 契约套件 + 示例 | 离线真验（真写/真读/限额/穿越）；单/多文件 |
+| **M8c1** | JWT 签/验 + 算法白名单 + `ctx.user` + 角色中间件 | 篡改/过期/错签名/`alg=none`/算法混淆/时钟容差用例 |
+| **M8c2** | JWE（RSA-OAEP-256+A256GCM、dir+A256GCM）+ `kid` 轮换 | 加解密往返、拒绝不支持组合、嵌套 JWS-in-JWE |
+| **M8c3** | refresh token（不透明串 + 轮换 + 重放检测 + 内存/Redis 存储） | 契约套件 + 重放即整族撤销用例；多节点下的告警 |
+| **M8d** | 结构化日志 + 脱敏 + `ctx.log` + `debugPlugin` | 脱敏有测试；诊断路由默认不可达；健康聚合 |
+| **M8e** | `@actor/mail`（模型/transport 契约/fileTransport/SMTP/渲染/契约套件 + `mailPlugin` + MailHog 真验开关） | `.eml` 真验；假 nodemailer 契约级；真 SMTP 可见跳过 |
+
+其余照旧：新包进 `npm test`/typecheck 矩阵、公开面与成员级门禁（含证伪）、指南（含**离线可跑**的 verify 块）、
+示例冒烟、（如新增包）docs-site API 页。
+
+## 10. 风险与缓解
+
+| 风险 | 缓解 |
+|---|---|
+| 抽 `@actor/resource` 是**跨 4 包真搬迁** | 单独一期（M8a0）；公开面基线 + 847 测试；别名 re-export；先搬后改名 |
+| JWE + refresh 范围大（决策 3） | 拆三期；每期独立可验收；不支持的组合**显式拒绝**而不是半吊子支持 |
+| refresh 的存储语义易被误解（内存实现多节点不成立） | 启动时按环境**警告/拒绝**；契约套件把语义钉死；文档写清 |
+| 流式 multipart 解析器写错（安全敏感） | 只实现必要子集 + 大量边界用例（畸形边界/超长头部/嵌套/分块）+ 限额优先；**不解析即拒绝** |
+| 诊断路由误开 | 三层门禁 + 默认关闭 + 生产拒绝启动 + 有测试证明"默认不可达" |
+| `(event, meta)` 接缝不够用（需要 level/child） | 先给 `withFields()` 之类的**薄助手**，不引入新日志框架；不够用时再立设计 |
+
+## 11. 明确不做（本轮）
+
+- 沙箱化插件（插件是可信代码）；插件市场/热插拔；
+- OIDC/OAuth2 授权服务器、SAML、多因素认证；
+- 上传的分片/断点续传、图片转码、杀毒扫描；
+- 邮件的 DKIM/DMARC、退信处理、营销批量；
+- 分布式追踪（OpenTelemetry）接入（已有 span 基础，另立设计）。
+
+## 12. 需要在使用前确认的细节（实现时给理由）
+
+1. `@actor/resource` 里 `Runner`-类 SQL 形状**不进**（留在 db-core）——确认这个边界；
+2. `ctx.files` 是"解析完才有"（`auth` 阶段拿不到）——顺序语义要写进指南；
+3. refresh token 默认 TTL 与"内存实现在生产拒绝启动"的具体条件；
+4. `debugPlugin` 的 token 校验复用 `authPlugin` 还是独立密钥。
