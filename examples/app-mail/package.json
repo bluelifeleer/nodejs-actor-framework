@@ -1,0 +1,8 @@
+{
+  "name": "example-app-mail",
+  "private": true,
+  "type": "module",
+  "description": "示例：邮件（fileTransport 落 .eml，零依赖；换成 SMTP 只改一个配置）",
+  "engines": { "node": ">=24" },
+  "dependencies": { "@actor/app": "*", "@actor/mail": "*", "@actor/resource": "*", "@actor/web": "*" }
+}

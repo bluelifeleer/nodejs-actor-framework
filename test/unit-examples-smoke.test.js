@@ -173,3 +173,20 @@ test('examples: app-upload 能启动（上传插件 + 优雅停）', async () =>
   assert.match(result.stdout, /stopped gracefully/, 'app-upload 没有走优雅停机');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('examples: app-mail 能启动并真的写出 .eml（fileTransport 离线真验）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-app-mail-'));
+  const result = await runExample(['examples/app-mail/main.ts'], {
+    env: { APP_MAIL_DIR: dir },
+    readyMs: 6000,
+  });
+  assertNoCrash('examples/app-mail', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-mail 没起来：\n${result.stdout.slice(0, 400)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-mail 没有走优雅停机');
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith('.eml')) : [];
+  assert.strictEqual(files.length, 1, `应当写出 1 封 .eml：${JSON.stringify(files)}`);
+  const raw = fs.readFileSync(path.join(dir, files[0]), 'utf8');
+  assert.match(raw, /Subject: =\?UTF-8\?B\?/, '中文主题要走 RFC 2047');
+  assert.match(raw, /multipart\/mixed/, '带附件应当是 multipart/mixed');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
