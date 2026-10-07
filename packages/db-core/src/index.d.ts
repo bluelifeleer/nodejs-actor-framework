@@ -159,3 +159,23 @@ export declare function supervise<C = unknown, Conn extends BaseConnection = Bas
   adapter: DatabaseAdapter<C, Conn>,
   options: SupervisionOptions<Conn>,
 ): ManagedResource<C>;
+
+// --- 契约套件（测试工具）---------------------------------------------------
+export interface ContractResourceInput {
+  onEvent: (event: SupervisionEvent) => void;
+  drainTimeoutMs?: number;
+  healthCheckIntervalMs?: number;
+  keepAliveIntervalMs?: number;
+}
+export type ContractResourceFactory = (input: ContractResourceInput) => ManagedResource<unknown>;
+export interface ManagedConnectionContractOptions {
+  name: string;
+  make: ContractResourceFactory;
+  makeFailing?: ContractResourceFactory;
+  supportsKeepAlive?: boolean;
+  supportsDrain?: boolean;
+  counters?: { healthChecks: () => number; keepAlives?: () => number };
+  setHealthy?: (healthy: boolean) => void;
+}
+/** 跑一遍连接管理契约（用例注册在调用方的测试文件里）。 */
+export declare function runManagedConnectionContract(options: ManagedConnectionContractOptions): void;

@@ -360,6 +360,34 @@ export const myDb = defineDatabaseAdapter({
 证明**的（同一套断言同时跑 fake 适配器与 SQL 适配器），而不是靠人肉对比。顺序：M7a（已完成）→ M7b（契约套件）
 → 接线（SQL 走同一条路）→ M7c（Redis）。
 
+### M7b（进行中）：连接管理契约套件
+
+已完成：
+- **契约套件进 src**（`packages/db-core/src/testing.ts`，随 `@actor/db-core` 发布）：
+  `runManagedConnectionContract({ name, make, makeFailing?, supportsKeepAlive?, supportsDrain?, counters?, setHealthy? })`。
+  为什么放 `src/` 而不是 `test/`：适配器包**与用户自装的适配器**都要能 import 它自证合规，而
+  发布出去的包只带 `src/`。
+  套件覆盖（四条纪律的可执行版本）：connect→ready 与事件、未连接/已关闭**快速失败**、close 幂等、
+  连接失败如实抛出且不假装 ready、健康失败→degraded→恢复（含 `lastHealthError` 清空）、
+  drain（在途归零 + 超时如实上报在途数）、**关闭后定时健康检查/保活必须停止**（用调用方提供的
+  `counters` 观察真实计数，而不是空断言）。
+- **跳过必须可见**：目标没提供 `makeFailing`/`setHealthy`/`counters` 时，套件用 `test(name, { skip })`
+  注册**显式跳过**（测试输出里能看到 skip 的数量），不许静默少测。
+- core 自己的测试改为**套件驱动**（假适配器 + 计数器 + 可切换健康状态），另保留 5 条适配器/工具专属用例
+  （驱动事件原样转发、适配器 close 只调一次、`defineManagedResource` 走真实懒加载安装提示、
+  `mapPoolOptions`、`loadDriverModule` 安装提示）。
+- 补完 M7a 的两处遗留：`NormalizedConnection` 改为 `BaseConnection & { dialect }`（连接字段单一来源在 core）；
+  新增 **kind 门禁**（`packages/db-core/test/kind-gate.test.ts`）：`<package>/src/adapters/` 之外不得按
+  适配器 kind 分支（redis/ioredis/mongodb），带证伪用例 —— 与既有"方言门禁"同构的对偶门禁。
+- **验证**：全量 **742/742**、typecheck 0、文档站 41 页。
+
+尚未完成（M7b 剩余 + M7a 第二部分）：
+1. **真库用例**：`ACTOR_TEST_REDIS_URL` / `ACTOR_TEST_IOREDIS_URL` / `ACTOR_TEST_MONGO_URL` /
+   `ACTOR_TEST_PG_URL` / `ACTOR_TEST_MYSQL_URL` / `ACTOR_TEST_MSSQL_URL` 环境开关 + `scripts/dev-databases.mjs`
+   （docker 起库）；SQL 三家的真库用例跑**同一套契约断言**。
+2. **把 SQL 侧接到 `supervise()` 上**（`sqlAdapter` 包装 DriverFactory，边界翻译错误类型与日志事件），
+   用契约套件证明"接上后行为等价"。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |

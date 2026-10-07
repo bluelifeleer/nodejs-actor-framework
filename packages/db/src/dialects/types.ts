@@ -1,4 +1,5 @@
 import type { DriverFactory } from '../drivers/types.ts';
+import type { BaseConnection } from '@actor/db-core';
 import { DbConfigError } from '../errors.ts';
 
 /**
@@ -61,18 +62,16 @@ export interface ColumnTypeOptions {
   scale?: number;
 }
 
-/** 规范化后的连接配置（DSN 或字段式都归一到这里）。 */
-export interface NormalizedConnection {
+/**
+ * 规范化后的连接配置：`@actor/db-core` 的**通用形状** + SQL 自己的 `dialect` 字段。
+ *
+ * 为什么继承而不是重复声明：host/port/user/password/database/filename/url 这些字段**与数据库无关**
+ * （Redis/MongoDB/自装适配器也有），单一来源在 core；SQL 只是多一个"这是哪个方言"。
+ */
+export interface NormalizedConnection extends BaseConnection {
   dialect: Dialect;
-  host?: string;
-  port?: number;
-  user?: string;
-  password?: string;
-  database?: string;
   /** sqlite 专用：文件路径（`:memory:` 表示内存库）。 */
   filename?: string;
-  /** 原始 DSN（**不用于日志**）。 */
-  url?: string;
 }
 
 /**

@@ -8,7 +8,9 @@ import {
   defineManagedResource,
   loadDriverModule,
   mapPoolOptions,
+  runManagedConnectionContract,
   supervise,
+  type ContractResourceFactory,
 } from '../src/index.ts';
 
 /**
@@ -53,162 +55,101 @@ function fakeAdapter(overrides: Record<string, unknown> = {}) {
   return { adapter, log };
 }
 
-test('managed: connect → ready；事件顺序 connecting → connected → closed', async () => {
-  const { adapter } = fakeAdapter();
-  const events: string[] = [];
-  const resource = supervise(adapter, {
-    connection: { kind: 'fake', host: 'h' },
-    pool: { max: 7 },
-    onEvent: (event) => events.push(event.type),
-  });
-
-  await resource.connect();
-  assert.strictEqual(resource.state, 'ready');
-  // 顺序：connecting 一定在最前；驱动事件按**发生时刻**如实转发（框架不重排、不缓冲）
-  assert.strictEqual(events[0], 'connecting');
-  assert.ok(events.includes('connected'), `缺少 connected：${events.join(' → ')}`);
-  assert.ok(events.includes('driver_event'), `缺少 driver_event：${events.join(' → ')}`);
-  assert.ok(events.indexOf('connected') > 0);
-  assert.strictEqual(resource.stats().state, 'ready');
-  assert.deepStrictEqual(resource.stats().driver, { kind: 'fake' });
-
-  await resource.close();
-  assert.strictEqual(resource.state, 'closed');
-  assert.strictEqual(events[events.length - 1], 'closed', `closed 必须是最后一个事件：${events.join(' → ')}`);
-});
-
-test('managed: 未连接/已关闭时 acquire 快速失败（不排队等死）', async () => {
-  const { adapter } = fakeAdapter();
-  const resource = supervise(adapter, { connection: { kind: 'fake', host: 'h' } });
-
-  await assert.rejects(() => resource.acquire(), (err: unknown) => {
-    assert.ok(err instanceof DbUnavailableError, `应当是 DbUnavailableError：${String(err)}`);
-    assert.match((err as Error).message, /not connected/i);
-    return true;
-  });
-
-  await resource.connect();
-  const client = await resource.acquire();
-  assert.strictEqual(client.id, 'c1');
-
-  await resource.close();
-  assert.rejects(() => resource.acquire(), DbUnavailableError);
-});
-
-test('managed: 连接失败要如实抛出，且状态回到 idle（不假装 ready）', async () => {
-  const events: string[] = [];
-  const adapter = defineDatabaseAdapter({
-    kind: 'broken',
-    driverPackage: 'broken',
-    connectionKind: 'host',
-    async connect() {
-      throw new Error('拒绝连接');
-    },
-  });
-  const resource = supervise(adapter, { connection: { kind: 'broken', host: 'h' }, onEvent: (e) => events.push(e.type) });
-  await assert.rejects(() => resource.connect(), /拒绝连接/);
-  assert.strictEqual(resource.state, 'idle', '连接失败后不该假装 ready');
-  assert.ok(events.includes('connecting'));
-  assert.ok(!events.includes('connected'));
-  assert.rejects(() => resource.acquire(), DbUnavailableError);
-});
-
-test('managed: close 幂等（第二次 close 不再调用适配器，也不抛）', async () => {
-  const { adapter, log } = fakeAdapter();
-  const resource = supervise(adapter, { connection: { kind: 'fake', host: 'h' } });
-  await resource.connect();
-  await resource.close();
-  await resource.close();
-  assert.strictEqual(log.filter((line) => line === 'close').length, 1, '适配器的 close 只该被调用一次');
-});
-
-test('managed: 健康检查失败 → degraded + health_failed 事件；仍可 acquire（驱动可能自己恢复）', async () => {
-  let healthy = false;
-  const { adapter } = fakeAdapter({
+/**
+ * 目标工厂：假适配器 + 计数器 + 可切换健康状态（契约套件需要的观察点）。
+ */
+function fakeTarget() {
+  let healthy = true;
+  let closedCount = 0;
+  const counters = { healthChecks: 0, keepAlives: 0 };
+  const makeClient = (label: string) => ({
+    client: { id: label, get closed() { return closedCount; } },
     async healthCheck() {
+      counters.healthChecks += 1;
       if (!healthy) throw new Error('ping 超时');
     },
-  });
-  const events: Array<{ type: string; error?: string }> = [];
-  const resource = supervise(adapter, {
-    connection: { kind: 'fake', host: 'h' },
-    onEvent: (event) => events.push({ type: event.type, ...('error' in event ? { error: String(event.error) } : {}) }),
-  });
-  await resource.connect();
-  await assert.rejects(() => resource.checkHealth(), /ping 超时/);
-  assert.strictEqual(resource.state, 'degraded');
-  assert.ok(events.some((e) => e.type === 'health_failed' && /ping 超时/.test(String(e.error))));
-  // degraded 仍然允许取连接（不是静默降级：状态与事件都报出来了）
-  const client = await resource.acquire();
-  assert.strictEqual(client.id, 'c1');
-
-  healthy = true;
-  await resource.checkHealth();
-  assert.strictEqual(resource.state, 'ready', '健康恢复后应当回到 ready');
-  await resource.close();
-});
-
-test('managed: drain —— close 等在途归零；超时则如实上报在途数', async () => {
-  const { adapter } = fakeAdapter();
-  const events: Array<{ type: string; inFlight?: number }> = [];
-  const resource = supervise(adapter, {
-    connection: { kind: 'fake', host: 'h' },
-    drainTimeoutMs: 50,
-    onEvent: (event) => events.push({ type: event.type, ...('inFlight' in event ? { inFlight: event.inFlight } : {}) }),
-  });
-  await resource.connect();
-
-  let release: () => void = () => {};
-  const inFlight = resource.track(new Promise<void>((resolve) => (release = resolve)));
-  release();
-  await inFlight;
-  await resource.close();
-  assert.strictEqual(events.filter((e) => e.type === 'draining').length, 1, '应当有一次 draining 事件');
-  assert.strictEqual(events.find((e) => e.type === 'draining')?.inFlight, 0);
-
-  // 永不结束的在途：close 必须在 drainTimeoutMs 后如实上报在途数并强制关闭
-  const { adapter: adapter2 } = fakeAdapter();
-  const events2: Array<{ type: string; inFlight?: number }> = [];
-  const resource2 = supervise(adapter2, {
-    connection: { kind: 'fake', host: 'h' },
-    drainTimeoutMs: 30,
-    onEvent: (event) => events2.push({ type: event.type, ...('inFlight' in event ? { inFlight: event.inFlight } : {}) }),
-  });
-  await resource2.connect();
-  void resource2.track(new Promise<void>(() => {})); // 永不 resolve
-  await resource2.close();
-  const drainEvent = events2.find((e) => e.type === 'draining');
-  assert.strictEqual(drainEvent?.inFlight, 1, `超时也必须如实报出还有几个在途：${JSON.stringify(events2)}`);
-  assert.strictEqual(resource2.state, 'closed');
-});
-
-test('managed: keepAlive 与定时健康检查（驱动自带重连时框架只转发事件）', async () => {
-  let healthChecks = 0;
-  let keeps = 0;
-  const { adapter } = fakeAdapter({
-    async healthCheck() {
-      healthChecks += 1;
+    async close() {
+      closedCount += 1;
     },
+    stats: () => ({ kind: 'fake' }),
     async keepAlive() {
-      keeps += 1;
+      counters.keepAlives += 1;
     },
   });
-  const events: string[] = [];
-  const resource = supervise(adapter, {
-    connection: { kind: 'fake', host: 'h' },
-    healthCheckIntervalMs: 10,
-    keepAliveIntervalMs: 10,
-    onEvent: (event) => events.push(event.type),
-  });
+
+  const make: ContractResourceFactory = (input) => {
+    const adapter = defineDatabaseAdapter<{ id: string }>({
+      kind: 'fake',
+      driverPackage: 'fake-driver',
+      connectionKind: 'host',
+      async connect({ emitDriverEvent }) {
+        emitDriverEvent?.('reconnecting', { attempt: 1 }); // 模拟驱动自带的重连事件（框架只转发）
+        return makeClient('c1');
+      },
+    });
+    return supervise(adapter, {
+      connection: { kind: 'fake', host: 'h' },
+      onEvent: input.onEvent,
+      ...(input.drainTimeoutMs === undefined ? {} : { drainTimeoutMs: input.drainTimeoutMs }),
+      ...(input.healthCheckIntervalMs === undefined ? {} : { healthCheckIntervalMs: input.healthCheckIntervalMs }),
+      ...(input.keepAliveIntervalMs === undefined ? {} : { keepAliveIntervalMs: input.keepAliveIntervalMs }),
+    });
+  };
+
+  const makeFailing: ContractResourceFactory = (input) => {
+    const adapter = defineDatabaseAdapter({
+      kind: 'broken',
+      driverPackage: 'broken',
+      connectionKind: 'host',
+      async connect() {
+        throw new Error('拒绝连接');
+      },
+    });
+    return supervise(adapter, { connection: { kind: 'broken', host: 'h' }, onEvent: input.onEvent });
+  };
+
+  return {
+    make,
+    makeFailing,
+    // 套件要的是"读计数"的函数（不是数字），保证它随时读到最新值
+    counters: { healthChecks: () => counters.healthChecks, keepAlives: () => counters.keepAlives },
+    closedCount: () => closedCount,
+    setHealthy: (value: boolean) => (healthy = value),
+  };
+}
+
+// 连接管理契约：同一套断言，离线（假适配器）与真库都跑它 —— 见 src/testing.ts
+// 注意：make / counters / setHealthy 必须来自**同一个**目标对象，否则观察点对不上
+const contractTarget = fakeTarget();
+runManagedConnectionContract({
+  name: 'fake',
+  make: contractTarget.make,
+  makeFailing: contractTarget.makeFailing,
+  supportsKeepAlive: true,
+  counters: contractTarget.counters,
+  setHealthy: contractTarget.setHealthy,
+});
+
+test('managed: 驱动自带的重连事件只被转发（框架不自己重连）', async () => {
+  const target = fakeTarget();
+  const events: Array<{ type: string; event?: string }> = [];
+  const resource = target.make({ onEvent: (event) => events.push({ type: event.type, ...('event' in event ? { event: String(event.event) } : {}) }) });
   await resource.connect();
-  await new Promise((resolve) => setTimeout(resolve, 60));
   await resource.close();
-  assert.ok(healthChecks >= 2, `定时健康检查没跑起来：${healthChecks}`);
-  assert.ok(keeps >= 2, `保活没跑起来：${keeps}`);
-  // 关闭后定时器必须停掉（否则测试会挂在未清理的 timer 上）
-  const after = healthChecks;
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.strictEqual(healthChecks, after, '关闭后定时健康检查必须停止');
+  assert.deepStrictEqual(
+    events.filter((event) => event.type === 'driver_event'),
+    [{ type: 'driver_event', event: 'reconnecting' }],
+    '驱动事件应当原样转发（含事件名）',
+  );
+});
+
+test('managed: close 幂等 —— 适配器的 close 只被调用一次', async () => {
+  const target = fakeTarget();
+  const resource = target.make({ onEvent: () => {} });
+  await resource.connect();
+  await resource.close();
+  await resource.close();
+  assert.strictEqual(target.closedCount(), 1, '适配器 close 只该调用一次');
 });
 
 test('managed: defineManagedResource —— 非数据库也能纳入同一套生命周期', async () => {
