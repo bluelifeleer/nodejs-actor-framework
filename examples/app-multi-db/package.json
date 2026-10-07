@@ -1,0 +1,13 @@
+{
+  "name": "example-app-multi-db",
+  "private": true,
+  "type": "module",
+  "description": "示例：一个应用挂多个数据库 —— 用户自装适配器（JSON 文件存储，零依赖）+ 可选的 cache/queue 两个 Redis",
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@actor/app": "*",
+    "@actor/db-core": "*",
+    "@actor/redis": "*",
+    "@actor/web": "*"
+  }
+}

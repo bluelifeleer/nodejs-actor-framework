@@ -501,6 +501,45 @@ export const myDb = defineDatabaseAdapter({
 3. 测试把 `find()` 当 Promise（它是**原生游标**）—— 改成 `toArray()`。
 4. 断言 `collMod` 时取错层级（`command` 对象是 `{ collMod, validator }`，不是 `{ collMod: { validator } }`）。
 
+### M7e（已完成）：用户自装适配器的端到端验收 + checklist 实测
+
+- 新增 `examples/app-multi-db`：一个应用挂**三个实例** ——
+  - `store`：**用户自装的适配器**（`src/json-store-adapter.ts`，JSON 文件存储，驱动就是 `node:fs`，
+    **零 npm 依赖** → 示例离线就能跑）；连接=读写文件、`healthCheck`=能写得进去、`close`=落盘、
+    `stats`=键数+文件路径，并用 `emitDriverEvent('file_loaded')` 演示"驱动事件只转发"；
+  - `cache` / `queue`：两个 Redis 实例，**只在配置了 `APP_PLUGINS__<NAME>__URL` 时才挂上**
+    （不配就不挂 —— 不静默降级到"连不上也照跑"）。
+  - 接线全用 `databaseAdapter(adapter, { name })`；模块里**没有任何数据库接线**，
+    控制器只写 `ctx.get('store')` / `ctx.get('cache')`。
+- 门禁：
+  - 示例进冒烟门禁（启动 + 优雅停）；
+  - 新增根测试 `test/unit-example-custom-adapter.test.js`：用**同一套** `runManagedConnectionContract`
+    跑这个**仓库外**的自装适配器 —— 这正是把契约套件放进 `src/`（随包发布）的意义：
+    **使用者能拿框架发布的套件给自己的适配器自证合规**；
+  - 真机端到端（手工验证并记录）：POST 201 → GET 列表 200 → GET 单条 200 → health → SIGTERM 优雅停 →
+    **数据已落盘** → 重启后仍能读到 → DELETE 200 → GET 404。
+- 文档：新增指南 `docs/guide/11-custom-adapter.md`（三个层次怎么选、`databaseAdapter` 多实例、
+  **用契约套件自证合规**、逃生通道），含**离线可跑**的 verify 块（定义并连一个内存适配器，
+  含"关闭后 `acquire()` 快速失败"的演示）；索引页链上（迁移顺延为 12）。
+
+#### §13 checklist 实测结果（这次是**仓库外**的适配器）
+
+| checklist | 仓库内新包（如 `@actor/redis`） | 仓库外适配器（本次示例） |
+|---|---|---|
+| 1. 写适配器文件 | ✅ 一个文件 | ✅ 一个文件（示例里 `json-store-adapter.ts`） |
+| 2. 薄封装 + `raw` 逃生通道 | ✅ | ✅ |
+| 3. 驱动从应用根懒加载 | ✅ `load('驱动包')` | ✅ **同样适用**；零依赖的驱动（`node:fs`）直接用即可 |
+| 4. 事件映射成 `driver_event` | ✅ | ✅ 用 `emitDriverEvent` 即可（**不需要**写事件表，除非驱动事件语义复杂） |
+| 5. 过连接管理契约套件 | ✅ | ✅ **可以直接 import 框架发布的套件**（这就是把套件放 `src/` 的原因） |
+| 6. `databaseAdapter(adapter, { name })` 装载 | ✅ | ✅ 同一个函数，多实例按 name |
+| 7. 文档 + API 页 | ✅ 指南一篇 + API 页自动收录 | ⚠️ 外部包不进本仓库的 API 页（它自己有 README 即可） |
+| 8. 进本仓库矩阵 / kind 门禁 | ✅ 必须 | ⚠️ **不适用** —— 外部适配器不进本仓库的 test/typecheck 矩阵；kind 门禁只约束本仓库源码 |
+
+**实测发现（值得记下来）**：插件读的配置键名固定是 **`url`**。自定义连接形状必须通过
+`connectionFromUrl(url)` 或在 `connect()` 里消化，**不要**指望插件读 `plugins.<name>.file` 之类的键。
+这条已写进指南（"配置约定"一段）。另有一条已知差异需要使用者注意：外部适配器**没有**本仓库的
+kind 门禁保护，"别在别处按 kind 分支"要靠它自己 review。
+
 ## 9. 分期路线
 
 | 期 | 内容 | 验收 |

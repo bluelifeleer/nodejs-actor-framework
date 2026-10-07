@@ -140,3 +140,17 @@ test('examples: app-db 能启动（数据库接进应用 + 优雅关池）', asy
   assert.match(result.stdout, /stopped gracefully/, 'app-db 没有走优雅停机（关池应当在 onStop 里）');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('examples: app-multi-db 能启动（自装适配器 + 多实例接线 + 优雅停）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-app-multi-db-'));
+  const result = await runExample(['examples/app-multi-db/main.ts'], {
+    // 自装适配器的连接配置走插件的配置节（plugins.store.url）——
+    // 注意：插件读的键名固定是 `url`（约定），自定义连接形状要靠 connectionFromUrl/connect 消化
+    env: { APP_PLUGINS__STORE__URL: `file:${path.join(dir, 'store.json')}` },
+    readyMs: 6000,
+  });
+  assertNoCrash('examples/app-multi-db', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-multi-db 没起来：\n${result.stdout.slice(0, 400)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-multi-db 没有走优雅停机');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

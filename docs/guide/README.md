@@ -17,7 +17,8 @@
 | 8 | [数据库（@actor/db）](./08-database.md) | 连接池、model 声明与建表、乐观锁仓储、关联、用户可写的映射层 |
 | 9 | [Redis（@actor/redis）](./09-redis.md) | 双驱动（redis / ioredis）、能力面与逃生通道、多实例、真库测试 |
 | 10 | [MongoDB（@actor/mongodb）](./10-mongodb.md) | 连接与池映射、defineCollection（$jsonSchema/索引/sync 漂移）、诚实边界 |
-| 11 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
+| 11 | [自装适配器 / 受管资源](./11-custom-adapter.md) | defineDatabaseAdapter、databaseAdapter 多实例、用契约套件自证合规、逃生通道 |
+| 12 | [迁移指南](../migration.md) | 从 v0.x 旧运行时迁过来要改什么、升级检查清单、兼容承诺的范围 |
 
 ## 这些示例**真的会跑**
 
