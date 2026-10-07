@@ -57,6 +57,15 @@ export const DEFAULT_PORTS: Record<Dialect, number | null> = { pgsql: 5432, mysq
 /** 各方言默认懒加载的驱动包名。 */
 export const DRIVER_PACKAGES: Record<Dialect, string> = { pgsql: 'pg', mysql: 'mysql2', sqlite: 'node:sqlite' };
 
+/**
+ * 该方言是否支持 `INSERT … RETURNING`（自增主键要靠它回读生成值）。
+ * MySQL 没有 RETURNING，只能用结果里的 `insertId`。
+ */
+export function supportsReturning(dialect: Dialect): boolean {
+  assertDialect(dialect);
+  return dialect !== 'mysql';
+}
+
 /** 占位符风格：pg 用 `$n`，mysql/sqlite 用 `?`。 */
 export function placeholderFor(dialect: Dialect): (index: number) => string {
   if (dialect === 'pgsql') return (index) => `$${index}`;

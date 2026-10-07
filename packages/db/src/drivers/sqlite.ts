@@ -65,6 +65,10 @@ export function createSqliteDriver(loadModule: () => SqliteModule = loadSqlite):
           const result = db.prepare(sql).run(...(params as unknown[]));
           return Number(result.changes);
         },
+        async insertReturning(sql, params = []) {
+          // SQLite 3.35+ 支持 RETURNING，node:sqlite 也一样（用 all() 取回结果行）
+          return db.prepare(sql).all(...(params as unknown[])) as Row[];
+        },
         async transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
           db.exec('BEGIN');
           try {

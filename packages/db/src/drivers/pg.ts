@@ -67,6 +67,10 @@ export function buildPool(pool: PgPool): DriverPool {
       const result = await pool.query(sql, params);
       return result.rowCount === null ? 0 : Number(result.rowCount);
     },
+    async insertReturning(sql, params = []) {
+      const result = await pool.query(sql, params);
+      return result.rows;
+    },
     async transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
       const client = await pool.connect();
       const scoped: Runner = {

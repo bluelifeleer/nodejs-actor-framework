@@ -11,6 +11,14 @@ export interface Runner {
   all(sql: string, params?: readonly unknown[]): Promise<Row[]>;
   run(sql: string, params?: readonly unknown[]): Promise<number>;
   transaction?<R>(fn: (scoped: Runner) => Promise<R>): Promise<R>;
+  /**
+   * 执行 INSERT 并返回**数据库生成的列**（自增主键靠它回读）。
+   *
+   * 约定：pg/sqlite 走 `INSERT … RETURNING`（返回结果行）；mysql 没有 RETURNING，
+   * 所以返回 `[{ insertId }]`（由仓储层归一）。驱动不支持时必须**不实现**这个方法，
+   * 仓储层会给出明确错误，而不是静默返回一个没有 id 的实体。
+   */
+  insertReturning?(sql: string, params?: readonly unknown[]): Promise<Row[]>;
 }
 
 /** 池参数（框架统一形状；映射到各驱动真实字段由驱动负责）。 */

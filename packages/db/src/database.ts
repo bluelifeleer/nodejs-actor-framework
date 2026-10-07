@@ -276,6 +276,13 @@ export function createDatabase(options: DatabaseOptions): Database {
       const lazy: Runner = {
         all: (sql, params) => requirePool().all(sql, params),
         run: (sql, params) => requirePool().run(sql, params),
+        insertReturning: (sql, params) => {
+          const current = requirePool();
+          if (typeof current.insertReturning !== 'function') {
+            throw new DbConfigError(`driver ${driver.name} cannot read back generated ids (no insertReturning)`);
+          }
+          return current.insertReturning(sql, params);
+        },
         transaction: (fn) => {
           const current = requirePool();
           if (typeof current.transaction !== 'function') throw new DbConfigError(`driver ${driver.name} does not support transactions`);

@@ -1,5 +1,5 @@
-import { placeholderFor, quoteIdentifier, type Dialect } from './dialect.ts';
-import { DbConfigError, DbConflictError, DbNotFoundError } from './errors.ts';
+import { placeholderFor, quoteIdentifier, supportsReturning, type Dialect } from './dialect.ts';
+import { DbConfigError, DbConflictError, DbError, DbNotFoundError } from './errors.ts';
 import { assertKnownFields, entityToRow, rowToEntity, type Row } from './mapping.ts';
 import type { Field, Model } from './model.ts';
 import type { Runner } from './drivers/types.ts';
@@ -77,7 +77,10 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
       const draft: Entity = { ...entity };
       if (draft[model.primaryKey] === undefined || draft[model.primaryKey] === null) {
         if (primary.type === 'uuid') draft[model.primaryKey] = generateId();
-        else {
+        // 自增主键：不用调用方给，交给数据库生成（下面会省略该列并回读）
+        else if (primary.autoIncrement === true) {
+          /* 交给数据库 */
+        } else {
           throw new DbConfigError(
             `insert: model "${model.name}" primary key "${model.primaryKey}" is required (type ${primary.type})`,
           );
@@ -89,13 +92,40 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
         if (field.auto === 'create' && draft[field.name] === undefined) draft[field.name] = stamp;
       }
       const row = entityToRow(dialect, model, draft);
+      /**
+       * 自增主键：不给值就让数据库生成（**省略该列**），写入后回读并填回实体。
+       * 回读方式按方言：pg/sqlite 用 `RETURNING`，mysql 用结果里的 `insertId`。
+       */
+      const wantsGeneratedId =
+        primary.autoIncrement === true && (row[primary.column] === undefined || row[primary.column] === null);
+      if (wantsGeneratedId) delete row[primary.column];
+
       const columns = Object.keys(row);
       const placeholders = columns.map((_, index) => ph(index + 1)).join(', ');
       const values = columns.map((name) => (row as Row)[name]);
-      await runner.run(
-        `INSERT INTO ${table} (${columns.map((name) => quoteIdentifier(dialect, name)).join(', ')}) VALUES (${placeholders})`,
-        values,
-      );
+      let sql = `INSERT INTO ${table} (${columns.map((name) => quoteIdentifier(dialect, name)).join(', ')}) VALUES (${placeholders})`;
+
+      if (wantsGeneratedId) {
+        if (supportsReturning(dialect)) sql += ` RETURNING ${column(primary)}`;
+        if (typeof runner.insertReturning !== 'function') {
+          throw new DbConfigError(
+            `driver cannot read back the generated "${model.primaryKey}" — it must implement insertReturning()`,
+          );
+        }
+        const returned = await runner.insertReturning(sql, values);
+        const generated = returned[0]?.[primary.column] ?? returned[0]?.insertId ?? undefined;
+        if (generated === undefined || generated === null) {
+          throw new DbError(
+            `insert into "${model.table}" returned no value for the generated primary key "${model.primaryKey}"`,
+            'DB_INSERT_NO_ID',
+          );
+        }
+        // sqlite 的 rowid 可能是 BigInt；领域里统一成 number
+        draft[model.primaryKey] = typeof generated === 'bigint' ? Number(generated) : generated;
+        return rowToEntity(dialect, model, { ...row, [primary.column]: draft[model.primaryKey] });
+      }
+
+      await runner.run(sql, values);
       return rowToEntity(dialect, model, row);
     },
 

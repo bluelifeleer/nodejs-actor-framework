@@ -68,6 +68,12 @@ export function buildPool(pool: MysqlPool): DriverPool {
       const [result] = await pool.query(sql, params);
       return affectedOf(result);
     },
+    async insertReturning(sql, params = []) {
+      // MySQL 没有 RETURNING：用结果里的 insertId（仓储层会归一成主键值）
+      const [result] = await pool.query(sql, params);
+      const header = result as { insertId?: number | string } | null;
+      return [{ insertId: header?.insertId ?? null }];
+    },
     async transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
       const connection = await pool.getConnection();
       const scoped: Runner = {
