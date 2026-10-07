@@ -47,6 +47,15 @@ npm run release:check -- --skip-ci   # 只跑打包与一致性检查（本地�
 
 ## [Unreleased]
 
+（下一次发布的改动写在这里。）
+
+## [1.0.0] - 2026-10-07
+
+内核的第一个正式版本。这一版的兼容承诺由本文件与 `packages/core/src/index.d.ts` 共同表达：
+**运行时导出 34 项全部有类型声明**，且由两道门禁锁住（`test/unit-kernel-surface.test.js` 与
+`npm run release:check`）。
+
+
 ### Added
 
 - **数据层**（`@actor/data`）：Repository（memory/file/SQL + 游标分页 + `version` 乐观锁）、
