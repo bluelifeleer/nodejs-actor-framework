@@ -80,8 +80,16 @@ export interface PluginSpec {
   provides?: readonly string[];
   /** 依赖该插件的其它插件必须先于它 setup；声明顺序不再重要（会被拓扑排序）。 */
   description?: string;
-  /** 插件自己的配置 schema：会被合并进应用配置的 `plugins.<name>.*` 下（一套配置体系）。 */
-  config?: ConfigSchema;
+  /**
+   * 插件自己的配置 schema：会被合并进应用配置的 `plugins.<name>.*` 下（一套配置体系）。
+   *
+   * 允许 `Record<string, unknown>`：**底层包（db / mail 等）不依赖 `@actor/app`**，
+   * 拿不到 `ConfigSchema`/`FieldSpec` 这两个类型，只能声明成宽形状。装配时本来就按 schema 用
+   * （`plugin.config as ConfigSchema`）并在配置加载期做校验，所以这里放宽**不会**让错配置通过 ——
+   * 错配置仍然在启动期被拒。修这个是因为：不放宽的话，用户直接把 `databasePlugin(...)` /
+   * `mailPlugin(...)` 放进 `plugins: []` 会吃到类型错误（examples 接进 typecheck 时实测到）。
+   */
+  config?: ConfigSchema | Record<string, unknown>;
   /**
    * 贡献给内核的能力插件（不透明类型：应用层不暴露内核内部类型）。
    * 内置能力用 packages/app/src/plugins.ts 的包装函数生成。

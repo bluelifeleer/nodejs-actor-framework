@@ -137,17 +137,23 @@ actor migrate                                                 # 不变
 **事实（已核实）**：根 `tsconfig.json` 的 `include` 里没有 `examples/`，所以示例的 `main.ts` / `src/*.ts`
 **不在类型检查矩阵里** —— 也就是说示例里的类型错误只有靠冒烟/e2e **跑起来**才发现。
 
-**试探结果（2026-10 实测）**：把 `examples/**/*.ts` 加进 include 会暴露 **14 处**类型错误、涉及 7 个示例。
-其中两类**不是示例写得松，而是框架类型的真问题**，必须修类型而不是改示例：
+**试探结果（实测，两轮）**：把 `examples/**/*.ts` 加进 include 会暴露 **14 处**类型错误、涉及 7 个示例。
+第一轮修掉了 **8 处**，剩 **6 处**。
 
-1. `examples/app-db/src/app.ts:29` —— `DatabasePluginSpec` **不能赋给** `PluginSpec`：
-   `config: Record<string, unknown>` 与 `ConfigSchema` 不兼容。用户直接把 `dbPlugin(...)` 放进
-   `plugins: []` 就会吃到这个类型错误；
-2. `examples/app-mail/src/app.ts:53` —— `MailPluginSpec` 同样不能赋给 `PluginSpec`（`exactOptionalPropertyTypes`
-   下，`config` 的可选性/形状不匹配）。
+**已修（8 处，改动在框架侧）**：`PluginSpec.config` 从 `ConfigSchema` 放宽为 `ConfigSchema | Record<string, unknown>`。
+根因：`ConfigSchema = { [key: string]: FieldSpec | ConfigSchema }`，而**底层包（db / mail）不依赖 `@actor/app`**，
+拿不到 `ConfigSchema`/`FieldSpec`，只能声明成 `Record<string, unknown>` —— 于是 `DatabasePluginSpec` /
+`MailPluginSpec` 不能赋给 `PluginSpec`，用户直接把 `databasePlugin(...)` / `mailPlugin(...)` 放进 `plugins: []`
+就会吃到类型错误。装配时本来就把 `plugin.config` 当 schema 用（`as ConfigSchema`）并在配置加载期校验，
+所以放宽不会让错配置通过（错配置仍在启动期被拒）。
 
-其余主要是"provider 的 `deps` 是 `Record<string, unknown>`，`config` 用前要显式收窄"这类**已知的边界松散**
-（与脚手架模板里同样的处理方式：在边界显式收窄一次，而不是把 `src/` 放宽）。
+**剩余 6 处（均在示例代码里，分两类）**：
+1. `examples/app-data/src/module.ts` ×3 —— provider 的 `deps` 是 `Record<string, unknown>`，`config` 用前要显式收窄。
+   这是**已知的边界松散**，按脚手架模板的既有做法在边界收窄一次即可（不把 `src/` 放宽）；
+2. `examples/app-plugin/src/greeting-plugin.ts` ×2 与 `examples/app-web/src/module.ts` ×1 ——
+   **看起来是框架类型偏严**：`Route` 不接受 readonly 元组；`RouterSpec`（`defineRouter(...)` 的产物）
+   不能当路由数组用（提示缺 `readonly unknown[]` 的那些成员）。这两处运行时是好的（示例 e2e 通过），
+   所以是**类型与运行时不一致**，要判断是"该放宽 Route/接上 flattenRouter"还是"示例写法不对"。
 
 **计划**：先修 1、2 两处**插件 spec 类型与 `PluginSpec` 的兼容性**（这是框架的问题，会影响所有用户），
 再把 `examples/**/*.ts` 接进 include；接进去之后若仍有少量"边界收窄"类错误，就逐个按模板的既有做法修掉
