@@ -74,7 +74,7 @@ npm run release:check -- --skip-ci   # 只跑打包与一致性检查（本地�
 - **可观测性**：span 生命周期 + `plugins.otlp()`（OTLP/HTTP+JSON 零依赖真实导出）、
   `createLogAdapter()`（桥接 pino/winston/console）。
 - **文档**：零依赖文档站（`npm run docs:build`，含断链门禁与自动 API 参考）、
-  面向使用者的 8 篇指南（每个示例都被测试真跑）、CI 门禁与 GitHub Pages 部署。
+  面向使用者的 8 篇指南（**带 `verify` 标记的示例**都会被测试执行）、CI 门禁与 GitHub Pages 部署。
 
 ### Changed
 

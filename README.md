@@ -1,8 +1,8 @@
 # Actor Framework
 
-Node.js `worker_threads` Actor 框架：OTP 风格监督树、优先级邮箱与背压、重试 + 死信队列、持久化（可插拔后端）、指标与全链路 Trace、Gossip 集群、Pub/Sub、以及对等的 TCP 网关（Protobuf 帧 + 双向 TLS）。
+Node.js `worker_threads` Actor 框架：OTP 风格监督树、每 Actor 单 FIFO 邮箱与背压、重试 + 死信队列、持久化（可插拔后端）、指标与全链路 Trace、Gossip 集群、Pub/Sub、以及对等的 TCP 网关（Protobuf 帧 + 双向 TLS）。
 
-**默认零外部依赖**（仅用 Node 内置模块），要求 **Node.js >= 18**。
+**默认零外部依赖**（仅用 Node 内置模块），要求 **Node.js >= 24**（Node 20/22 起不来）。
 唯一可选依赖是 LevelDB 后端所需的 `classic-level`（`optionalDependencies`，缺失时自动跳过，不影响其它功能）。
 
 ---
@@ -194,6 +194,9 @@ const system = createSystem({
 
 - **不装插件 = 零开销**：Actor 热路径上只有几个 `if (this.system.tracer)` 之类的判断，没有插件时不创建 trace、不建令牌桶、死信留在内存。
 - **同步 API 不变**：`resolve()` 仍是同步的；`cluster` 返回的 `DiscoveredRef` 在首次使用时才连接（真正的连接失败会在 `ask` 上抛出，`tell` 则会发 `remote_tell_failed` 事件）。
+- **监督配额是"整系统共享"的**：窗口内所有顶层 Actor 的崩溃一起计数（与 OTP 的 `max_restarts/max_seconds` 同语义），
+  超过就升级为 `system.stop()`。可用 `createSystem({ supervision: { maxRestarts, withinSeconds } })` 调；
+  需要"每个 Actor 各自记账"请在自己的 supervisor 里做（内核不提供）。
 - **不做优先级邮箱**：Actor 模型是每 Actor 单 FIFO，优先级属于消息队列语义；需要时再作为插件提供（旧运行时的 `PriorityMailbox` 不移植）。
 
 ### 隔离与规模
@@ -203,7 +206,7 @@ const system = createSystem({
 | 进程内轻量 Actor（**默认**） | **~5 KB**（实测 10k = 50MB，spawn 156ms，全量 ask 26ms） | 可行 | 绝大多数业务 Actor |
 | worker 线程 | ~4 MB（实测 200 线程 ≈ 895MB） | ≈ 40 GB，不可行 | CPU 密集 / 需要真隔离 |
 
-因此当前 `Actor` 内核默认跑在进程内，调度器按"每轮 N 个 Actor × 每个 M 条消息"保证公平（一个繁忙 Actor 不会饿死其它 Actor）；worker 隔离将按 Actor 类型可选地接入（见 Roadmap）。
+因此当前 `Actor` 内核默认跑在进程内，调度器按"每轮 N 个 Actor × 每个 M 条消息"保证公平（一个繁忙 Actor 不会饿死其它 Actor）；worker 隔离可按 Actor 类型选用（`isolation: 'worker'`）。
 
 > `actor-main.js` 是一个**演示/运维节点**，它本身只是组合：`createSystem()` + 插件 + Telnet 控制台，不包含任何 Actor 语义。框架公共 API 在 `index.js`；如果你要把框架嵌进自己的服务，直接用 `createSystem()` 即可，不需要这个文件。
 
@@ -400,8 +403,8 @@ ACTOR_AUTH_SECRET=... WSS_TLS=1 CERT=certs/server.crt KEY=certs/server.key \
 ```
 
 ```js
-const { TokenAuthority, tokenFromRequest } = require('nodejs-actor-framework/src/ops/token');
-const { WebSocketServer } = require('nodejs-actor-framework/src/ops/ws-server');
+const { TokenAuthority, tokenFromRequest } = require('nodejs-actor-framework/src/ops/token.ts');
+const { WebSocketServer } = require('nodejs-actor-framework/src/ops/ws-server.ts');
 
 const tokens = new TokenAuthority({ secret: process.env.ACTOR_AUTH_SECRET }); // ≥16 字符，HMAC-SHA256
 const wss = new WebSocketServer({
@@ -425,7 +428,7 @@ wss.on('connection', async (socket, req) => {
 - token 是 `base64url(payload).base64url(hmac)`，带 `exp`、`jti`，支持 `revoke()` 立即踢下线；默认容忍 5s 时钟偏移。
 - 三种携带方式都支持：`?token=`、`Sec-WebSocket-Protocol: bearer.<token>`（浏览器不能自定义 header 时用）、`Authorization: Bearer`。
 - **TLS 默认校验证书**（客户端 `connect()` 也是），自签证书要显式 `tls: { ca }` 或 `--insecure`（仅本地调试）。
-- `src/ops/ws-server.js` 是零依赖的 RFC 6455 实现：文本/二进制、分片、ping/pong、close 握手、`maxPayloadBytes` 上限。不支持 `permessage-deflate`（不压缩）；要更多特性可以换 `ws`，接入层与框架之间只隔一个 `socket.send/on('message')`。
+- `src/ops/ws-server.ts` 是零依赖的 RFC 6455 实现：文本/二进制、分片、ping/pong、close 握手、`maxPayloadBytes` 上限。不支持 `permessage-deflate`（不压缩）；要更多特性可以换 `ws`，接入层与框架之间只隔一个 `socket.send/on('message')`。
 - 明文绑定非回环地址会被拒绝（和 Telnet 控制台同一个尺度）。
 
 #### ② 多节点：房间分片 + 跨节点回信（`examples/game-cluster.js`）
@@ -481,7 +484,7 @@ ws-client ──token──▶ 接入层（WSS + 鉴权 + 一致性哈希选房�
 没有 Prometheus（单机/内网/先用起来）就用进程内告警器 `src/obs/alerting.js`：
 
 ```js
-const { AlertManager, consoleNotifier } = require('nodejs-actor-framework/src/obs/alerting');
+const { AlertManager, consoleNotifier } = require('nodejs-actor-framework/src/obs/alerting.ts');
 const alerts = new AlertManager({
   source: { url: 'http://127.0.0.1:9464/metrics' },   // 或 { snapshot: () => renderFamilies(exporter.snapshot()) }
   rules: [
@@ -501,7 +504,9 @@ await alerts.start();
 
 ## 功能状态
 
-下表是**实测状态**，每一项都有 `test/` 下的自动化用例覆盖（共 279 个用例，`npm test`）：
+下表是**实测状态**，保留的每一项都有 `test/` 下的自动化用例覆盖
+（共 620+ 个用例，`npm test`）。**已移除/未实现的能力不在此表**（见下方"不做"一节）：
+
 
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
@@ -522,14 +527,12 @@ await alerts.start();
 | 监督树 | ✅ | `one_for_one` / `rest_for_one` / `one_for_all` 三种策略真实生效 |
 | 故障自动重启 | ✅ | worker 异常退出 → `handleChildCrash()` → 按策略重启（`crash` 命令可验证） |
 | 重启强度 | ✅ | 窗口内重启超限 → **升级给父 Actor**（`EscalationError`）；根监督者无处升级 → 停止系统。这是 OTP 语义，旧运行时的"熔断 + 冷却自愈"已移除（它会让超限的 Actor 悄悄复活） |
-| 优先级邮箱 | ✅ | HIGH(0) > NORMAL(1) > LOW(2)；非法优先级归一化，不再导致崩溃 |
 | 背压 | ✅ | 邮箱有硬上限，超限回 `mailbox_full` 并计入 `dropped`，不入库 |
 | 消息重试 + 退避 | ✅ | 逐条重试，指数退避，失败归因到真正失败的那条消息 |
 | 死信队列 DLQ | ✅ | 重试耗尽入 DLQ；行级容错解析；文件有上限、自动裁剪最旧记录 |
 | 持久化（可插拔） | ✅ | `file`（默认，无依赖）/ `memory`（测试）/ `level`（可选 LevelDB） |
 | 持久化语义 | ✅ | 入队 append、终态 ack（**ack 也持久化**）；只有未确认的消息会重放 |
 | 日志压缩 | ✅ | 追加式日志 + 死记录占比超阈值时原子重写（compact） |
-| 批量消费 | ✅ | 数量阈值 / 超时双触发；可选 `onBatch` 契约，批次失败时逐条兜底 |
 | 令牌桶限流 | ✅ | 每 Actor 独立令牌桶；限流时不重排邮箱、不重复计数 |
 | 性能指标 | ✅ | worker 增量回传主进程聚合，`metrics dump` 返回真实数据 |
 | 全链路 Trace | ✅ | `traceId`/`spanId`/`parentSpanId`，发布=父 span、投递=子 span，跨网关透传，可采样 |
@@ -545,7 +548,6 @@ await alerts.start();
 | **存储迁移工具** | ✅ | `tools/migrate-store.js`：`file` → `level`，逐条校验、可重复执行、源文件只重命名不删除 |
 | TCP 网关 | ✅ | 请求/响应关联、连接池、抗超大帧、握手机制 |
 | Telnet 调试控制台 | ✅ | 行缓冲、可选 Token 鉴权、输入校验、连接数上限 |
-| Monitor 监控 | ✅ | 被监控 Actor 死亡时通知监控者（含 `reason`） |
 
 ---
 
@@ -657,7 +659,6 @@ ACTOR_GATEWAY_HOST=10.0.0.1 ACTOR_GOSSIP_HOST=10.0.0.1 node actor-main.js
 | `ACTOR_LOG_DIR` | 同 `ACTOR_DATA_DIR` | 日志目录 |
 | `ACTOR_NODE_ID` | `<hostname>-<gossipPort>` | 集群内节点标识（唯一；TLS 下需等于证书 CN） |
 | `ACTOR_BOOT_ACTORS` | `player_001` | 启动创建的 Actor，逗号分隔；设为空表示不创建 |
-| `ACTOR_REGISTRY_PRUNE_MS` | `3000` | 远端注册条目过期检查周期 |
 
 **控制台**
 
@@ -704,7 +705,6 @@ ACTOR_GATEWAY_HOST=10.0.0.1 ACTOR_GOSSIP_HOST=10.0.0.1 node actor-main.js
 | `ACTOR_STORE_LEVEL_PATH` | `<data>/level` | LevelDB 根目录 |
 | `ACTOR_STORE_COMPACT_BYTES` | 256KB | file 后端压缩触发阈值 |
 | `ACTOR_MAX_MAILBOX` | `1000` | 邮箱上限（背压） |
-| `ACTOR_BATCH_MAX` / `_TIMEOUT_MS` | `5` / `200` | 批量双触发阈值 |
 | `ACTOR_MAX_RETRY` / `_RETRY_BACKOFF_MS` | `3` / `50` | 重试次数与退避基数 |
 | `ACTOR_BUCKET_CAPACITY` / `_RATE` | `100` / `50` | 令牌桶容量与速率 |
 | `ACTOR_SUP_STRATEGY` / `_MAX_RESTARTS` / `_WITHIN_SECONDS` | `one_for_one` / `3` / `5` | 监督策略与重启强度（超限则升级） |
@@ -712,7 +712,6 @@ ACTOR_GATEWAY_HOST=10.0.0.1 ACTOR_GOSSIP_HOST=10.0.0.1 node actor-main.js
 | `ENABLE_HOT_RELOAD` | `0` | 已忽略：框架不做运行时编译代码，启动时会给出 warning |
 | `ACTOR_PERSISTENCE_MODE` | `none` | 启动 Actor 的持久化：`none` / `snapshot` / `events` / `mailbox` |
 | `ACTOR_PERSISTENCE_DIR` | `./data/actors` | `snapshot`/`events` 的存放目录 |
-| `ACTOR_HOT_RELOAD_MODULE` | 空 | 更安全的替代：从受审查模块加载 handler |
 
 ### 集群示例（Protobuf + mTLS + LevelDB）
 
@@ -759,7 +758,6 @@ curl -s localhost:9464/metrics | head
 | `actor_cluster_actors` / `actor_cluster_remote_actors` | gauge | 本节点 / 远端 Actor 数 |
 | `actor_supervisor_restarts_in_window{supervisor}` / `actor_supervisor_escalations_total` | gauge / counter | 监督树状态 |
 | `actor_cluster_actors` / `_remote_actors` / `_peers` / `actor_isolated_actors` | gauge | 集群与隔离视图 |
-| `actor_pending_requests{kind}` | gauge | 在途请求/控制调用 |
 | `actor_store_info{backend}` | gauge | 当前持久化后端 |
 | `actor_process_resident_memory_bytes` / `_heap_used_bytes` / `_uptime_seconds` | gauge | 进程指标 |
 
@@ -824,7 +822,7 @@ exit
 ## 测试
 
 ```bash
-npm test                    # 279 个用例（Node 内置 node:test，无运行时依赖）
+npm test                    # 620+ 个用例（Node 内置 node:test，无运行时依赖）
 npm run typecheck           # tsc 校验 index.d.ts 与公开 API 的类型
 npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
 ```
@@ -833,9 +831,9 @@ npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
 
 | 项 | 状态 |
 | --- | --- |
-| `main` / `exports` / `types` | `index.js` / `{".": {types, require, default}}` / `index.d.ts` |
-| 类型声明 | 手写 `index.d.ts`，由 `test/types/public-api.ts` 做编译期验证（`npm run typecheck`） |
-| `files` 白名单 | 30 项，**测试与证书不进包**（`npm pack` 实测：51 个文件、101KB，0 个 `.key`） |
+| `main` / `exports` / `types` | `src/index.ts`（CJS + 类型剥离，另附 `index.mjs` ESM 包装）/ `{".": {types, require, default}}` / `index.d.ts` |
+| 类型声明 | 手写 `index.d.ts`，由 `test/types/*.mts` 做**编译期验证**：`npm run typecheck` 跑两份配置 —— 源码用 `tsconfig.json`，声明面用 `tsconfig.types.json`（把包名映射到 `index.d.ts`，否则实现会优先被解析、声明永远不被检查） |
+| `files` 白名单 | `["src", "index.mjs"]`，**测试与证书不进包**（`npm pack --dry-run` 实测：60 项、0 个 `.key`） |
 | 运行时依赖 | 0（`classic-level` 为 optionalDependencies） |
 
 覆盖重点：
@@ -845,7 +843,8 @@ npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
   - 单条消息失败进入重试/DLQ，而不是打死 worker 或主进程；
   - 崩溃重启只重放未确认消息，且 **ack 跨重启保持有效**（不会重复投递）；
   - 优先级越界、非数字伤害值不再导致崩溃或 `NaN` 状态；
-  - 热更新箭头函数能拿到 `this`，非法代码被拒绝且不影响运行中的 Actor；
+  - （已随旧运行时删除的用例：优先级邮箱、`supervisor.js`、热更新、队列式 Actor 的批量/DLQ ——
+    它们不再出现在本清单里，见下方"不做"一节。）
   - worker 未捕获异常不会打死主进程，且 Actor 会被重启；
   - 指标真正从 worker 传到主进程（`metrics dump` 不再是 `{}`）；
   - 存活节点的远端 Actor 不会被 TTL 误剔除（负向验证：去掉修复后该用例失败）。
@@ -881,7 +880,6 @@ npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
 - OCSP 在线吊销校验
 - 迁移工具支持反向（`level` → `file`）与在线迁移（业务不停机）
 - 按负载调度 `spawn` 到低负载节点
-- 跟踪（Trace）导出到 OTLP
 
 ## License
 
@@ -1005,6 +1003,6 @@ npm run release:check          # = npm run ci（typecheck + 全量测试 + 文�
 npm run release:check -- --skip-ci   # 只跑打包与一致性检查（本地快速自检）
 ```
 
-它检查的是"**发了会不会出事**"：工作区测试矩阵（有测试的包都要进根 `npm test`）、`npm pack` 内容
+它检查的是"**发了会不会出事**"（共 6 项）：工作区测试矩阵（有测试的包都要进根 `npm test`）、`npm pack` 内容
 （测试/凭据/数据目录不能进 tarball）、CHANGELOG 与版本一致（**没切版本就不许发**）、各包 `engines` 一致、
-工作区干净。版本与弃用策略见 [CHANGELOG.md](CHANGELOG.md) 开头那一节（含当前真实的发布状态）。
+内核公开面与类型覆盖、工作区干净。版本与弃用策略见 [CHANGELOG.md](CHANGELOG.md) 开头那一节（含当前真实的发布状态）。

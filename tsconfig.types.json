@@ -1,0 +1,16 @@
+{
+  // 声明面编译门禁（审计："README 宣称 test/types/public-api.ts 做编译期验证，而它没被任何 tsconfig 引用"）。
+  //
+  // 为什么单独一个 tsconfig：`test/types/*.mts` 要验证的是**手写的 `index.d.ts`**，
+  // 而在主 tsconfig 里 `nodejs-actor-framework` 会解析到 `packages/core/src/index.ts`（实现），
+  // 于是 `.d.ts` 永远不被检查。这里用 paths 直接把包名指到声明文件，让声明面成为被验证的对象。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "nodejs-actor-framework": ["./packages/core/src/index.d.ts"],
+      "nodejs-actor-framework/*": ["./packages/core/src/*"]
+    },
+  },
+  "include": ["test/types/**/*.mts"]
+}

@@ -306,3 +306,95 @@ export function checkDeclarationDrift({ root, runtimeNames, declarationFile = KE
 
   return { ok: findings.length === 0, findings, compared: [...runtimeNames].filter((n) => comparable.has(declared.get(n)?.kind)).length };
 }
+
+/**
+ * 文档里用到的**公开成员**（`ctx.clock`、`cluster.drain()`、`system.persistenceCapabilities()` …）。
+ *
+ * 为什么需要它：公开面门禁原先只比"顶层导出名 + 函数参数个数"，所以文档大量使用的
+ * `ctx.sleep` / `spawn(def, { rateLimit })` / `cluster.drain()` 这些**成员**完全漏在
+ * `index.d.ts` 之外，而使用者照文档写 TS 会直接报类型错误（审计的"文档承诺一致性 §7"）。
+ *
+ * 抽取方式（机械、可复核）：在 README 与 docs/**\/*.md 里找
+ * `(ctx|system|cluster|app|ref|peer|this.<已知类型>).<成员>` 形式的用法，
+ * 减去显式声明的"内部成员"（INTERNAL_MEMBERS，每条都要写理由），
+ * 剩下的每个成员名都必须能在 `packages/core/src/index.d.ts` 里找到声明。
+ */
+export const DOC_RECEIVERS = ['ctx', 'system', 'cluster', 'app', 'pubsub'];
+
+/**
+ * 文档里出现、但属于**应用层/Web 层**而不是内核声明面的成员。
+ *
+ * 说明：`@actor/app` 与 `@actor/web` 目前**不发布 .d.ts**（只有内核有 `index.d.ts`），
+ * 所以这些成员无法用本门禁核对。列在这里是为了让"为什么没查它"是**显式**的，
+ * 而不是被静默跳过（这也是审计里"文档在用、公开面没有"那条的一部分）。
+ */
+export const APP_LAYER_MEMBERS = new Set([
+  'actor',      // guide 03：@actor/web 的 ctx.actor(name)（Web 请求上下文，不是内核 ActorContext）
+  'repository', // guide 04：@actor/web 的 ctx.repository(name)
+  'game',       // README：应用自己注册到 system 上的服务名
+]);
+
+/** 明确"文档里出现但**不属于**公开声明面"的成员，必须逐条给理由。 */
+export const INTERNAL_MEMBERS = new Set([
+  // 内核内部结构（文档在讲实现细节时才提到）
+  'cells', 'peers', 'installed', 'scheduler', 'rootSupervisor', 'mailbox',
+  // 插件之间互相写的字段
+  'metricsExporter', 'deadLetterStore', 'rateLimitPolicy', 'tracer',
+  // 文档里作为"反例/边界"提到的
+  'index', 'pending',
+]);
+
+/**
+ * 只从**围栏代码块**里抽成员用法。
+ *
+ * 第一版我在整篇文档（含散文与 JSON 示例）上抽，结果噪声压过了信号：`app.json`、`req.body`、
+ * `repo.get` 这些都会命中，设计文档里的未来 API（`ctx.stash`、`ctx.stateMachine`）也被算成"缺声明"。
+ * 代码块 + 只扫面向使用者的文档（README/guide/quickstart），才让这条门禁有意义。
+ */
+export function extractMembersFromCodeBlocks(markdown) {
+  const text = [];
+  for (const match of markdown.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) text.push(match[1]);
+  return extractDocumentedMembers(text.join('\n'));
+}
+
+/** 从文本里抽 `receiver.member` 用法。 */
+export function extractDocumentedMembers(text) {
+  const found = new Map(); // member -> [文件:行]（调用方自己填文件信息）
+  for (const receiver of DOC_RECEIVERS) {
+    // 前面不能是词字符、`.`、`/`、`-`：否则 `packages/app/test`、`examples/app-data` 这类**路径**
+    // 会被当成 `app.test` / `app.data` 用法（第一版就是这么误报的）。
+    const re = new RegExp(`(?<![\\w./-])${receiver}\\.([a-zA-Z_][a-zA-Z0-9_]*)`, 'g');
+    for (const match of text.matchAll(re)) {
+      const member = match[1];
+      if (INTERNAL_MEMBERS.has(member) || APP_LAYER_MEMBERS.has(member)) continue;
+      found.set(member, (found.get(member) ?? 0) + 1);
+    }
+  }
+  return [...found.keys()].sort();
+}
+
+/** 声明文本里出现过的成员名（`foo?:`、`foo(`、`foo:` 都算）。 */
+export function declaredMemberNames(declarationText) {
+  const names = new Set();
+  // `<` 也要算：泛型方法（`spawn<M, R>(...)`）的第一版没被认出来，于是 `ctx.spawn` 被误报成"缺声明"
+  for (const match of declarationText.matchAll(/^\s*(?:readonly\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*[?:(<]/gm)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+/**
+ * 返回"文档在用、但公开类型声明里没有"的成员。
+ * 结果为空 = 文档里出现的公开成员都有类型声明。
+ */
+export function checkDocumentedMembers(docs, declarationText) {
+  const declared = declaredMemberNames(declarationText);
+  const missing = [];
+  for (const doc of docs) {
+    const members = doc.codeOnly === false ? extractDocumentedMembers(doc.text) : extractMembersFromCodeBlocks(doc.text);
+    for (const member of members) {
+      if (!declared.has(member)) missing.push({ member, file: doc.file });
+    }
+  }
+  return missing;
+}

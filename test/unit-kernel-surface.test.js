@@ -6,7 +6,9 @@ import { pathToFileURL } from 'node:url';
 
 import {
   ROOT,
+  KERNEL_DECLARATION_FILE,
   checkDeclarationDrift,
+  checkDocumentedMembers,
   checkPublicSurface,
   extractFromDeclarationFile,
   kernelUntypedFiles,
@@ -103,4 +105,30 @@ test('kernel surface: 漂移门禁能证伪 —— 声明里少写一个参数�
   } finally {
     fs.rmSync(broken, { recursive: true, force: true });
   }
+});
+
+test('kernel surface: 用户文档代码块里用到的内核成员都必须在 index.d.ts 里有声明', () => {
+  const files = [
+    'README.md',
+    'docs/quickstart.md',
+    ...fs
+      .readdirSync(path.join(ROOT, 'docs', 'guide'))
+      .filter((name) => name.endsWith('.md'))
+      .map((name) => `docs/guide/${name}`),
+  ];
+  const docs = files.map((file) => ({ file, text: fs.readFileSync(path.join(ROOT, file), 'utf8') }));
+  const declaration = fs.readFileSync(path.join(ROOT, KERNEL_DECLARATION_FILE), 'utf8');
+
+  const missing = checkDocumentedMembers(docs, declaration);
+  assert.deepStrictEqual(
+    missing,
+    [],
+    `这些成员在文档里被使用者照着写，却没有类型声明：\n${missing.map((m) => `  ${m.member}  ← ${m.file}`).join('\n')}`,
+  );
+
+  // 可证伪：把 ctx.sleep 的声明删掉，门禁必须报出来
+  const tampered = declaration.replace(/\n\s*sleep\(ms: number\): Promise<void>;/, '');
+  assert.notStrictEqual(tampered, declaration, '证伪用的锚点没匹配上（测试自己失效了）');
+  const caught = checkDocumentedMembers(docs, tampered).map((m) => m.member);
+  assert.ok(caught.includes('sleep'), `删掉声明后门禁没有抓到：${JSON.stringify(caught)}`);
 });

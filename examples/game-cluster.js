@@ -42,6 +42,19 @@ const TLS_CERT = process.env.CERT || path.join(import.meta.dirname, '..', 'packa
 const TLS_KEY = process.env.KEY || path.join(import.meta.dirname, '..', 'packages', 'core', 'test', 'fixtures', 'tls', 'node-1.key');
 const USE_TLS = process.env.WSS_TLS !== '0'; // 默认开 WSS（把 WSS_TLS=0 关掉）
 
+/**
+ * 每个节点的指标端口。
+ *
+ * 默认 9464+i（手动跑时好记）；但 `METRICS_PORT=0` 表示"每个节点各绑一个临时端口" ——
+ * 原来的 `Number(env || 9464) + i - 1` 在传 0 时会去绑特权端口 1，直接 EACCES。
+ */
+function metricsPortFor(index) {
+  const raw = process.env.METRICS_PORT;
+  const base = raw === undefined || raw === '' ? 9464 : Number(raw);
+  if (base === 0) return 0;
+  return base + index;
+}
+
 async function main() {
   const nodes = [];
   const gossipSeeds = [];
@@ -50,7 +63,7 @@ async function main() {
     const name = `game-${i}`;
     const system = createSystem({
       name,
-      persistenceDir: process.env.DATA_DIR ? path.join(process.env.DATA_DIR, name) : undefined,
+      persistenceDir: path.join(process.env.DATA_DIR || './data', name),
       shutdownTimeoutMs: 3000,
       plugins: [
         plugins.cluster({
@@ -63,7 +76,7 @@ async function main() {
         plugins.tracing(),
         plugins.deadLetters(),
         plugins.rateLimit({ capacity: 100, rate: 50 }),
-        plugins.metrics({ exporter: { enabled: true, host: '127.0.0.1', port: Number(process.env.METRICS_PORT || 9464) + i - 1 } }),
+        plugins.metrics({ exporter: { enabled: true, host: '127.0.0.1', port: metricsPortFor(i) } }),
       ],
     });
     await system.init();

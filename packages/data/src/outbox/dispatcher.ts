@@ -218,6 +218,8 @@ export function createOutboxDispatcher(options: OutboxDispatcherOptions): Outbox
 /* -------------------------------------------------------------------------- */
 
 export interface DedupeSet {
+  /** 撤销一条去重标记（审计：handler 失败必须回滚，否则重试会被永久判成 duplicate）。 */
+  unmark?(deliveryId: string): Promise<void>;
   /** `true` = 第一次见到（应当处理）；`false` = 重复投递（跳过）。 */
   mark(deliveryId: string): Promise<boolean>;
   seen(deliveryId: string): Promise<boolean>;
@@ -245,6 +247,9 @@ export function createDedupeSet(options: { repository: Repository<Record<string,
     async seen(deliveryId) {
       return (await repo.findById(deliveryId)) !== null;
     },
+    async unmark(deliveryId) {
+      await repo.delete(deliveryId);
+    },
   };
 }
 
@@ -264,7 +269,17 @@ export function createIdempotentConsumer(
   return async (entry) => {
     const first = await options.dedupe.mark(entry.deliveryId);
     if (!first) return 'duplicate';
-    await options.handle(entry);
+    try {
+      await options.handle(entry);
+    } catch (err) {
+      /**
+       * 审计（文档承诺一致性那一轮的第 8 条）：原来是"先标记、后处理"，handler 抛错**不回滚** ——
+       * 重试时 `mark` 返回 false，这条消息被永久判成 duplicate（"恰好一次"实际退化成"至多一次"，
+       * 也就是**丢消息**）。投影 runner 一直是对的（它在 catch 里删掉去重记录），这里对齐它。
+       */
+      await options.dedupe.unmark?.(entry.deliveryId).catch(() => undefined);
+      throw err;
+    }
     return 'handled';
   };
 }

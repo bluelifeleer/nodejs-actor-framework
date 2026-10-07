@@ -365,7 +365,7 @@ function makeSession(socket) {
 async function main() {
   const system = createSystem({
     name: process.env.NODE_ID || 'game-node-1',
-    persistenceDir: process.env.DATA_DIR, // 默认 ./data
+    persistenceDir: process.env.DATA_DIR || './data', // 默认 ./data（必须是真默认：否则 spawn 时直接抛错）
     shutdownTimeoutMs: 3000,
     plugins: [
       plugins.tracing(),                             // 一条请求链路一个 traceId，方便排查

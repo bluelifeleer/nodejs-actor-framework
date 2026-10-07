@@ -1,8 +1,9 @@
 /**
  * Type definitions for nodejs-actor-framework.
  *
- * The public surface is `index.js`: Actor, createSystem, ActorRef and the
- * adapters. Anything under lib/ is internal.
+ * The public surface is `src/index.ts` (CJS + type stripping; `index.mjs` is the
+ * ESM wrapper): Actor, createSystem, ActorRef and the adapters. Everything else
+ * under `src/` is internal.
  */
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,10 @@ export interface ActorContext<S = unknown> {
   /** Store the current state (persistence: 'snapshot'). */
   saveSnapshot(): Promise<S | undefined>;
   log(message: string, meta?: Record<string, unknown>): void;
+  /** 可注入时钟（M5）：定时逻辑走它，测试里可以用虚拟时钟瞬时推进。 */
+  readonly clock: Clock;
+  /** `await ctx.sleep(ms)`：走 `ctx.clock`，虚拟时钟下由 `advance()` 唤醒。 */
+  sleep(ms: number): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +142,12 @@ export interface ActorOptions {
   askTimeoutMs?: number;
   /** Stop children when this actor stops (default true). */
   stopChildrenOnStop?: boolean;
+  /** 令牌桶限流（M4）：超出容量时 tell 返回 false、ask 直接失败。 */
+  rateLimit?: { capacity?: number; rate?: number } | null;
+  /** 声明该 Actor 不可跨节点迁移（集群离场时**明确失败**而不是静默丢状态）。 */
+  transferable?: boolean;
+  /** 父 Actor 的 id（一般不用直接写：`ctx.spawn` 会自动带上）。 */
+  parent?: ActorId | null;
 }
 
 export interface PersistenceSpec {
@@ -399,7 +410,20 @@ export class ActorSystem {
   listPeers(): PeerSummary[];
 
   stats(): SystemStats;
-  stop(): Promise<void>;
+  /**
+   * 当前持久化后端如实上报的能力（README 的"后端到底能保证什么"就是查它）。
+   * 注意 `conditionalAppend`/`conditionalUpdate` 的 `'in-process'` 是**进程内**保证。
+   */
+  persistenceCapabilities(): PersistenceCapabilities;
+  /** 所有权服务（集群插件装上；应用层可写 `recreate` 钩子）。 */
+  ownership: OwnershipService;
+  /** 对等体数量上限（审计 F7），默认 128。 */
+  readonly maxPeers: number;
+  /**
+   * 停机预算：传给每个 Actor 的 `stop(timeoutMs)` 与 drain。
+   * 审计 F12 之前这个参数被**静默忽略**。
+   */
+  stop(options?: { timeoutMs?: number }): Promise<void>;
 
   on(event: 'actor_registered' | 'actor_started' | 'actor_stopped', listener: (ref: ActorRef) => void): this;
   on(event: 'system_failure', listener: (error: Error, ref?: ActorRef) => void): this;
@@ -435,6 +459,14 @@ export interface ClusterOptions {
   codec?: string;
   /** Port to advertise when the gateway is not (yet) listening. */
   gatewayPort?: number;
+  /** 分片数（一致性哈希环的大小）。 */
+  shardCount?: number;
+  /** 写操作是否要求带 epoch（默认 true）。 */
+  requireFencing?: boolean;
+  /** 是否要求多数派才可写（默认 false）。 */
+  enforceQuorum?: boolean;
+  /** "把某条 Actor 在原定义上重建"的钩子（接管/单例重建用）。 */
+  recreate?: (path: string) => { definition: unknown; options?: Record<string, unknown> } | null;
 }
 
 /** A remote actor found through gossip; the connection is made on first use. */
@@ -443,6 +475,19 @@ export interface DiscoveredRef<M = unknown, R = unknown> extends ActorRef<M, R> 
   readonly host: string;
   readonly gatewayPort: number;
   readonly nodeId: string | null;
+}
+
+export interface OwnershipService {
+  readonly nodeId: string | null;
+  readonly shardCount: number;
+  ownerOf(shard: number): string | null;
+  ownsShard(shard: number): boolean;
+  isMember(nodeId: string): boolean;
+  updateRing(peers: string[]): void;
+  ring(): unknown;
+  stats(): unknown;
+  /** 重建钩子（应用层装上；测试与嵌入式也会用）。 */
+  recreate?: (path: string) => { definition: unknown; options?: Record<string, unknown> } | null;
 }
 
 export interface ClusterService {
@@ -454,6 +499,28 @@ export interface ClusterService {
   remoteActors(): string[];
   resolveRemote<M = unknown, R = unknown>(path: string): DiscoveredRef<M, R> | null;
   waitFor(path: string, timeoutMs?: number): Promise<{ host: string; gatewayPort: number; nodeId: string }>;
+  // --- 治理（M4）----------------------------------------------------------
+  /** 优雅离场：冻结 → 宣布离场 → 交接 → 返回统计。 */
+  drain(options?: { timeoutMs?: number; stopActors?: boolean }): Promise<Record<string, unknown>>;
+  /** 写屏障：要求 epoch 时，缺 epoch 的写在这里被拒。 */
+  assertWritable(): void;
+  /** 当前的 fencing 统计。 */
+  fencing(): unknown;
+  /** 所有权/接管/单例/多数派能否写入等汇总（一处读全）。 */
+  metrics(): unknown;
+  /** 多数派状态。 */
+  quorum(): unknown;
+  /** 单例列表。 */
+  singletons(): string[];
+  /** 按定义起一个全集群唯一的 Actor。 */
+  spawnSingleton(
+    definition: ActorDefinitionInput | string,
+    options?: ActorOptions,
+  ): Promise<ActorRef | null>;
+  /** 某个 Actor 的 shard 当前归谁。 */
+  ownerOfActor(path: string): string | null;
+  /** 所有权服务的引用（与 `system.ownership` 同一个）。 */
+  readonly ownership: OwnershipService;
 }
 
 export interface PubSubService {

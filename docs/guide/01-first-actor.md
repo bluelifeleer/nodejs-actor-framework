@@ -99,7 +99,7 @@ console.log('ok');
 
 ## 子 Actor 与监督（一句话版）
 
-`system.spawn(def, { parent: 'someId' })` 建立父子关系：默认 `ONE_FOR_ONE`（子崩了只重启子），
+`ctx.spawn(def)` 建立父子关系（`system.spawn` 起的都是顶层 Actor，没有 `parent` 选项）：默认 `ONE_FOR_ONE`（子崩了只重启子），
 可选 `ONE_FOR_ALL` / `REST_FOR_ONE`（见内核导出的 `RestartStrategy`）。崩溃重启与 mailbox 溢出的
 完整语义在 [设计文档 01](../design/01-actor-core-standalone.md)；指南这里只讲"你要写什么代码"。
 

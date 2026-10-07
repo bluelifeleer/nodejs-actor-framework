@@ -120,7 +120,7 @@ console.log('ok');
 2. **断言可观察行为**，不要断言内部字段：能观察到的是 `ask` 的返回值、事件流长度、快照内容、
    HTTP 状态码、`metrics()` 计数——这些才是契约。
 3. **等异步收敛要"有上限的轮询"**（见 [集群指南](./05-cluster.md) 里的 `waitFor` 写法）。
-   注意本项目测试工具的选项名是 `{ timeout, interval }`——写错名字会被**静默忽略**（真踩过）。
+   注意本仓库**内部**测试 helper（`packages/core/test/helpers.js`，不是 `@actor/testkit` 的公开 API）的选项名是 `{ timeout, interval }`——写错名字会被**静默忽略**（真踩过）。
 
 ## 虚拟时钟：把"等一小时"变成 0 真实毫秒
 
@@ -183,4 +183,4 @@ console.log('ok');
 事件、投递器、投影的**轮询**也接了时钟：`createOutboxDispatcher({ clock })` /
 `createProjectionRunner({ clock })` 注入虚拟时钟后，`advance(1000)` 就能触发一轮，不用 `await sleep(1000)`。
 
-> 还想要什么：探针（记录消息/回复）与故障注入（按次数失败/延迟/丢弃）在 M5 计划里（`@actor/testkit` 的下一步）。
+> 还想要什么：探针（记录消息/回复）与故障注入（按次数失败/延迟/丢弃）已经交付（`@actor/testkit` 的 `probe`/`faults`）。

@@ -3,7 +3,7 @@
 /**
  * 告警示例：把框架自带的 /metrics 变成可执行的告警。
  *
- *   node examples/alerts.js
+ *   node examples/alerts.mjs
  *
  * 两种接法（README 里也写了）：
  *   1. 有 Prometheus：直接用 examples/prometheus/alerts.yml 里的规则，本文件不需要。
@@ -16,8 +16,8 @@
  */
 
 import { createSystem, plugins } from 'nodejs-actor-framework';   // 具名导入 CJS 包（需 lexer 可分析）
-import { AlertManager, consoleNotifier, defaultGameRules, webhookNotifier } from '../packages/core/src/obs/alerting.js';
-import MetricsExporter from '../packages/core/src/obs/metrics-exporter.js';
+import { AlertManager, consoleNotifier, defaultGameRules, webhookNotifier } from '../packages/core/src/obs/alerting.ts';
+import MetricsExporter from '../packages/core/src/obs/metrics-exporter.ts';
 
 const { renderFamilies } = MetricsExporter;
 

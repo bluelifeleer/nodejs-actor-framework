@@ -2,8 +2,8 @@
   // 严格校验配置：编辑器与 npm run typecheck 共用同一份，避免"CI 绿、编辑器满屏红"。
   // 尚未补齐类型标注的文件带 `@ts-nocheck` 显式标记（见 docs/design/next-steps.md §3），
   // 补完一个就删一个标记，该文件随即进入严格检查。
-  // test/types/** 暂未纳入：它测的是 .d.ts 声明面，而源码同名 .ts 实现现在优先被解析到；
-  // 等实现补齐类型后（.d.ts 退役）再收回，见 docs/design/next-steps.md §3。
+  // 声明面（test/types/**）由 tsconfig.types.json 单独验证：那里把包名映射到 index.d.ts，
+  // 否则源码里的 .ts 实现会优先被解析到，手写声明永远不被检查（见 npm run typecheck）。
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
