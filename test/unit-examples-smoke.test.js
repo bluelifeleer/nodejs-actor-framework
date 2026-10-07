@@ -115,3 +115,15 @@ test('examples: game-cluster 能启动（多节点 + WSS）', async () => {
   assert.match(result.stdout, /接入层/, `game-cluster 没起来：\n${result.stdout.slice(0, 400)}`);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('examples: app-web 能启动 HTTP 并优雅停机', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-app-web-'));
+  const result = await runExample(['examples/app-web/main.ts'], {
+    env: { DATA_DIR: dir },
+    readyMs: 6000,
+  });
+  assertNoCrash('examples/app-web', result);
+  assert.match(result.stdout, /listening on http:\/\//, `app-web 没起来：\n${result.stdout.slice(0, 300)}`);
+  assert.match(result.stdout, /stopped gracefully/, 'app-web 没有走优雅停机');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

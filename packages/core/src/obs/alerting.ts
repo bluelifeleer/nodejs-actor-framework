@@ -52,6 +52,62 @@ export interface WebhookOptions {
   name?: string;
 }
 
+/** 解析后的 Prometheus 文本：类型/帮助/样本（内部结构，之前是 `any`）。 */
+interface ParsedMetrics {
+  types: Record<string, string>;
+  help: Record<string, string>;
+  samples: Array<{ name: string; labels: Record<string, string>; value: number }>;
+  /** 解析时刻（rate/increase 用）；解析器会附上它。 */
+  _now?: number;
+}
+
+/** 一条告警规则（外部传入，字段可选，会在构造时归一化）。 */
+interface AlertRuleInput {
+  name?: string;
+  metric?: string;
+  condition?: string;
+  threshold?: unknown;
+  forDuration?: number;
+  severity?: string;
+  labels?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+/** 构造时**归一化后**的规则：`name`/`metric`/`condition` 必存在（构造时校验/补默认）。 */
+interface AlertRule {
+  name: string;
+  metric: string;
+  condition: string;
+  /** 归一化后一定是数字：非数字阈值被转成 NaN（旧行为是"比较恒为 false"）。 */
+  threshold: number;
+  severity: string;
+  forDuration?: number;
+  labels?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+/** 通知器（console / webhook 都实现这个形状）。 */
+interface Notifier {
+  send(event: AlertEvent): void | Promise<void>;
+}
+
+interface AlertEvent {
+  status: string;
+  rule: {
+    name: string;
+    severity?: string;
+    metric?: string;
+    condition?: string;
+    threshold?: number;
+    summary?: string;
+  };
+  severity?: string;
+  value?: number | null;
+  at?: number;
+  summary?: string;
+  [key: string]: unknown;
+}
+
 export interface AlertManagerOptions {
   source?: { url?: string; snapshot?: () => unknown };
   rules?: Array<Record<string, unknown>>;
@@ -101,7 +157,7 @@ function parsePrometheusText(text: string) {
 }
 
 /** Sum samples of a metric, optionally filtered by exact label matches. */
-function sumSamples(parsed: any, metric: string, labelFilter: Record<string, string> | null = null) {
+function sumSamples(parsed: ParsedMetrics, metric: string, labelFilter: Record<string, string> | null = null) {
   let total = 0;
   let found = false;
   for (const sample of parsed.samples) {
@@ -144,7 +200,7 @@ const COMPARATORS = {
  *
  * @returns {{value:number|null, ok:boolean}}
  */
-function evaluateRule(rule: any, parsed: any, previous: any) {
+function evaluateRule(rule: AlertRule, parsed: ParsedMetrics, previous: AlertEvent | null) {
   const labelFilter = rule.labels || null;
   const metricName = rule.metric;
   const isCounter = parsed.types[metricName] === 'counter';
@@ -160,17 +216,20 @@ function evaluateRule(rule: any, parsed: any, previous: any) {
 
   if (rule.condition.startsWith('rate') || rule.condition.startsWith('increase')) {
     if (!isCounter) return { value: null, ok: false };
-    const before = previous ? previous.value : null;
+    const before = previous && typeof previous.value === 'number' ? previous.value : null;
     let delta = before === null ? 0 : value - before;
     if (delta < 0) delta = 0; // counter reset
-    const elapsedMs = previous ? Math.max(1, parsed._now - previous.at) : 0;
+    const elapsedMs =
+      previous && typeof previous.at === 'number' && typeof parsed._now === 'number'
+        ? Math.max(1, parsed._now - previous.at)
+        : 0;
     value = rule.condition.startsWith('rate') ? (delta / elapsedMs) * 1000 : delta;
   }
 
   return { value, ok: compare(value, rule.threshold) };
 }
 
-function parseDuration(value: string) {
+function parseDuration(value: unknown) {
   if (typeof value === 'number') return value;
   if (!value) return 0;
   const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(String(value).trim());
@@ -189,7 +248,7 @@ function consoleNotifier(options: NotifierOptions = {}) {
   const log = options.log || ((line: string) => console.log(line));
   return {
     name: 'console',
-    async send(event: any) {
+    async send(event: AlertEvent): Promise<void> {
       const icon = event.status === 'firing' ? '[ALERT]' : '[RESOLVED]';
       log(
         `${icon} ${event.rule.name} (${event.rule.severity || 'warning'}) ` +
@@ -206,7 +265,7 @@ function webhookNotifier(url: string, options: WebhookOptions = {}) {
   const timeoutMs = options.timeoutMs === undefined ? 3000 : options.timeoutMs;
   return {
     name: options.name || 'webhook',
-    async send(event: any) {
+    async send(event: AlertEvent): Promise<void> {
       const body = JSON.stringify({
         status: event.status,
         name: event.rule.name,
@@ -223,7 +282,7 @@ function webhookNotifier(url: string, options: WebhookOptions = {}) {
   };
 }
 
-function postJson(url: string, body: any, timeoutMs: number) {
+function postJson(url: string, body: string, timeoutMs: number) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const transport = parsed.protocol === 'https:' ? https : http;
@@ -236,10 +295,11 @@ function postJson(url: string, body: any, timeoutMs: number) {
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
         timeout: timeoutMs,
       },
-      (res: any) => {
+      (res: import('node:http').IncomingMessage) => {
         res.resume();
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.statusCode);
-        else reject(new Error(`webhook responded ${res.statusCode}`));
+        const status = res.statusCode ?? 0;
+        if (status >= 200 && status < 300) resolve(status);
+        else reject(new Error(`webhook responded ${status}`));
       },
     );
     req.on('timeout', () => req.destroy(new Error(`webhook timed out after ${timeoutMs}ms`)));
@@ -248,8 +308,9 @@ function postJson(url: string, body: any, timeoutMs: number) {
   });
 }
 
-function formatValue(value: any): string {
+function formatValue(value: unknown): string {
   if (value === null || value === undefined) return 'n/a';
+  if (typeof value !== 'number') return String(value);
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(3);
 }
@@ -279,7 +340,7 @@ class AlertManager extends EventEmitter {
         },
       };
     this.source = options.source || {};
-    this.rules = (options.rules || []).map((rule: any) => {
+    this.rules = (options.rules || []).map((rule: AlertRuleInput): AlertRule => {
       if (!rule.name || !rule.metric) throw new Error('each alert rule needs { name, metric }');
       const condition = rule.condition || '>';
       if (!/^(rate|increase)?(>=|<=|>|<|==|!=)$/.test(condition)) {
@@ -288,6 +349,10 @@ class AlertManager extends EventEmitter {
       return {
         severity: 'warning',
         ...rule,
+        // 归一化：把 name/metric/condition 变成"必有"，其余保持原样（行为不变）
+        name: String(rule.name),
+        metric: String(rule.metric),
+        threshold: typeof rule.threshold === 'number' ? rule.threshold : Number.NaN,
         condition,
         forMs: parseDuration(rule.for),
         resolveForMs: parseDuration(rule.resolveFor),
@@ -372,11 +437,11 @@ class AlertManager extends EventEmitter {
     return transitions;
   }
 
-  _event(status: string, rule: any, value: number, at: number) {
+  _event(status: string, rule: AlertEvent['rule'], value: number, at: number) {
     return { status, rule, value, at, summary: rule.summary || '' };
   }
 
-  async _notify(event: any) {
+  async _notify(event: AlertEvent) {
     for (const notifier of this.notifiers) {
       try {
         await notifier.send(event);
@@ -462,7 +527,7 @@ function scrape(url: string, timeoutMs: number) {
         method: 'GET',
         timeout: timeoutMs,
       },
-      (res: any) => {
+      (res: import('node:http').IncomingMessage) => {
         let body = '';
         res.setEncoding('utf8');
         res.on('data', (chunk: Buffer) => {
