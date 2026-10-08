@@ -21,7 +21,7 @@ const run = promisify(execFile);
 const ROOT = path.join(import.meta.dirname, '..');
 const LANDING = path.join(ROOT, 'tools', 'landing');
 const SITE = path.join(ROOT, 'site');
-const SNIPPETS = ['01-kernel-actor.js', '02-web-app.ts', '03-persistence.ts'];
+const SNIPPETS = ['01-kernel-actor.js', '02-web-app.ts', '03-persistence.ts', '04-shared-vs-actor.ts'];
 
 /** 把页面里的 `<pre class="code">` 还原成纯文本（去标签 + 反转义）。 */
 function codeBlocks(html) {
@@ -60,6 +60,7 @@ test('官网: 每段示例都被真的执行过（断言写在示例里，退出
     '01-kernel-actor.js': 'hp=90 pet=player_001/pet-1 actors=2',
     '02-web-app.ts': 'health=200 total=2→5 bad-input=400',
     '03-persistence.ts': 'before=41 after-restart=41',
+    '04-shared-vs-actor.ts': 'bare=1 locked=20 actor=20',
   };
   for (const name of SNIPPETS) {
     const file = path.join(LANDING, 'snippets', name);
@@ -160,6 +161,9 @@ test('官网: 首页包含关键区块（hero / 特点 / 代码 / 纪律 / 包 /
   const built = await buildLanding();
   for (const [name, marker] of [
     ['hero', '把并发写成一棵'],
+    ['什么是 Actor', 'id="what"'],
+    ['概念页入口', './docs/guide/00-what-is-an-actor.html'],
+    ['为什么选它 / 别选的边界', 'id="why"'],
     ['特点', 'id="features"'],
     ['代码', 'id="code"'],
     ['工程纪律', 'id="discipline"'],
@@ -170,6 +174,14 @@ test('官网: 首页包含关键区块（hero / 特点 / 代码 / 纪律 / 包 /
   ]) {
     assert.ok(built.html.includes(marker), `首页缺少「${name}」区块（找不到 ${marker}）`);
   }
+  // 「什么是 Actor」要把三条规则讲出来；「为什么选它」要包含"什么时候别用"
+  for (const promise of ['① 状态私有', '② 消息串行', '③ 失败有归属']) {
+    assert.ok(built.html.includes(promise), `首页缺少 Actor 规则：${promise}`);
+  }
+  for (const boundary of ['纯 CRUD / 无状态 BFF', '跨实体强一致事务', '读多写少的报表', '单进程内存装不下']) {
+    assert.ok(built.html.includes(boundary), `「什么时候不要用它」缺少边界：${boundary}`);
+  }
+
   // 三个 tab 与它们的面板都要在，且只有一个默认选中。
   // 注意：只能数**标签属性**，因为内联的 main.js 里有 `[role="tab"]` 这样的选择器字符串
   // （早先直接数 `role="tab"` 会把脚本里的那处也数进来 —— 这个门禁本身踩过）。

@@ -14,9 +14,11 @@
   <div class="wrap nav-inner">
     <div class="brand"><span class="mark">A</span> Actor Framework</div>
     <nav class="nav-links" aria-label="站点导航">
+      <a href="#what">什么是 Actor</a>
       <a href="#features">特点</a>
       <a href="#code">代码</a>
       <a href="#discipline">工程纪律</a>
+      <a href="#why">为什么选它</a>
       <a href="#packages">包</a>
       <a href="#start">快速开始</a>
       <a href="./docs/guide/README.html">用户文档</a>
@@ -59,6 +61,58 @@
         </div>
         <!--landing:snippet 01-kernel-actor.js-->
       </div>
+    </div>
+  </section>
+
+  <!-- ================= 什么是 Actor ================= -->
+  <section id="what">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">60 秒搞懂模型</div>
+        <h2>什么是 Actor？把"互斥"变成执行模型的一部分</h2>
+        <p>
+          先用一个你大概率遇过的问题：余额 100，两个请求同时各扣 1 —— 都读到 100，
+          各自写回 99，<b>扣了两次只少 1</b>。这就是"读-改-写交错"。
+          常见的对策是加锁、串行队列、数据库事务，而 Actor 把这件事换了个做法：
+          <b>状态私有 + 消息串行 + 失败有归属</b>。
+        </p>
+      </div>
+
+      <div class="grid grid-3">
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg> ① 状态私有</h3>
+          <p>状态只在 Actor 内部（本框架里就是 <code>this.state</code>）。外面拿不到引用，只能发消息 ——
+          所以不可能有人"在你读和写之间插一脚"。</p>
+        </article>
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg> ② 消息串行</h3>
+          <p>每个 Actor 一条 FIFO 邮箱，<b>一次处理一条</b>，处理完才取下一条 —— 读-改-写天然原子，
+          <b>不需要锁</b>。这是排队换来的，不是并行。</p>
+        </article>
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v6m0 6v6M5 9l7 3 7-3M5 15l7 3 7-3"/></svg> ③ 失败有归属</h3>
+          <p>handler 抛错 = 这个 Actor 崩溃，由<b>父 Actor（监督者）</b>按策略决定：重启出干净实例、
+          升级给祖父、或停下。而不是 <code>try/catch</code> 之后继续用脏状态。</p>
+        </article>
+      </div>
+
+      <div class="card" style="margin-top:18px">
+        <div class="card-head">
+          <span class="card-title">04-shared-vs-actor.ts</span>
+          <button class="copy" type="button">复制</button>
+        </div>
+        <!--landing:snippet 04-shared-vs-actor.ts-->
+        <div class="panel-note">
+          20 个并发、同一形状的读-改-写、同一个 <code>await</code> 让出点。三种写法的真实输出：
+          <code>bare=1 locked=20 actor=20</code> —— 裸共享状态丢了 19 次；加互斥能对，但
+          <b>互斥要你自己保证</b>（漏一处就回到第一种）；Actor 把它做成了执行模型的一部分。
+        </div>
+      </div>
+
+      <p class="note" style="margin-top:14px">
+        要读完整版（顺序保证到哪为止、四条常见误解、失败语义为什么这样设计）：
+        <a href="./docs/guide/00-what-is-an-actor.html">00 什么是 Actor</a>。
+      </p>
     </div>
   </section>
 
@@ -246,6 +300,91 @@
     </div>
   </section>
 
+  <!-- ================= 为什么选它 / 什么时候别选 ================= -->
+  <section id="why">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">选型</div>
+        <h2>为什么选它：优势得"相对于什么"才算数</h2>
+        <p>不谈"更好"，只谈"在你已经在用的那种做法上，它换来了什么、代价是什么"。所以先把基线摆出来 ——
+        下面的对比是做法层面的，不点名任何具体库（点名会随版本腐烂）。</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>做法</th><th>并发正确性</th><th>故障语义</th><th>状态放哪</th><th>主要代价</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="pkg">共享内存 + 手写锁 / 串行队列</td>
+              <td>能做对，但<b>互斥由你负责</b>：漏一处、异常路径没释放、换个入口忘了包就悄悄出错</td>
+              <td>靠 <code>try/catch</code>：兜住之后状态可能已写坏一半，还会继续服务</td>
+              <td>就在进程内存里</td>
+              <td>正确性依赖"记得加锁"；出问题最难查（现场早没了）</td>
+            </tr>
+            <tr>
+              <td class="pkg">worker_threads + 手写 RPC</td>
+              <td>靠线程隔离，但要自己保证消息协议与顺序</td>
+              <td>要自己实现错误传播与重启</td>
+              <td>线程内/外部存储</td>
+              <td>序列化、协议、生命周期、重启全要自己写和维护</td>
+            </tr>
+            <tr>
+              <td class="pkg">消息队列 + 无状态 worker</td>
+              <td>队列本身可靠，但<b>状态在队列外面</b>（数据库），跨消息的一致性回到事务问题</td>
+              <td>重试/死信要考虑幂等</td>
+              <td>外部存储（DB/Redis）</td>
+              <td>每次操作都要一次状态读写；本地开发与运维多一个中间件</td>
+            </tr>
+            <tr>
+              <td class="pkg">框架 service 单例 + 数据库事务</td>
+              <td>事务覆盖单次请求；<b>请求之间</b>的读-改-写仍需自己串行</td>
+              <td>异常 → 500，状态靠事务回滚</td>
+              <td>数据库（进程内单例是无状态的）</td>
+              <td>内存态（房间、对局、连接）无处安放，只能外置</td>
+            </tr>
+            <tr>
+              <td class="pkg"><b>本框架：Actor</b></td>
+              <td><b>串行由模型保证</b>：同 Actor 内读-改-写原子，不用锁（有可跑的对照实验）</td>
+              <td><b>显式</b>：崩溃 → 监督树重启/升级；重启强度用尽 → 如实停机 + 事件</td>
+              <td>Actor 的 <code>this.state</code>（可配快照/事件持久化）</td>
+              <td>要接受"消息即边界"；<b>Actor 里 <code>await</code> 慢 IO 会占住自己的邮箱</b></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:22px">
+        <article class="feature">
+          <h3>这个框架多给了什么</h3>
+          <ul>
+            <li><b>失败语义是完整的</b>：三种监督策略 + 重启强度 + 用尽后升级，直到顶层如实上报（不是"catch 住继续跑"）</li>
+            <li><b>背压是显式的</b>：邮箱满了三选一（<code>reject</code> / <code>drop-oldest</code> / <code>drop-newest</code>），且每次都留痕，不静默丢</li>
+            <li><b>持久化两种模式</b>：快照或事件，后端可插拔（内存／文件／LevelDB／自定义），写失败与乐观锁冲突都可见</li>
+            <li><b>单进程与集群同一套 API</b>：路径寻址 + gossip 名册 + TCP 网关，本地怎么发消息，跨节点就怎么发</li>
+            <li><b>可观测性默认带</b>：日志一个出口（事件分类 + 默认脱敏）、指标、全链路 Trace、慢请求必记、诊断路由</li>
+            <li><b>零运行时依赖 + Node ≥ 24 无构建步骤</b>：源码直接跑 TS，供应链短、调试不用对 sourcemap</li>
+            <li><b>文档/示例即测试</b>：指南里的示例块在 CI 真执行，语法糖必须与显式写法 <code>deepStrictEqual</code> 等价</li>
+            <li><b>工具链把起步压到两条命令</b>：<code>new app</code> + <code>generate</code>（非破坏、<code>--dry-run</code> 零写入）+ 迁移 + 体检</li>
+          </ul>
+        </article>
+        <article class="feature">
+          <h3>什么时候不要用它</h3>
+          <p>这一节和上面一样重要 —— 用错地方是这套模型背锅，不是你的问题。</p>
+          <ul>
+            <li><b>纯 CRUD / 无状态 BFF</b>：直接 Express/Fastify 更省事，Actor 只多一层概念。</li>
+            <li><b>需要跨实体强一致事务</b>：数据库事务更直接；Actor 只保证<b>单个</b> Actor 内串行。</li>
+            <li><b>读多写少的报表</b>：走仓储/投影，别把查询塞进 Actor（串行世界会变瓶颈）。</li>
+            <li><b>handler 里大量 <code>await</code> 外部 IO</b>：<code>await</code> 期间邮箱被占住，后续消息全排队 —— 把慢 IO 放到服务层，Actor 只做决策。</li>
+            <li><b>单进程内存装不下的状态</b>：Actor 是内存态 + 持久化，不是分布式 KV。</li>
+          </ul>
+          <p class="note" style="margin-top:10px">每条都对应文档里更详细的说明：<a href="./docs/guide/00-what-is-an-actor.html">什么是 Actor</a> · <a href="./docs/guide/12-actors-state.html">状态放哪</a> · <a href="./docs/guide/19-troubleshooting.html">排错手册</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
   <!-- ================= 包 ================= -->
   <section id="packages">
     <div class="wrap">
@@ -326,6 +465,7 @@ npm start</code></pre>
       <div>
         <h4>文档</h4>
         <ul>
+          <li><a href="./docs/guide/00-what-is-an-actor.html">什么是 Actor</a></li>
           <li><a href="./docs/guide/01-quickstart.html">快速开始</a></li>
           <li><a href="./docs/guide/02-project-layout.html">项目结构</a></li>
           <li><a href="./docs/guide/12-actors-state.html">Actor 与状态</a></li>
