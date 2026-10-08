@@ -94,10 +94,16 @@ test('docs: 真实构建——仓库现有文档零断链，且产出首页 / �
   assert.match(api, /createProjectionRunner/);
   assert.ok(/@ts-nocheck/.test(api), '内核的类型缺口要如实标注在页面上');
 
-  // 首页应当是 README 的渲染（不是空页）
+  // 首页现在是**官网**（`tools/landing/` → `site/index.html`），README 另有其页；
+  // 官网自身的门禁在 test/unit-site-landing.test.js（含"页面代码 == 跑过的代码"与事实检查）
   const index = fs.readFileSync(path.join(site, 'index.html'), 'utf8');
-  assert.ok(index.includes('搜索文档'), '侧边栏要有搜索框');
-  assert.ok(index.length > 5000, '首页太小，八成渲染坏了');
+  assert.ok(index.includes('把并发写成一棵'), '首页应当是官网落地页');
+  assert.ok(index.length > 20_000, '首页太小，八成构建坏了');
+
+  // 文档页仍是带侧边栏搜索的渲染结果
+  const readme = fs.readFileSync(path.join(site, 'README.html'), 'utf8');
+  assert.ok(readme.includes('搜索文档'), '文档页侧边栏要有搜索框');
+  assert.ok(readme.length > 5000, 'README 页太小，八成渲染坏了');
 });
 
 test('docs: 页面里的导航与"本页"目录都指向真实锚点', () => {

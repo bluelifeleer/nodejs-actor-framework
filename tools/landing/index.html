@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Actor Framework —— Node.js 的 Actor 内核与应用框架</title>
+<meta name="description" content="Node.js Actor 框架：OTP 风格监督树、每 Actor 单 FIFO 邮箱与背压、快照/事件两种持久化、Gossip 集群与双向 TLS 网关、统一日志与全链路 Trace。默认零运行时依赖，Node ≥24 原生跑 TypeScript，无构建步骤。">
+<!--landing:styles-->
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <div class="brand"><span class="mark">A</span> Actor Framework</div>
+    <nav class="nav-links" aria-label="站点导航">
+      <a href="#features">特点</a>
+      <a href="#code">代码</a>
+      <a href="#discipline">工程纪律</a>
+      <a href="#packages">包</a>
+      <a href="#start">快速开始</a>
+      <a href="./docs/guide/README.html">用户文档</a>
+      <a href="./api.html">API 参考</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn" data-theme-toggle type="button" aria-label="切换主题">☾ 深色</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <!-- ================= Hero ================= -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot"></span> Node.js ≥ 24 · 默认零运行时依赖 · 源码直接跑 TS</span>
+        <h1>把并发写成一棵<span class="grad">监督树</span>，<br>而不是一堆回调。</h1>
+        <p class="lede">
+          OTP 风格的 Actor 内核 + 分层应用框架：状态封装在 Actor 里、消息串行执行、故障由监督树决定命运；
+          上面直接叠 HTTP 路由、数据层、集群与可观测性 —— 同一套 API，从单进程写到多节点。
+        </p>
+        <div class="badges">
+          <span class="badge"><b>0</b> 运行时依赖（内核唯一可选依赖只有 LevelDB 后端）</span>
+          <span class="badge"><b>无构建步骤</b>：Node 原生剥离类型</span>
+          <span class="badge"><b>12</b> 个包，按需启用</span>
+          <span class="badge"><b>文档即测试</b>：示例进 CI 真执行</span>
+        </div>
+        <div class="cta">
+          <a class="btn btn-primary" href="./docs/guide/01-quickstart.html">快速开始 →</a>
+          <a class="btn btn-ghost" href="#code">看真实代码</a>
+          <a class="btn btn-ghost" href="./docs/guide/internals/README.html">设计文档</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">01-kernel-actor.js</span>
+          <button class="copy" type="button">复制</button>
+        </div>
+        <!--landing:snippet 01-kernel-actor.js-->
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 特点 ================= -->
+  <section id="features" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">核心能力</div>
+        <h2>该有的都有，且每一条都能在测试里找到证据</h2>
+        <p>下面每张卡片的能力都对应仓库里真实存在的代码与用例；文档里的示例块（<code>```verify</code>）在 CI 里真执行。</p>
+      </div>
+
+      <div class="grid grid-3">
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v6m0 6v6M5 9l7 3 7-3M5 15l7 3 7-3"/></svg> 监督树与失败语义</h3>
+          <p>父 Actor 就是子 Actor 的监督者。<code>one_for_one</code> / <code>rest_for_one</code> / <code>one_for_all</code> 三种策略 + 重启强度（次数/时间窗）。</p>
+          <ul>
+            <li>孩子超出重启强度 → <b>升级</b>给祖父决定，不会静默放弃</li>
+            <li><code>failure: 'crash' | 'retry'</code> 显式选择：崩溃是信号，或按指数退避重试后进死信</li>
+            <li>顶层耗尽强度 → <code>system_failure</code> 事件 + 如实停机</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg> 单 FIFO 邮箱与背压</h3>
+          <p>每个 Actor 一条队列、串行处理：读-改-写不会交错，用不着锁（20 条并发消息，一条都不丢 —— 文档里有断言）。</p>
+          <ul>
+            <li>满邮箱语义显式：<code>reject</code> / <code>drop-oldest</code> / <code>drop-newest</code></li>
+            <li>拒绝/丢弃都留痕：<code>mailbox_full</code> 事件 + 计数器</li>
+            <li>消息进死信队列：内存环 + 可选落盘（重启后还在）</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/></svg> 持久化：快照或事件</h3>
+          <p><code>mode: 'snapshot'</code> 或 <code>mode: 'events'</code>，状态只放 <code>this.state</code> 就自动恢复；后端可插拔（内存 / 文件 / LevelDB / 自定义）。</p>
+          <ul>
+            <li>重启后状态还在（示例真跑：重启前 41 → 重启后 41）</li>
+            <li>写入失败不静默：<code>PersistenceError</code> / 乐观锁冲突 <code>PersistenceConflictError</code></li>
+            <li>没配存储却要持久化 → <b>启动期</b>就报错，不会等到第一个请求</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5z"/><path d="M12 22V12M3 7l9 5 9-5"/></svg> 零运行时依赖 · 无构建步骤</h3>
+          <p>主仓库的 devDependencies 只有 <code>typescript</code> 与 <code>@types/node</code>；内核只用 Node 内置模块。</p>
+          <ul>
+            <li>Node ≥ 24：靠原生类型剥离直接跑 <code>.ts</code>，<b>没有编译产物</b></li>
+            <li>唯一可选依赖是 LevelDB 后端（<code>classic-level</code>），缺失自动跳过</li>
+            <li>数据库/缓存/邮件适配器不把驱动写进依赖：由调用方注入</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg> 分层装配与配置</h3>
+          <p>内核只管 Actor；<code>@actor/app</code> 负责配置校验、依赖注入、模块与插件装配，<code>@actor/web</code> 只管路由与控制器。</p>
+          <ul>
+            <li>配置在启动期校验（unknown key / 类型错误 / 缺必填都当场报）</li>
+            <li>依赖缺了就启动失败，而不是运行期拿到 <code>undefined</code></li>
+            <li>保留名有单一来源，撞了就报错，不靠约定</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 17l5-5 4 3 5-7 4 4"/><path d="M3 21h18"/></svg> 可观测性：一个出口</h3>
+          <p>日志一处配好（<code>logging</code>），三类事件汇到一个出口；错误有显式出口（<code>errors</code>），后台失败不再不可见。</p>
+          <ul>
+            <li>请求级子日志自动带 <code>requestId</code>，meta 默认脱敏（token/cookie/password…）</li>
+            <li>指标、全链路 Trace、OTLP 导出按需启用</li>
+            <li>慢请求必记（不受采样影响）；诊断路由默认关闭、需 token</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 7l3 3m4 0l3-3M7 17l3-3m4 0l3 3"/></svg> 集群：Gossip + TCP 网关</h3>
+          <p>对等节点用 Gossip 维护名册，用 TCP 网关（Protobuf 帧、可选双向 TLS）互相通信，跨节点 <code>ask</code>/<code>tell</code> 同一套 API。</p>
+          <ul>
+            <li>寻址是路径；本节点没有就查名册，再走网关</li>
+            <li>心跳判活、失败计数、节点退出会被观察到</li>
+            <li>共享存储才能跨节点交接有状态 Actor（文档明确写了边界）</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 19V5m0 14h16"/><path d="M8 15v-4m4 4V8m4 7v-6"/></svg> 数据层与中间件</h3>
+          <p><code>@actor/data</code> 给事件溯源、快照、仓储、Outbox、投影；<code>@actor/db</code> 用 <code>defineModel</code> 声明表并在三种方言上渲染。</p>
+          <ul>
+            <li>游标分页（并发写入下不漏不重），乐观锁冲突映射成 409</li>
+            <li>Redis / MongoDB / 邮件适配器都走<b>受管资源</b>：健康检查、保活、drain、关闭</li>
+            <li>迁移有版本表、幂等、可回滚，中断可重入</li>
+          </ul>
+        </article>
+
+        <article class="feature">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/><circle cx="19" cy="18" r="2.5"/></svg> 工具链：CLI 与 testkit</h3>
+          <p><code>actor</code> 一条命令起项目、生成骨架、迁移、体检；<code>@actor/testkit</code> 提供虚拟时钟与故障注入。</p>
+          <ul>
+            <li><code>generate</code> 九种骨架，<b>非破坏</b>：不覆盖你的文件，只打印待粘贴的接线片段</li>
+            <li>自定义命令：<code>.actor/commands/*.ts</code> 写好就是 <code>actor</code> 的子命令（子进程隔离执行）</li>
+            <li>虚拟时钟把"等一小时"变成 0 真实毫秒</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 代码 ================= -->
+  <section id="code">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">真实代码</div>
+        <h2>三段都能跑：内核 → 应用 → 持久化</h2>
+        <p>
+          下面三段代码就是本仓库里的文件（<code>tools/landing/snippets/</code>）：它们会被 typecheck，
+          并且在 CI 里<b>真的执行一遍</b>（断言写在代码里）。页面上的代码和跑过的代码是同一份，不会漂移。
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="tabs" role="tablist" aria-label="代码示例">
+          <button class="tab" role="tab" id="tab-1" aria-controls="panel-1" aria-selected="true" type="button">① 内核：Actor 与监督</button>
+          <button class="tab" role="tab" id="tab-2" aria-controls="panel-2" aria-selected="false" type="button">② 应用：HTTP + Actor</button>
+          <button class="tab" role="tab" id="tab-3" aria-controls="panel-3" aria-selected="false" type="button">③ 持久化：重启后还在</button>
+          <button class="copy" type="button">复制</button>
+        </div>
+        <div class="panel" id="panel-1" role="tabpanel" aria-labelledby="tab-1">
+          <!--landing:snippet 01-kernel-actor.js-->
+          <div class="panel-note">运行结果：<code>hp=90 pet=player_001/pet-1 actors=2</code> —— 路径即地址，子 Actor 归父 Actor 监督。</div>
+        </div>
+        <div class="panel" id="panel-2" role="tabpanel" aria-labelledby="tab-2" hidden>
+          <!--landing:snippet 02-web-app.ts-->
+          <div class="panel-note">运行结果：<code>health=200 total=2→5 bad-input=400</code> —— 输入校验失败是 400，不是 500。</div>
+        </div>
+        <div class="panel" id="panel-3" role="tabpanel" aria-labelledby="tab-3" hidden>
+          <!--landing:snippet 03-persistence.ts-->
+          <div class="panel-note">运行结果：<code>before=41 after-restart=41</code> —— 换一个全新实例、同一个持久化目录，状态照旧。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 工程纪律 ================= -->
+  <section id="discipline" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">为什么可以信</div>
+        <h2>不吹牛的部分：每条主张都有门禁守着</h2>
+        <p>框架代码没有构建步骤，所以"纪律"必须靠可执行的检查来维持 —— 这些检查就在仓库的 <code>npm test</code> 里。</p>
+      </div>
+
+      <div class="checklist">
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>文档里的示例在 CI 真执行</b><span>每篇指南至少一个 <code>```verify</code> 块，逐块跑；跑不通就红。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>语法糖与显式写法可证等价</b><span>sugar 写法必须与啰嗦写法 <code>deepStrictEqual</code>，否则视为 bug。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>库代码不许裸 <code>console</code></b><span>每个输出点要带理由标记，并有"证伪用例"保证门禁真的会响。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>启动期失败优于运行期事故</b><span>配置错、依赖缺、必须的能力没装 —— 都在 <code>start()</code> 当场报错并指出修法。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>生成器不破坏你的代码</b><span>已存在的文件默认拒绝覆盖，<code>--dry-run</code> 一个字节都不写。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>退出码有意义</b><span>CLI：<code>0</code> 成功 / <code>1</code> 用法错 / <code>2</code> 环境问题；脚本与 CI 能区分。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>文档站零断链</b><span>相对链接指向不存在的文件 → 构建直接失败并列出清单。</span></div>
+        </div>
+        <div class="check">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>
+          <div><b>不留"以后再说"的暗账</b><span>类型没补齐的文件带显式 <code>@ts-nocheck</code> 标记，并在 API 参考里如实标注。</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 包 ================= -->
+  <section id="packages">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">装配方式</div>
+        <h2>12 个包，按需启用</h2>
+        <p>内核不知道 HTTP、数据库、集群治理；每加一项能力，你就多装一个包 —— 边界清晰，加载面可控。</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>包</th><th>负责什么</th><th>运行时依赖</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="pkg">nodejs-actor-framework</td><td>内核：Actor、监督树、邮箱与背压、持久化、事件、指标与 Trace、集群与网关</td><td><span class="tag ok">零</span> <span class="tag opt">可选 LevelDB</span></td></tr>
+            <tr><td class="pkg">@actor/app</td><td>应用层：配置校验、依赖注入、模块与插件装配、错误与日志出口</td><td><span class="tag">内核</span></td></tr>
+            <tr><td class="pkg">@actor/web</td><td>Web 层：路由、控制器、中间件、上传、鉴权、访问日志、诊断路由</td><td><span class="tag">app</span></td></tr>
+            <tr><td class="pkg">@actor/data</td><td>数据层：事件溯源、快照、仓储、Outbox、投影、迁移</td><td><span class="tag ok">零</span></td></tr>
+            <tr><td class="pkg">@actor/db</td><td>数据库：<code>defineModel</code> 声明式表结构，多方言渲染与迁移</td><td><span class="tag">db-core</span></td></tr>
+            <tr><td class="pkg">@actor/db-core</td><td>适配器契约与连接管控（健康检查／保活／重连／drain）</td><td><span class="tag">resource</span></td></tr>
+            <tr><td class="pkg">@actor/resource</td><td>受管资源契约：连接、健康、重连事件、优雅关闭</td><td><span class="tag ok">零</span></td></tr>
+            <tr><td class="pkg">@actor/redis</td><td>Redis 适配器（node-redis 与 ioredis 双驱动，驱动由你注入）</td><td><span class="tag">resource</span></td></tr>
+            <tr><td class="pkg">@actor/mongodb</td><td>MongoDB 适配器 + <code>defineCollection</code>（索引／$jsonSchema 校验）</td><td><span class="tag">resource</span></td></tr>
+            <tr><td class="pkg">@actor/mail</td><td>邮件：消息模型、MIME/.eml 渲染、transport 契约（文件／SMTP）</td><td><span class="tag">resource</span></td></tr>
+            <tr><td class="pkg">@actor/testkit</td><td>测试工具：虚拟时钟、探针、故障注入</td><td><span class="tag ok">零</span></td></tr>
+            <tr><td class="pkg">@actor/cli</td><td>CLI：脚手架、生成器、迁移、体检、自定义命令</td><td><span class="tag">data</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 快速开始 ================= -->
+  <section id="start" class="alt">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">上手</div>
+        <h2>三条命令，一个能跑的服务</h2>
+        <p>要求 Node.js ≥ 24。脚手架不自动装依赖、不覆盖已有文件；生成完会告诉你下一步做什么。</p>
+      </div>
+
+      <div class="quick">
+        <div class="steps">
+          <div class="step">
+            <div><b>建项目</b><p>选布局与能力（Web / 数据 / 上传 / 鉴权 / 调试 / Redis / 邮件）。</p></div>
+          </div>
+          <div class="step">
+            <div><b>生成骨架</b><p>控制器、Actor、服务、模型、表结构、中间件、测试 —— 九种，都自带能跑的测试。</p></div>
+          </div>
+          <div class="step">
+            <div><b>体检再启动</b><p><code>doctor</code> 检查 Node 版本、依赖、配置、数据目录、迁移、端口占用与命令定义。</p></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-title">terminal</span><button class="copy" type="button">复制</button></div>
+          <pre class="code"><code><span class="cmt"># 1) 建一个带 Web 与数据层的项目（layered 布局）</span>
+npx @actor/cli new app my-service --with web,data
+
+<span class="cmt"># 2) 生成一个控制器 + 一个 Actor + 它的表（--dry-run 可以先看计划）</span>
+cd my-service
+npx @actor/cli generate controller notes
+npx @actor/cli generate actor cart
+npx @actor/cli generate schema notes --field title:string --field done:bool --optimistic-lock
+
+<span class="cmt"># 3) 体检 → 起服务（脚手架不自动装依赖，按提示装你自己的）</span>
+npx @actor/cli doctor
+npm start</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <h4>文档</h4>
+        <ul>
+          <li><a href="./docs/guide/01-quickstart.html">快速开始</a></li>
+          <li><a href="./docs/guide/02-project-layout.html">项目结构</a></li>
+          <li><a href="./docs/guide/12-actors-state.html">Actor 与状态</a></li>
+          <li><a href="./docs/guide/20-errors-and-logging.html">错误与日志</a></li>
+          <li><a href="./docs/guide/21-cli-generate-and-commands.html">CLI 进阶</a></li>
+          <li><a href="./docs/guide/19-troubleshooting.html">排错手册</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>设计与实现</h4>
+        <ul>
+          <li><a href="./docs/guide/internals/README.html">实现说明（internals）</a></li>
+          <li><a href="./docs/design/m0/README.html">设计文档</a></li>
+          <li><a href="./api.html">API 参考（从源码提取）</a></li>
+          <li><a href="./README.html">仓库 README</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>示例</h4>
+        <ul>
+          <li><a href="./examples/app-data/index.html">数据层示例</a></li>
+          <li><a href="./examples/app-web/index.html">Web 示例</a></li>
+          <li><a href="./examples/app-mail/index.html">邮件示例</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      本站由仓库自带的零依赖生成器构建（<code>tools/docs-site.mjs</code>）：不加载任何 CDN、字体或追踪脚本，离线可用。
+      页面上的代码来自 <code>tools/landing/snippets/</code>，会被 typecheck 并在 CI 里真跑。
+    </div>
+  </div>
+</footer>
+
+<!--landing:script-->
+</body>
+</html>

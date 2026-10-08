@@ -29,6 +29,8 @@ import { extractFromDeclarationFile, extractFromSource, untypedFiles } from './a
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'site');
+/** 官网首页的源文件目录（`site/index.html` 由它生成，不再是 README 的副本）。 */
+const LANDING = path.join(ROOT, 'tools', 'landing');
 
 /* -------------------------------------------------------------------------- */
 /* markdown 子集渲染                                                           */
@@ -453,6 +455,7 @@ function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
 <body><div class="layout">
 <aside>
   <div class="brand">Actor Framework<small>设计文档与 API 参考</small></div>
+  <ul><li><a href="${rootPrefix}index.html">← 官网首页</a></li></ul>
   <input class="search" id="search" placeholder="搜索文档…" autocomplete="off">
   <div id="results"></div>
   ${navHtml}
@@ -462,6 +465,88 @@ function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
 </div>
 <script>window.__ROOT__=${JSON.stringify(rootPrefix)};${SEARCH_SCRIPT}</script>
 </body></html>`;
+}
+
+/**
+ * 极小的语法高亮：只覆盖本仓库示例里真实用到的 token（注释 / 字符串 / 关键字 / 数字）。
+ *
+ * 为什么服务端做而不是前端 JS：离线打开文件也要好看，且不依赖 JS；代价是要自己维护这个子集。
+ * **先转义再包裹**：任何 token 都走 escapeHtml，示例内容不会破坏页面结构。
+ */
+export function highlightCode(source) {
+  const TOKEN =
+    /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|(`(?:\\[\s\S]|[^`\\])*`|'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*")|\b(const|let|var|function|class|extends|super|return|await|async|if|else|switch|case|break|default|throw|new|try|catch|finally|for|of|in|import|export|from|type|interface|as|is|void|delete|typeof|instanceof|yield|static|readonly|public|private|enum|declare)\b|\b(\d+(?:\.\d+)?)\b/g;
+  let out = '';
+  let last = 0;
+  for (const match of String(source).matchAll(TOKEN)) {
+    const index = match.index ?? 0;
+    out += escapeHtml(String(source).slice(last, index));
+    const [text, comment, string, keyword, number] = match;
+    const cls = comment !== undefined ? 'cmt' : string !== undefined ? 'str' : keyword !== undefined ? 'kw' : number !== undefined ? 'num' : null;
+    out += cls === null ? escapeHtml(text) : `<span class="${cls}">${escapeHtml(text)}</span>`;
+    last = index + text.length;
+  }
+  return out + escapeHtml(String(source).slice(last));
+}
+
+const LANG_BY_EXT = { js: 'javascript', cjs: 'javascript', mjs: 'javascript', ts: 'typescript', json: 'json', bash: 'bash' };
+
+/**
+ * 生成官网首页 `site/index.html`：读 `tools/landing/` 下的源文件，把三处占位符换成真内容。
+ *
+ *   `<!--landing:styles-->`          ← styles.css 内联
+ *   `<!--landing:script-->`          ← main.js 内联
+ *   `<!--landing:snippet <文件>-->`  ← snippets/<文件> 高亮后内联
+ *
+ * 返回 `{ html, snippets }`，`snippets` 供测试断言"页面里的代码 == 被跑过的代码"。
+ */
+export async function buildLanding() {
+  const dir = LANDING;
+  const [template, css, js] = await Promise.all([
+    fsp.readFile(path.join(dir, 'index.html'), 'utf8'),
+    fsp.readFile(path.join(dir, 'styles.css'), 'utf8'),
+    fsp.readFile(path.join(dir, 'main.js'), 'utf8'),
+  ]);
+
+  const snippetNames = [...template.matchAll(/<!--landing:snippet ([^>]+?)-->/g)].map((match) => match[1].trim());
+  const snippets = new Map();
+  for (const name of new Set(snippetNames)) {
+    const source = await fsp.readFile(path.join(dir, 'snippets', name), 'utf8');
+    snippets.set(name, source);
+  }
+
+  let html = template
+    .replace('<!--landing:styles-->', `<style>\n${css}</style>`)
+    .replace('<!--landing:script-->', `<script>\n${js}</script>`);
+  for (const [name, source] of snippets) {
+    const lang = LANG_BY_EXT[path.extname(name).slice(1)] ?? 'text';
+    const block = `<pre class="code" data-lang="${lang}"><code>${highlightCode(source)}</code></pre>`;
+    html = html.replaceAll(`<!--landing:snippet ${name}-->`, block);
+  }
+  const leftover = html.match(/<!--landing:[^>]*-->/g);
+  if (leftover !== null) {
+    throw new Error(`官网首页还有没被替换的占位符：${leftover.join(', ')}（检查 tools/landing/index.html）`);
+  }
+  return { html, snippets: [...snippets.keys()] };
+}
+
+/**
+ * 官网首页的断链检查。
+ *
+ * 首页站在站点根，所以它的相对链接直接对应 `site/` 下的产物；`href="#x"` 与外链不查。
+ * 目录形式的链接（`docs/guide/`）接受 `目录 + index.html`。
+ */
+export function findBrokenLandingLinks(html, exists) {
+  const broken = [];
+  for (const match of String(html).matchAll(/(?:href|src)="([^"]+)"/g)) {
+    const target = match[1];
+    if (/^(https?:|mailto:|#|data:|\/)/.test(target)) continue;
+    const [file] = target.split('#');
+    if (file === undefined || file === '' || !/\.(html|json|css|js|txt|svg|png|md)$/.test(file)) continue;
+    if (exists(file) || exists(`${file.replace(/\/+$/, '')}/index.html`)) continue;
+    broken.push(target);
+  }
+  return broken;
 }
 
 /**
@@ -557,7 +642,8 @@ export async function build({ log = console.log } = {}) {
     });
     // 每个 README 额外落一份 index.html：路径 1:1 映射（README.html）之外，
     // 让 `site/` 与 `site/examples/app-data/` 这类目录 URL 也能直接打开。
-    if (path.basename(page.relative) === 'README.md') {
+    // 根 README 的目录首页就是官网首页（下面单独生成），所以这里只为**子目录**的 README 落 index.html
+    if (path.basename(page.relative) === 'README.md' && page.relative !== 'README.md') {
       const dir = path.dirname(url);
       const indexUrl = dir === '.' ? 'index.html' : `${dir}/index.html`;
       await fsp.writeFile(
@@ -567,6 +653,16 @@ export async function build({ log = console.log } = {}) {
       );
     }
   }
+
+  // 官网首页（`site/index.html`）：由 tools/landing/ 生成，不再复制 README
+  const landing = await buildLanding();
+  await fsp.writeFile(path.join(OUT, 'index.html'), landing.html, 'utf8');
+  searchIndex.push({
+    url: 'index.html',
+    title: '官网首页',
+    group: '首页',
+    text: '官网 actor framework 特点 监督树 邮箱 持久化 集群 可观测 零依赖 快速开始',
+  });
 
   // API 参考（从源码提取，不手抄）
   const apiBody = `<h1 id="api">API 参考</h1>
@@ -592,13 +688,24 @@ ${await buildApiPage()}`;
   searchIndex.push({ url: 'api.html', title: 'API 参考', group: '参考', text: 'api 参考 导出 函数 类 内核' });
   await fsp.writeFile(path.join(OUT, 'search.json'), JSON.stringify(searchIndex), 'utf8');
 
-  log(`doc site: ${pages.length} 页 + api.html → ${path.relative(ROOT, OUT)}/`);
+  // 官网首页的断链检查放在**所有产物都写完**之后：`./api.html` 是构建期生成的，
+  // 检查得太早会把它当断链（实测踩到）
+  const landingBroken = findBrokenLandingLinks(landing.html, (relative) => fs.existsSync(path.join(OUT, relative)));
+
+  log(`doc site: 官网首页 + ${pages.length} 页 + api.html → ${path.relative(ROOT, OUT)}/`);
+  if (landingBroken.length > 0) {
+    const error = new Error(
+      `官网首页有 ${landingBroken.length} 个断链（相对链接必须能解析到真实产物）：\n  ${landingBroken.join('\n  ')}`,
+    );
+    error.broken = landingBroken;
+    throw error;
+  }
   if (broken.length > 0) {
     const error = new Error(`文档里有 ${broken.length} 个断链（相对链接必须能解析到真实文件）：\n  ${broken.join('\n  ')}`);
     error.broken = broken;
     throw error;
   }
-  return { pages: pages.length, broken };
+  return { pages: pages.length, broken, landing: { snippets: landing.snippets, broken: landingBroken } };
 }
 
 /* -------------------------------------------------------------------------- */

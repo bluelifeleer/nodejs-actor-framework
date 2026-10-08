@@ -132,6 +132,15 @@ M9（脚手架与 CLI + 应用层语法糖）的收尾：**保留名的单一来
 
 ### Docs
 
+- **官网首页**（`site/index.html`）：由 `tools/landing/` 生成（不再是 README 的副本）——
+  hero + 9 张能力卡 + 三段可跑代码（tab 切换）+ 工程纪律 + 12 个包的表 + 快速开始；
+  样式/脚本**全部内联、零外部请求**（不加载 CDN/字体/追踪脚本，`file://` 直接打开也正常），
+  支持深浅色（`?theme=dark|light` 可强制）。
+- **官网自己的门禁**（`test/unit-site-landing.test.js`）：三段示例既进 typecheck 又**真跑**，
+  并断言"页面里的代码 == 跑过的代码"（逐字比对，防止页面与示例漂移）；
+  事实门禁断言页面上写的"零运行时依赖 / Node ≥ 24 / 12 个包 / 内核唯一可选依赖 classic-level"
+  与仓库真实状态一致（数字过时会红，而不是继续骗人）；首页相对链接零断链。
+- 文档页侧边栏新增"← 官网首页"入口；`site/index.html` 不再由 README 覆盖（README 仍有独立页面）。
 - 新增 [20 错误与日志](docs/guide/20-errors-and-logging.md)（哪些失败会出现在哪、"同步 vs 后台"两条路径、
   钩子与统一日志的完整用法，带真跑示例）与 [21 CLI 进阶](docs/guide/21-cli-generate-and-commands.md)
   （八种骨架 + 自定义命令，两段 verify 块会真建项目跑一遍）。

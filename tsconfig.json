@@ -26,6 +26,7 @@
     "packages/redis/src/**/*.ts",
     "packages/mongodb/src/**/*.ts",
     "packages/mail/src/**/*.ts",
-    "packages/core/index.d.ts"
+    "packages/core/index.d.ts",
+    "tools/landing/snippets/**/*.ts"
   ]
 }
