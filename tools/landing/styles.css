@@ -176,6 +176,29 @@ section.alt { background: var(--bg-soft); border-top: 1px solid var(--line); bor
 .feature li { margin: 3px 0; }
 .feature code { background: var(--code-bg); color: #cfe0ff; padding: 1px 5px; border-radius: 5px; font-size: 12.8px; }
 
+/* 决策树（纯 CSS 分流图，不需要 JS） */
+.tree { display: grid; gap: 10px; margin-bottom: 22px; }
+.tree-step {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 13px; align-items: start;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+}
+.tree-step .n {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--accent); font-weight: 700; font-size: 13px;
+}
+.tree-q { font-size: 15.2px; }
+.tree-out { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.leaf {
+  font-size: 13.6px; border-radius: 9px; padding: 5px 11px; border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--fg-soft);
+}
+.leaf .cond { color: var(--fg-dim); margin-right: 5px; }
+.leaf.actor { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.leaf.repo { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.leaf.plain { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.tree-note { color: var(--fg-dim); font-size: 13.8px; }
+.tree-note code { background: var(--code-bg); color: #cfe0ff; padding: 1px 5px; border-radius: 5px; }
+
 /* 纪律清单 */
 .checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .check {

@@ -89,19 +89,27 @@ export function renderMarkdown(source, options = {}) {
   while (index < lines.length) {
     const line = lines[index];
 
-    // 围栏代码
-    const fence = /^```(\w*)\s*$/.exec(line);
+    // 围栏代码。
+    //
+    // 信息串支持"语言 + 标记"两段：```` ```js verify ```` 表示这段代码**会被 CI 真执行**
+    // （`test/unit-docs-guides.test.js` 会把它抠出来跑）。早先只认 `\w*`（单个词），
+    // 于是 `js verify` 不匹配 → 整块被当成普通段落渲染成文字（真实 bug，16 个页面受影响）。
+    // 允许**最多 3 个空格缩进**（CommonMark 的规定）：列表项里缩进写的围栏同样要能识别，
+    // 否则像 examples/prometheus/README.md 那样把代码块写进有序列表时，整块会漏成正文（实测踩到）。
+    const fence = /^ {0,3}```(\w*)\s*(.*)$/.exec(line);
     if (fence !== null) {
       const language = fence[1] || 'text';
+      const marks = fence[2].trim();
       const body = [];
       index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+      while (index < lines.length && !/^ {0,3}```\s*$/.test(lines[index])) {
         body.push(lines[index]);
         index += 1;
       }
       index += 1; // 跳过收尾的 ```
+      const verify = /(^|\s)verify($|\s)/.test(marks) ? ' data-verify="true"' : '';
       html.push(
-        `<pre class="code" data-lang="${escapeHtml(language)}"><code>${escapeHtml(body.join('\n'))}</code></pre>`,
+        `<pre class="code" data-lang="${escapeHtml(language)}"${verify}><code>${escapeHtml(body.join('\n'))}</code></pre>`,
       );
       continue;
     }
@@ -396,6 +404,8 @@ h3 { font-size:18px; margin-top:26px; } h4 { font-size:16px; }
 .anchor { opacity:0; margin-left:8px; font-weight:400; } h1:hover .anchor, h2:hover .anchor, h3:hover .anchor { opacity:.35; }
 pre.code { background:var(--code); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; font-size:13.5px; line-height:1.55; }
 pre.code[data-lang]::before { content:attr(data-lang); display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+pre.code[data-verify] { border-left:3px solid #2f9e6f; }
+pre.code[data-verify]::after { content:"✓ 本块在 CI 里真执行（断言写在代码里）"; display:block; margin-top:8px; color:#2f9e6f; font-size:11.5px; letter-spacing:.02em; }
 code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13.5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 pre code { background:none; padding:0; }
 table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; }

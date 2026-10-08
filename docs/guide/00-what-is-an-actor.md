@@ -77,7 +77,37 @@ Actor 模型把"互斥"从一个**你要记得加的装饰**，变成**执行模
 代价是"状态会被重置" —— 所以有状态的东西要配**持久化**（`snapshot` / `events` 两种模式，
 见 [12 Actor 与状态](./12-actors-state.md)）；没配持久化就接受"重来一次"。
 
-## 6. 状态该放哪（一句话判断法）
+## 6. 三十秒决策树：用 Actor / 用仓储 / 直接 Express
+
+不用先理解内核，回答四个问题就能分流：
+
+```
+问题 1  这段代码里，有没有"两个请求同时来会互相写坏"的状态（读-改-写）？
+        │
+        ├─ 没有 ─► 问题 2
+        └─ 有   ─► 问题 3
+
+问题 2  你是不是只在做"请求进来 → 读写数据库 → 返回"？
+        │
+        ├─ 是   ─► 直接用 Express / Fastify（不要上 Actor，结构最简单）
+        └─ 不是 ─► 用 Actor 装那些内存态（房间、对局、连接、定时任务…）
+
+问题 3  这个状态需要活过重启吗？
+        │
+        ├─ 不需要（丢了能重建）─► Actor（不配持久化）
+        └─ 需要               ─► 问题 4
+
+问题 4  需要跨节点共享（多实例同时读写同一份状态）吗？
+        │
+        ├─ 不需要 ─► Actor + 快照/事件持久化（本框架一行配置）
+        └─ 需要   ─► Actor + 集群 + 共享存储
+                     （只有共享存储才能跨节点交接有状态 Actor；
+                       连共享存储都不想要，那更适合集中式数据库/外部 KV，而不是 Actor）
+```
+
+**更便宜的等价问法**：*"我的读-改-写之间夹着 `await` 吗？"* —— 夹着就是危险区（[下一节](#11-五分钟改造演练把共享计数器搬进-actor) 会把这件事跑给你看）。
+
+## 7. 状态该放哪（判断法）
 
 | 这东西 | 放哪 | 为什么 |
 |---|---|---|
@@ -88,7 +118,7 @@ Actor 模型把"互斥"从一个**你要记得加的装饰**，变成**执行模
 判据：**两个请求同时来会互相写坏（读-改-写）就是 Actor**；只是"读出来展示"就是仓储。
 展开见 [12 Actor 与状态](./12-actors-state.md)。
 
-## 7. 四条常见误解
+## 8. 四条常见误解
 
 | 误解 | 事实 |
 |---|---|
@@ -97,7 +127,7 @@ Actor 模型把"互斥"从一个**你要记得加的装饰**，变成**执行模
 | "Actor 就是微服务" | 可以跨进程（本框架支持集群），但**同进程内也成立** —— 它的价值首先是并发正确性，不是拆分部署 |
 | "有了 Actor 就不用事务" | 只保证**单个 Actor 内**串行。跨实体的一致性仍要数据库事务/事件溯源/补偿 |
 
-## 8. 什么时候**不要**用它
+## 9. 什么时候**不要**用它
 
 这部分和"什么时候用"一样重要（[21 CLI 与生成器](./21-cli-generate-and-commands.md) 之类的工具也一样，非破坏性优先）：
 
@@ -108,7 +138,7 @@ Actor 模型把"互斥"从一个**你要记得加的装饰**，变成**执行模
   该 Actor 的后续消息都得排队。所以"Actor 只做决策、慢 IO 放外面/放服务层"是常见用法。
 - **单进程内存装不下的状态**：Actor 是内存态 + 持久化，不是分布式 KV。
 
-## 9. 跑一遍（CI 真执行）
+## 10. 跑一遍：同一件事的三种写法（CI 真执行）
 
 三种写法（裸共享状态 / 共享状态 + 手动串行 / Actor），同一形状的读-改-写、同一个让出点，
 20 个并发请求。断言是确定性的：裸共享**必丢**，后两种**必不丢**。
@@ -177,7 +207,158 @@ console.log(`bare=${bare} locked=${locked} actor=${actor}`);
 同一段实验在官网上也是同一份代码（`tools/landing/snippets/04-shared-vs-actor.ts`），
 既进 typecheck 又会被真跑 —— 你在页面上看到的数字，是它每次运行的真实输出。
 
-## 10. 接下来
+## 11. 五分钟改造演练：把共享计数器搬进 Actor
+
+假设你有一个已经在跑的服务（Express 写法，这里为了在 CI 里真跑改用内置 `node:http`，
+**逻辑一模一样**）：模块级变量存余额，路由里做"读 → 调外部服务 → 写回"。
+
+```js
+let balance = 100;                                   // 模块级共享状态：问题就在这里
+
+// 变量名刻意不叫 `app`：文档里的 `app` 专指框架应用层（`app.defineApp` 等），避免读起来混淆
+expressApp.post('/debit', async (req, res) => {
+  const current = balance;                           // 读
+  await db.update(...);                              // 让出：外部 IO（真实系统里就是这个窗口）
+  balance = current - 1;                             // 写回（用的是**自己读到的旧值**）
+  res.end(String(balance));
+});
+```
+
+### 第 1 步：先证明它坏了（别急着改）
+
+20 个并发请求，每个扣 1。期望 100 − 20 = 80，实际 **99** —— 只扣掉了 1 笔，另外 19 笔全被覆盖。
+
+这不是"框架不管"，而是**读-改-写之间夹着 `await`** 的必然结果。注意一个细节：
+让出点必须是**真实 IO 那样的宏任务**（`await db.update()` / `setTimeout`）；
+只 `await Promise.resolve()`（微任务）在真实 HTTP 请求之间往往**不会**交错 ——
+这也是为什么这类 bug 在本地压测时经常"看起来没问题"，上线才丢账。
+
+### 第 2 步：认出这属于 Actor 的状态
+
+回到 [决策树](#6-三十秒决策树用-actor-用仓储-直接-express)：问题 1 是"有并发写会算错的状态吗" → 有；
+问题 3 "要活过重启吗" → 要。所以是 **Actor + 持久化**。
+
+### 第 3 步：把状态搬进 Actor（HTTP 层几乎不动）
+
+```ts
+const Account = {
+  preStart() { this.state = { balance: 100 }; },        // 状态私有：外面拿不到引用
+  async receive(msg) {
+    const current = this.state.balance;                 // 读
+    await db.update(...);                               // 同样"慢 IO"，但消息是**串行**处理的
+    this.state.balance = current - msg.amount;          // 写回
+    return this.state.balance;
+  },
+};
+
+// 路由里只剩"发消息"，不再碰状态
+expressApp.post('/debit', async (req, res) => {
+  res.end(String(await account.ask({ amount: 1 }, 5000)));
+});
+```
+
+改造的是**状态的位置**，不是 HTTP 层：路由、参数校验、返回结构都不用动。
+（换成框架应用层写法就是 `ctx.actor('Account').ask(...)`，见 [12 Actor 与状态](./12-actors-state.md)。）
+
+### 第 4 步：加持久化，重启也不丢
+
+`spawn` 时给 `persistence: { mode: 'snapshot' }`（`events` 模式见 [12](./12-actors-state.md)），
+状态就会在重启后恢复 —— 演练的最后一段就是这个断言。
+
+### 第 5 步：跑一遍（CI 真执行）
+
+下面这段把 A（坏）→ B（好）→ C（重启后仍在）三段都跑一遍，断言是确定性的：
+
+```js verify
+import assert from 'node:assert';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const repo = `file://${process.cwd()}/`;
+const kernel = await import(`${repo}packages/core/src/index.ts`);
+const { createSystem } = kernel.default ?? kernel;
+
+const listen = (server) =>
+  new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)));
+const close = (server) => new Promise((resolve) => server.close(() => resolve()));
+const debitOnce = (base) => fetch(`${base}/debit`, { method: 'POST' });
+const N = 20;
+
+// ---------- A：改造前（Express 写法的等价物：模块级状态 + 读-改-写夹着 IO）----------
+let balance = 100;
+// 为了让"20 个请求都先读到旧值"**必然**发生，用一个 gate 模拟"同时到达 + IO 慢"
+let arrived = 0;
+let release;
+const gate = new Promise((resolve) => { release = resolve; });
+const before = http.createServer((req, res) => {
+  void (async () => {
+    if (req.url === '/debit') {
+      const current = balance;                 // 读
+      arrived += 1;
+      if (arrived === N) release();             // 第 20 个到达后放行
+      await gate;                               // 让出：真实系统里就是 await db.update()
+      balance = current - 1;                    // 写回：用的是各自读到的旧值
+      res.end(String(balance));
+      return;
+    }
+    res.end(String(balance));
+  })();
+});
+const beforeBase = await listen(before);
+await Promise.all(Array.from({ length: N }, () => debitOnce(beforeBase)));
+const broken = Number(await (await fetch(`${beforeBase}/balance`)).text());
+await close(before);
+
+// ---------- B：改造后（状态搬进 Actor，路由只发消息）----------
+const Account = {
+  preStart() { this.state = { balance: 100 }; },
+  async receive(msg) {
+    const current = this.state.balance;
+    await new Promise((resolve) => setTimeout(resolve, 0)); // 同样的"慢 IO"，但消息串行
+    this.state.balance = current - msg.amount;
+    return this.state.balance;
+  },
+};
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'walkthrough-'));
+const system = createSystem({ logger: false, persistenceDir: dir });
+const account = await system.spawn(Account, { id: 'account', persistence: { mode: 'snapshot' } });
+const after = http.createServer((req, res) => {
+  void (async () => {
+    if (req.url === '/debit') {
+      res.end(String(await account.ask({ amount: 1 }, 5000)));
+      return;
+    }
+    res.end(String(await account.ask({ amount: 0 }, 5000)));
+  })();
+});
+const afterBase = await listen(after);
+await Promise.all(Array.from({ length: N }, () => debitOnce(afterBase)));
+const fixed = Number(await (await fetch(`${afterBase}/balance`)).text());
+await close(after);
+await system.stop();
+
+// ---------- C：重启之后仍在（快照持久化）----------
+const system2 = createSystem({ logger: false, persistenceDir: dir });
+const account2 = await system2.spawn(Account, { id: 'account', persistence: { mode: 'snapshot' } });
+const restored = Number(await account2.ask({ amount: 0 }, 5000));
+await system2.stop();
+fs.rmSync(dir, { recursive: true, force: true });
+
+assert.strictEqual(broken, 99, `改造前：期望 80，实际 ${broken} —— 19 笔被覆盖`);
+assert.strictEqual(fixed, 80, `改造后：20 笔一笔不少（实际 ${fixed}）`);
+assert.strictEqual(restored, 80, `重启后仍然是 ${restored}`);
+console.log(`before=${broken} after=${fixed} after-restart=${restored}`);
+```
+
+### 演练要点
+
+- **改造的是状态的位置，不是 HTTP 层**：路由代码几乎没动，动的是"谁拥有余额"。
+- **先复现再改**：第 1 步的 99 比任何解释都有说服力（也顺便说明为什么这类 bug 上线才暴露）。
+- **持久化是独立的一步**：它解决的是"重启后还在"，与"并发不丢"是两件事，别混为一谈。
+
+## 12. 接下来
 
 - 想直接上手：[01 五分钟上手](./01-quickstart.md)
 - 想知道状态放哪、怎么持久化：[12 Actor 与状态](./12-actors-state.md)

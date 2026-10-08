@@ -306,11 +306,59 @@
       <div class="sec-head">
         <div class="kicker">选型</div>
         <h2>为什么选它：优势得"相对于什么"才算数</h2>
-        <p>不谈"更好"，只谈"在你已经在用的那种做法上，它换来了什么、代价是什么"。所以先把基线摆出来 ——
-        下面的对比是做法层面的，不点名任何具体库（点名会随版本腐烂）。</p>
+        <p>先回答四个问题（30 秒）就能分流；如果落在"Actor"上，再看下面的基线对比与代价 ——
+        对比是做法层面的，不点名任何具体库（点名会随版本腐烂）。</p>
       </div>
 
-      <div class="table-wrap">
+      <div class="tree" aria-label="选型决策树">
+        <div class="tree-step">
+          <span class="n">1</span>
+          <div>
+            <div class="tree-q">这段代码里，有没有"两个请求同时来会互相写坏"的状态（读-改-写）？</div>
+            <div class="tree-out">
+              <span class="leaf"><span class="cond">没有 →</span>第 2 问</span>
+              <span class="leaf actor"><span class="cond">有 →</span>第 3 问</span>
+            </div>
+          </div>
+        </div>
+        <div class="tree-step">
+          <span class="n">2</span>
+          <div>
+            <div class="tree-q">你是不是只在做"请求进来 → 读写数据库 → 返回"？</div>
+            <div class="tree-out">
+              <span class="leaf plain"><span class="cond">是 →</span>直接 Express / Fastify（不要上 Actor）</span>
+              <span class="leaf actor"><span class="cond">不是 →</span>Actor 装那些内存态（房间、对局、连接、定时任务）</span>
+            </div>
+          </div>
+        </div>
+        <div class="tree-step">
+          <span class="n">3</span>
+          <div>
+            <div class="tree-q">这个状态需要活过重启吗？</div>
+            <div class="tree-out">
+              <span class="leaf actor"><span class="cond">不需要 →</span>Actor（不配持久化）</span>
+              <span class="leaf actor"><span class="cond">需要 →</span>第 4 问</span>
+            </div>
+          </div>
+        </div>
+        <div class="tree-step">
+          <span class="n">4</span>
+          <div>
+            <div class="tree-q">需要跨节点共享同一份状态吗？</div>
+            <div class="tree-out">
+              <span class="leaf actor"><span class="cond">不需要 →</span>Actor + 快照/事件持久化</span>
+              <span class="leaf repo"><span class="cond">需要 →</span>Actor + 集群 + 共享存储（只有共享存储才能跨节点交接有状态 Actor）</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="tree-note">
+        更便宜的等价问法：<b>读-改-写之间夹着 <code>await</code> 吗？</b>
+        夹着就是危险区 —— 我们把它跑给你看过：
+        <a href="./docs/guide/00-what-is-an-actor.html#11-五分钟改造演练把共享计数器搬进-actor">5 分钟改造演练（共享计数器 → Actor）</a>。
+      </p>
+
+      <div class="table-wrap" style="margin-top:22px">
         <table>
           <thead>
             <tr><th>做法</th><th>并发正确性</th><th>故障语义</th><th>状态放哪</th><th>主要代价</th></tr>

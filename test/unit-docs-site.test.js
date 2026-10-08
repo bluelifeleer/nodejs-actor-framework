@@ -106,6 +106,26 @@ test('docs: 真实构建——仓库现有文档零断链，且产出首页 / �
   assert.ok(readme.length > 5000, 'README 页太小，八成渲染坏了');
 });
 
+test('docs: "```js verify" 这类带标记的围栏要渲染成代码块，并把"CI 真执行"标出来', async () => {
+  // 真实 bug 的回归：围栏信息串只按单词匹配过（`\w*`），于是 `js verify` 不匹配，
+  // 整块示例被当成普通段落渲染成文字 —— 16 个页面的"可执行示例"在网站上全是乱码。
+  const { renderMarkdown } = await import('../tools/docs-site.mjs');
+  const rendered = renderMarkdown(['```js verify', 'const a = 1;', '```', '', '```ts', 'const b = 2;', '```'].join('\n'));
+  assert.match(rendered.html, /<pre class="code" data-lang="js" data-verify="true">/, '带 verify 标记的块要标出来');
+  assert.match(rendered.html, /<pre class="code" data-lang="ts">/, '普通围栏不受影响');
+  assert.ok(!rendered.html.includes('js verify'), '信息串不能泄漏成正文文字');
+
+  // 全站检查：任何页面都不该再出现"裸露的围栏信息串"
+  await build({ log: () => {} });
+  const site = path.join(ROOT, 'site');
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    return entry.isDirectory() ? walk(full) : full.endsWith('.html') ? [full] : [];
+  });
+  const leaked = walk(site).filter((file) => /<p>```/.test(fs.readFileSync(file, 'utf8')));
+  assert.deepStrictEqual(leaked.map((file) => path.relative(site, file)), [], '不该有页面把围栏当文字渲染');
+});
+
 test('docs: 页面里的导航与"本页"目录都指向真实锚点', () => {
   const site = path.join(ROOT, 'site');
   const page = fs.readFileSync(path.join(site, 'docs/design/m4-cluster-governance.html'), 'utf8');

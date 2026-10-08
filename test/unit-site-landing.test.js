@@ -182,6 +182,14 @@ test('官网: 首页包含关键区块（hero / 特点 / 代码 / 纪律 / 包 /
     assert.ok(built.html.includes(boundary), `「什么时候不要用它」缺少边界：${boundary}`);
   }
 
+  // 选型决策树：四个问题与三种出口都要在，且链到概念页的改造演练
+  for (const marker of ['选型决策树', '读-改-写之间夹着', '直接 Express / Fastify（不要上 Actor）', 'Actor + 快照/事件持久化']) {
+    assert.ok(built.html.includes(marker), `首页缺少决策树要素：${marker}`);
+  }
+  const walkthrough = built.html.match(/href="(\.\/docs\/guide\/00-what-is-an-actor\.html#[^"]+)"/);
+  assert.ok(walkthrough !== null, '决策树要链到概念页的改造演练');
+  assert.match(walkthrough[1], /#11-五分钟改造演练/, `锚点要指向第 11 节（实际 ${walkthrough[1]}）`);
+
   // 三个 tab 与它们的面板都要在，且只有一个默认选中。
   // 注意：只能数**标签属性**，因为内联的 main.js 里有 `[role="tab"]` 这样的选择器字符串
   // （早先直接数 `role="tab"` 会把脚本里的那处也数进来 —— 这个门禁本身踩过）。
