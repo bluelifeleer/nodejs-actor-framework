@@ -12,6 +12,8 @@ import { pathToFileURL } from 'node:url';
 
 import { createFileMigrationStore, createMigrationRunner } from '@actor/data';
 
+import { UsageError } from '../args.ts';
+import { discoverCommands } from './custom.ts';
 import { ProjectError, loadMigrations, loadProject } from '../project/load.ts';
 
 export interface Check {
@@ -225,6 +227,36 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
     }
   } else {
     checks.push({ name: '迁移', ok: true, detail: '这个项目没有迁移（约定位置 src/migrations.ts）' });
+  }
+
+  // 6b) 自定义命令（P4）：发现情况 + 定义是否有问题（重名/形状不对在这里就能看到）
+  try {
+    const commands = await discoverCommands(project.dir);
+    if (commands.length === 0) {
+      checks.push({
+        name: '自定义命令',
+        ok: true,
+        detail: '没有（要加：actor generate command <name>）',
+      });
+    } else {
+      const sources = commands.map((item: { spec: { name: string }; source: string }) => `${item.spec.name}（${item.source}）`).join('、');
+      checks.push({
+        name: '自定义命令',
+        ok: true,
+        detail: `发现 ${String(commands.length)} 个：${sources}`,
+      });
+    }
+  } catch (error) {
+    // `discoverCommands` 对"内置名重名 / 重复定义 / 形状不对"是**抛错**的 —— 体检里正该报出来
+    checks.push({
+      name: '自定义命令',
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+      fix:
+        error instanceof UsageError && error.hint !== undefined
+          ? error.hint
+          : '检查 .actor/commands.ts 与 .actor/commands/*.ts 的 defineCommand 声明',
+    });
   }
 
   // 7) 端口能不能绑（默认 3000；被占用是最常见的"起不来"）

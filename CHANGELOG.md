@@ -47,7 +47,123 @@ npm run release:check -- --skip-ci   # 只跑打包与一致性检查（本地�
 
 ## [Unreleased]
 
-（下一次发布的改动写在这里。）
+M9（脚手架与 CLI + 应用层语法糖）的收尾：**保留名的单一来源与启动期校验**、**T2 参数简写**、
+**T3 工厂糖与 debug 四层可见性作用域**、**`actor new plugin` 补齐四种 kind**。
+
+### Added
+
+- **保留名的单一来源**（`@actor/web` / `@actor/app` 导出，文档与门禁都读它）：
+  `RESERVED_CONTEXT_KEYS`（本就存在，现公开）、`RESERVED_ROUTE_PREFIXES` / `RESERVED_PREFIX_OWNERS`、
+  `RESERVED_SERVICE_NAMES` / `isReservedServiceName` / `reservedServiceNamesIn`，
+  以及 `inReservedPrefix` / `prefixesOverlap` / `pluginPrefixCollisions` / `duplicatePrefixOwners`
+  与 web 层的 `framework` 标记（框架自带插件用它宣称"保留前缀是我的地盘"）。
+- **T2 参数简写**：
+  - 配置 **值即 schema**（`config({ port: 3000 })` ≡ `{ type: 'number', default: 3000 }`），
+    `ConfigSchemaInput` / `ConfigEntry` / `ConfigValue` 一套类型；`FieldSpec.required: false` 表示可缺省；
+  - 控制器 **输入声明合一**（`input: { filename: 'string' }`，默认来自 body；`from: 'query'|'params'` 保留），
+    `defineController` 自动补齐 `body`；
+  - 中间件 **阶段即函数名**：`atPre` / `atAuth` / `atParse` / `atHandler` / `atPost` / `atError` 与 `phase()`。
+- **T3 工厂糖**（`@actor/web`）：`crudRoutes(prefix, store, opts)`（五路由 + 分页 + 404/409 + 逐项覆盖，
+  仓储只要结构化最小形状 `list/get/create/update/remove`）、`healthRoutes()`（只报告进程形状的 `/health`）。
+- **debug 四层可见性作用域**：全局 `debugPlugin({ expose: { hidePrefixes } })`、
+  模块 `defineModule({ debug: { expose, hidePrefixes } })`、控制器 `defineController({ debug: 'off' })`。
+- **`actor new plugin --kind app|mail`**：两种骨架补齐（app = 生命周期与配置的行为测试；
+  mail = `runMailTransportContract`），`--repo` 接线清单随之多一行"自证合规"。
+- `@actor/mail` 新增 `assertSendable(message)`：发送前校验（没有收件人 / 头部注入），
+  自定义 transport（走 HTTP API、不渲染邮件）据此堵住两个洞。
+- `Application.modules` getter（与 `plugins` 同理：诊断类插件需要读模块级声明）。
+
+### Added
+
+**P1 错误出口**（`createApp(spec, { errors })`）—— 内核的后台失败此前对应用层**完全不可见**：
+
+- 钩子：`onKernelLog`（40+ 内核事件原样透传）/ `onActorCrash`（强类型视图，带**声明名**）/
+  `onDeadLetter` / `onSystemFailure` / `onHttpError`；
+- Actor 级 `ActorSpec.onCrash`（**只通知，不干预监督**；声明了就会触发，不依赖是否配了 `errors`）；
+- `app.deadLetters()` / `app.clearDeadLetters()`（装了 `deadLetters` 插件读落盘那份，否则读内存环）；
+- 纪律写死：不注册钩子 = 不转发（默认静默）；**钩子抛错绝不影响内核**（有可证伪用例）。
+
+**P2 统一日志**（`createApp(spec, { logging })`）—— 此前日志接缝各管一摊（内核 / HTTP / requestLog / tracing）：
+
+- `logger`（函数式或 pino/winston/console 对象式）、`level`、`filter`/`exclude`（`*` 通配）、
+  `levelOf`、`redactKeywords`、`context`、`framework`（框架自身日志开关）；
+- 三类事件汇到一个出口：`app:*` / `kernel:*` / `http:*`（含 `http:request`、`http:access`、`http:error`）；
+- `ctx.log` 与访问日志共用同一出口与同一份脱敏名单；给了 logger 时内核日志**不会重复**转发；
+- 门禁：**库代码不许裸 `console`**（每个调用必须带 `// console-ok: <理由>`，含证伪用例）。
+
+**P3 生成器**（`actor generate <kind>`，别名 `g`）：
+
+- `controller` / `actor` / `service` / `model` / `schema` / `middleware` / `test` / `command` 八种骨架，
+  每种都自带**能跑过**的测试；
+- `--field k:type`（可重复）、`--optimistic-lock`、`--no-test`、`--dry-run`、`--force`；
+- 布局跟随项目（layered/flat）；已存在文件**默认拒绝覆盖**；`module.ts` 接线**只打印片段**；
+- 用例证据：生成后项目 `tsc --noEmit` 通过 + 生成的测试在真项目里跑过（12/12）。
+
+**P4 自定义命令**：
+
+- `defineCommand({ name, summary, usage, flags, run })` + 两处发现位置
+  （`.actor/commands.ts` 集中声明、`.actor/commands/*.ts` 一文件一命令）；
+- `actor commands [--json]` 列出（带来源）；`--help` 由 flags 声明自动生成；
+- **子进程执行**（隔离：`process.exit` / 抛错 / 死循环不影响主 CLI；退出码原样透传、堆栈保留）；
+- 与内置重名 / 重复定义 / `run` 不是函数 / 未知选项都**明确报错**（不静默）；
+- `actor doctor` 新增"自定义命令"一节；`actor generate command <name>` 生成骨架。
+
+**P4+ 三项收尾**：
+
+- **持久化死信开箱可用**：[20 错误与日志](docs/guide/20-errors-and-logging.md) 增加
+  `deadLettersPlugin({ path })` 的用法与"重启后仍读得到"的用例；
+- **死信形状统一**：内核有两套形状（内存环 `{path,payload,error}` / 落盘队列 `{actorId,msg,reason}`），
+  `app.deadLetters()` 现在统一成前者（导出 `normalizeDeadLetter`）；`clearDeadLetters()` 如实返回条数
+  （装了插件时内存环为空，早先会返回 0）；
+- **自定义命令支持 npm 包来源**：`node_modules/actor-command-*`，**但只认项目 `dependencies` 里
+  声明的包或 `"actor": { "commands": [...] }` 显式列出的包**（未声明的包不加载，有用例守着边界）；
+- **`actor generate migration <name>`**：生成 `src/migrations/<时间戳>-<名字>.ts`，
+  版本号扫已有 `version:` 自动 +1（可用 `--migration-version` 指定），片段里给出要加进
+  `src/migrations.ts` 的 import；模板按真实的 `MigrationContext`（只有 `store`/`log`）出签名。
+
+### Fixed
+
+- **命令发现用 `import()` 会被模块缓存命中**：同一进程里改过 `.actor/commands.ts` 后仍读旧内容
+  （长驻进程/`doctor` 反复扫描会看到过期命令）。现在按文件 mtime 加缓存键。
+- `parseArgs` 的 `--field` 等**可重复选项**此前只有最后一次生效（静默丢数据）；现在收成数组，
+  且"给了 `--field` 但没有值"会明确报错。
+- 生成的骨架测试里 `configDir: null` 与 `@ts-expect-error` 会造成 `tsc --noEmit` 报错；
+  统一改成 `configDir: ''` 与正常写法。
+
+### Docs
+
+- 新增 [20 错误与日志](docs/guide/20-errors-and-logging.md)（哪些失败会出现在哪、"同步 vs 后台"两条路径、
+  钩子与统一日志的完整用法，带真跑示例）与 [21 CLI 进阶](docs/guide/21-cli-generate-and-commands.md)
+  （八种骨架 + 自定义命令，两段 verify 块会真建项目跑一遍）。
+
+**文档改版：`docs/guide/` 从"按里程碑顺序的开发文档"重建成"按用户任务组织"的使用文档。**
+
+- 新的主线（`docs/guide/*.md`）：导航页 + `01 五分钟上手`（真跑脚手架、真起进程、真优雅停）
+  + `02 项目结构` + `09 应用层语法糖` + `10 路由与请求` + `11 数据与 CRUD`（内存 SQLite 真建表真读写）
+  + `12 Actor 与状态` + `13 鉴权` + `14 配置与密钥` + `15 实时与上传` + `16 邮件`
+  + `17 测试` + `18 可观测与上线` + `19 排错手册`（按报错原文查）+ `reference/api.md`。
+  每页都带**会被 CI 执行**的 `verify` 块（真起应用、真请求、真断言）。
+- 旧的 17 篇按里程碑写的指南**原样搬进 `docs/guide/internals/`**（内容一字未改，只修相对链接），
+  并配了子索引；文档门禁升级为"两层都查"：顶层主线必须被索引页全量链上，internals 必须有
+  子索引且逐篇可达。
+- 顺手修掉写文档时暴露的**三个真问题**（见下面 Fixed）。
+
+### Fixed
+
+- **路由前缀撞车不再静默**：模块/路由器路由落在 `/uploads`、`/__debug` 里会在**启动期报错**
+  （此前会与框架插件路由**同时存在**，匹配到谁取决于声明顺序）；第三方插件声明保留前缀、
+  两个插件声明同一前缀也会报错。
+- `debugPlugin` 的默认路由改为**裸模式**（`/routes` 等）+ `defineWebPlugin({ routePrefix })`，
+  修掉"前缀被套两次"（`/__debug/__debug/routes`）；`uploadPlugin` 同理（`/uploads/uploads/…`）。
+- **保留服务名**改在**声明层**拦（插件名/provides/模块 provider 名撞保留名即报错）：
+  运行时 `provide()` 分不清调用者，早先在那里拦会把框架插件自己（`httpServer`）也拒掉。
+- `crudRoutes`：数组形式的 `fields: ['tags']` 之前会被当成"字符串默认值"，传数组进来直接 400；
+  现在按"必填字符串字段"正确展开（要 `json` 就用对象形式 `{ tags: ['x'] }`）。
+- `crudRoutes`：**乐观锁**参数（默认 `expectedVersion`）现在被自动声明为可选输入，并从写入字段里
+  摘出来作为 `store.update(id, body, { expectedVersion })` 的第三参；数据层的
+  `DbConflictError`/`RepositoryConflictError` 自动翻成 **409**（可用 `onConflict` 自定义）。
+- `uploadPlugin`：缺 `storage` 时在**定义期**报错（此前留到第一个上传请求才 500）；
+  `storage` 在类型上也标成必需。
 
 ## [1.0.0] - 2026-10-07
 
