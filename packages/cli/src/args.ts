@@ -15,13 +15,19 @@ export class UsageError extends Error {
   }
 }
 
+/** 解析后的选项表：值可能是字符串、布尔，或被重复给出的字符串数组。 */
+export type ParsedFlags = Record<string, string | boolean | readonly string[]>;
+
 export interface ParsedArgs {
   /** 子命令路径，例如 `['new', 'app']`。 */
   command: string[];
   /** 位置参数（子命令之后、非 flag 的部分）。 */
   positionals: string[];
-  /** `--flag` = true；`--key value` / `--key=value` = 字符串。 */
-  flags: Record<string, string | boolean>;
+  /**
+   * `--flag` = true；`--key value` / `--key=value` = 字符串；
+   * 可重复的选项（`--field`）收成**数组**，且在类型上标记为可重复。
+   */
+  flags: ParsedFlags;
 }
 
 /** 已知的开关（有这些才算 flag，其余 `--x` 会报错——错拼一个选项不该被静默忽略）。 */
@@ -32,11 +38,19 @@ export interface ParsedArgs {
  * 于是 `--web-plugin debug` 被解析成 `{ 'web-plugin': true, debug: true }` —— 插件名直接丢了。
  * 现在：当前选项在 `VALUE_FLAGS` 里，就**总是**把下一个词当值（除非它以 `--` 开头）。
  */
-const VALUE_FLAGS = new Set(['dir', 'data', 'to', 'port', 'layout', 'with', 'web-plugins', 'web-plugin', 'kind']);
+const VALUE_FLAGS = new Set([
+  'dir', 'data', 'to', 'port', 'layout', 'with', 'web-plugins', 'web-plugin', 'kind', 'field', 'migration-version',
+]);
+
+/**
+ * **可以重复**的选项：`--field a:string --field b:number` 要收成数组（不是后一个覆盖前一个）。
+ * 早先重复给同一个选项时，只有最后一次生效 —— 对"字段声明"这种天然多次的选项是静默丢数据。
+ */
+const REPEATABLE_FLAGS = new Set(['field']);
 
 const KNOWN_FLAGS = new Set([
   'force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout', 'web-plugins',
-  'with', 'dry-run', 'web-plugin', 'kind', 'repo',
+  'with', 'dry-run', 'web-plugin', 'kind', 'repo', 'field', 'no-test', 'optimistic-lock', 'migration-version',
 ]);
 
 /**
@@ -47,7 +61,8 @@ const KNOWN_FLAGS = new Set([
 export function parseArgs(argv: readonly string[], options: { commands: Record<string, readonly string[]> }): ParsedArgs {
   const command: string[] = [];
   const positionals: string[] = [];
-  const flags: Record<string, string | boolean> = {};
+  const flags: Record<string, string | boolean | string[]> = {};
+  void (0 as unknown as ParsedFlags);
 
   let index = 0;
   const head = argv[index];
@@ -77,17 +92,29 @@ export function parseArgs(argv: readonly string[], options: { commands: Record<s
     if (!KNOWN_FLAGS.has(name)) {
       throw new UsageError(`未知选项 '--${name}'`, `已知选项：${[...KNOWN_FLAGS].sort().map((f) => `--${f}`).join(' ')}`);
     }
+    const assign = (value: string): void => {
+      if (!REPEATABLE_FLAGS.has(name)) {
+        flags[name] = value;
+        return;
+      }
+      const existing = flags[name];
+      flags[name] = Array.isArray(existing) ? [...existing, value] : [value];
+    };
     if (equals !== -1) {
-      flags[name] = body.slice(equals + 1);
+      assign(body.slice(equals + 1));
       continue;
     }
     const next = argv[index + 1];
     const known = next === undefined ? true : next.startsWith('--') || (KNOWN_FLAGS.has(next) && !VALUE_FLAGS.has(name));
     if (next !== undefined && !known) {
       // `--dir src` / `--web-plugin debug`：带值选项总是吃掉下一个词（即使它看起来像开关名）
-      flags[name] = next;
+      assign(next);
       index += 1;
       continue;
+    }
+    if (REPEATABLE_FLAGS.has(name)) {
+      // `--field` 单给（没有值）没有意义：当成"缺值"报出来，而不是塞一个假的 'true'
+      throw new UsageError(`选项 '--${name}' 需要一个值`, `例如：--${name} title:string`);
     }
     flags[name] = true;
   }

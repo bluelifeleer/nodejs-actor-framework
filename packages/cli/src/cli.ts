@@ -12,6 +12,8 @@ import { UsageError, parseArgs } from './args.ts';
 import type { Capability, WebPlugin } from './capabilities.ts';
 import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
+import { GENERATE_KINDS, generate, parseField, type GenerateKind } from './commands/generate.ts';
+import { BUILTIN_COMMANDS, commandUsage, discoverCommands, renderCommands } from './commands/custom.ts';
 import { migrate } from './commands/migrate.ts';
 import { addCapability } from './commands/add.ts';
 import { newPlugin } from './commands/new-plugin.ts';
@@ -32,8 +34,13 @@ function usage(): string {
     '                                              给已有项目增量加能力（非破坏性；不覆盖已有片段）',
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
     '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
+    '  actor generate <kind> <name> [--field k:type]… [--optimistic-lock] [--migration-version <n>]',
+    '                                [--no-test] [--dry-run] [--force]',
+    '                                              生成常用骨架（controller/actor/service/model/schema/middleware/test）',
+    '                                              不覆盖已有文件；module.ts 的接线片段只打印，不自动改写',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
     '  actor doctor                                 体检：Node/依赖/配置/数据目录/迁移/端口',
+    '  actor commands [--json]                      列出内置与**项目自定义**命令（.actor/commands/）',
     '  actor --help | --version                     帮助与版本',
     '',
     '通用选项：--dir <path>（项目目录，默认当前目录）、--data <path>（数据目录，默认 APP_DATA_DIR 或 <dir>/data）、',
@@ -45,8 +52,22 @@ function usage(): string {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
+  // 自定义命令（P4）走"**先看首词、直接子进程转发**"这条路：
+  // 自定义命令的选项声明在用户代码里，主 CLI 的选项白名单**不该**去校验它们
+  // （否则 `actor seed --count 3` 会在主进程就被"未知选项"挡掉 —— 实测踩到）。
+  const customExit = await dispatchCustomCommand(argv);
+  if (customExit !== null) return customExit;
+
   const parsed = parseArgs(argv, {
-    commands: { new: ['app', 'plugin'], migrate: ['status', 'up', 'down'], doctor: [], add: [] },
+    commands: {
+      new: ['app', 'plugin'],
+      migrate: ['status', 'up', 'down'],
+      doctor: [],
+      add: [],
+      generate: [...GENERATE_KINDS],
+      commands: [],
+      help: [],
+    },
   });
 
   if (parsed.flags.version === true) {
@@ -57,10 +78,35 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
+  // `actor commands`：列出内置 + 项目自定义命令（自定义命令来自 .actor/commands/）
+  if (parsed.command[0] === 'commands') {
+    const dir = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : process.cwd();
+    let discovered: Awaited<ReturnType<typeof discoverCommands>> = [];
+    try {
+      discovered = await discoverCommands(path.resolve(dir));
+    } catch (error) {
+      if (error instanceof UsageError) throw error;
+      discovered = [];
+    }
+    process.stdout.write(renderCommands(discovered, { json: parsed.flags.json === true }));
+    return 0;
+  }
+
   if (parsed.command.length === 0) {
-    // 给了位置参数但没有命令词 → 说清是哪个命令不认识（比直接糊一屏用法有用）
+    // 给了位置参数但没有命令词 → 说清是哪个命令不认识（比直接糊一屏用法有用）。
+    // 这里也要提一句"项目自定义命令"：用户最可能的意图就是他自己加的那个命令。
     if (parsed.positionals.length > 0) {
-      throw new UsageError(`未知命令 '${parsed.positionals[0]}'`, '跑 `actor --help` 看支持的用法');
+      const dirFlag = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : undefined;
+      let customCount = 0;
+      try {
+        customCount = (await discoverCommands(path.resolve(dirFlag ?? process.cwd()))).length;
+      } catch {
+        customCount = 0;
+      }
+      throw new UsageError(
+        `未知命令 '${parsed.positionals[0]}'`,
+        `跑 \`actor --help\` 看内置用法；项目自定义命令看 \`actor commands\`（当前发现 ${String(customCount)} 个）`,
+      );
     }
     // 什么都没给：打印用法并给出**用法错误**的退出码（Unix 惯例，脚本里能区分）
     process.stderr.write(`${usage()}\n`);
@@ -121,11 +167,31 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 
   const projectDir = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : process.cwd();
+  const projectDirFlag = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : undefined;
+  // 未知命令的报错要能告诉用户"项目里发现了几个自定义命令"
+  const customName = parsed.positionals[0] ?? '';
+  let custom: Awaited<ReturnType<typeof discoverCommands>> = [];
+  try {
+    custom = await discoverCommands(path.resolve(projectDir));
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    custom = [];
+  }
   const data = typeof parsed.flags.data === 'string' ? parsed.flags.data : undefined;
   const asJson = parsed.flags.json === true;
 
   if (first === 'add') {
     const projectDir = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : process.cwd();
+  const projectDirFlag = typeof parsed.flags.dir === 'string' ? parsed.flags.dir : undefined;
+  // 未知命令的报错要能告诉用户"项目里发现了几个自定义命令"
+  const customName = parsed.positionals[0] ?? '';
+  let custom: Awaited<ReturnType<typeof discoverCommands>> = [];
+  try {
+    custom = await discoverCommands(path.resolve(projectDir));
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    custom = [];
+  }
     const capabilities =
       typeof parsed.flags['with'] === 'string'
         ? (parsed.flags['with'].split(',').map((name) => name.trim()).filter((name) => name !== '') as Capability[])
@@ -150,6 +216,45 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`  文件：\n${result.files.map((file) => `    ${file}`).join('\n')}\n`);
     if (result.manualSteps.length > 0) {
       process.stdout.write(`\n需要你确认/配置：\n${result.manualSteps.map((step) => `  - ${step}`).join('\n')}\n`);
+    }
+    return 0;
+  }
+
+  if (first === 'generate') {
+    const rawKind = second ?? parsed.positionals.shift() ?? '';
+    if (!(GENERATE_KINDS as readonly string[]).includes(rawKind)) {
+      throw new UsageError(
+        `未知的骨架 '${rawKind}'`,
+        `可选：${GENERATE_KINDS.join(' / ')}（用法：actor generate <kind> <name>）`,
+      );
+    }
+    const kind = rawKind as GenerateKind;
+    const rawFields = parsed.flags.field;
+    const fields = (Array.isArray(rawFields) ? rawFields : typeof rawFields === 'string' ? [rawFields] : [])
+      .filter((raw): raw is string => typeof raw === 'string' && raw !== '')
+      .map((raw) => parseField(raw));
+    const result = await generate(kind, parsed.positionals[0] ?? '', {
+      ...(projectDirFlag === undefined ? {} : { dir: projectDirFlag }),
+      fields,
+      ...(parsed.flags['optimistic-lock'] !== undefined ? { version: true } : {}),
+      ...(typeof parsed.flags['migration-version'] === 'string'
+        ? { migrationVersion: Number(parsed.flags['migration-version']) }
+        : {}),
+      ...(parsed.flags.force === true ? { force: true } : {}),
+      ...(parsed.flags['dry-run'] === true ? { dryRun: true } : {}),
+      ...(parsed.flags['no-test'] !== undefined ? { test: false } : {}),
+    });
+    process.stdout.write(
+      `${result.dryRun ? '[dry-run] 计划生成' : '已生成'} ${result.kind} 骨架 ${result.name}（${result.layout} 布局）\n`,
+    );
+    for (const file of result.files) process.stdout.write(`  + ${file}\n`);
+    for (const file of result.skipped) process.stdout.write(`  = ${file}（已存在，跳过；要覆盖加 --force）\n`);
+    if (result.snippet !== '') {
+      process.stdout.write(`\n下一步：把下面这段合并进 src/module.ts（本命令不改你的代码）\n`);
+      process.stdout.write(`${result.snippet.split('\n').map((line) => `  ${line}`).join('\n')}\n`);
+    }
+    if (result.skipped.length > 0) {
+      process.stdout.write(`\n注意：有 ${String(result.skipped.length)} 个文件已存在而被跳过（没有覆盖你改过的代码）。\n`);
     }
     return 0;
   }
@@ -202,8 +307,83 @@ async function main(argv: readonly string[]): Promise<number> {
     return result.problems === 0 ? 0 : 2;
   }
 
-  throw new UsageError(`未知命令 '${parsed.command.join(' ')}'`, '跑 `actor --help` 看支持的用法');
+  // 走到这里说明：不是内置命令，也不是项目里的自定义命令
+  throw new UsageError(
+    `未知命令 '${customName}'`,
+    `跑 \`actor --help\` 看内置用法；项目自定义命令看 \`actor commands\`（当前发现 ${String(custom.length)} 个）`,
+  );
 }
+
+/**
+ * 如果 argv 的首个位置参数是**项目自定义命令**，就在子进程里跑它并返回退出码；否则返回 null。
+ *
+ * 两条刻意的设计：
+ *   1. **选项原样转发**（`--count 3` 直接给子进程，由子进程按自己的声明解析并报错）；
+ *   2. 只从 argv 里手动取 `--dir`（项目定位），不解析其它选项（避免与自定义命令的选项冲突）。
+ */
+/** 去掉 `--dir <path>` / `--dir=<path>`（主 CLI 自己消费掉的选项，不转发给自定义命令）。 */
+function stripDirFlag(argv: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index] as string;
+    if (word === '--dir') {
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('--dir=')) continue;
+    out.push(word);
+  }
+  return out;
+}
+
+async function dispatchCustomCommand(argv: readonly string[]): Promise<number | null> {
+  const words: string[] = [];
+  let dir: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index] as string;
+    if (word === '--dir') {
+      dir = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (word.startsWith('--dir=')) {
+      dir = word.slice('--dir='.length);
+      continue;
+    }
+    if (!word.startsWith('-')) words.push(word);
+  }
+  const name = words[0];
+  if (name === undefined || BUILTIN_COMMANDS.includes(name)) return null;
+
+  let discovered: Awaited<ReturnType<typeof discoverCommands>> = [];
+  try {
+    discovered = await discoverCommands(path.resolve(dir ?? process.cwd()));
+  } catch (error) {
+    if (error instanceof UsageError) throw error; // 命令定义本身有问题（重名/形状不对）→ 直接报
+    discovered = [];
+  }
+  const found = discovered.find((item) => item.spec.name === name);
+  if (found === undefined) return null; // 不是自定义命令：交回内置流程（由它报"未知命令"）
+
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(`${commandUsage(found.spec)}\n`);
+    return 0;
+  }
+
+  // 只把**命令名之后的原始参数**转发给子进程（顺序与取值原样保留），并去掉主 CLI 自己的 `--dir`。
+  // 两次踩坑都记在这：按"过滤 --dir"重建 argv 会漏掉选项的值；把位置参数也拼进来会重复转发。
+  const nameIndex = argv.indexOf(name);
+  const forwarded = stripDirFlag(argv.slice(nameIndex + 1));
+  const runner = path.join(import.meta.dirname, 'run-command.ts');
+  const { spawn } = await import('node:child_process');
+  return new Promise<number>((resolve) => {
+    const child = spawn(process.execPath, [runner, path.resolve(dir ?? process.cwd()), name, ...forwarded], { stdio: 'inherit' });
+    child.on('exit', (exitCode) => resolve(exitCode ?? 1));
+    child.on('error', () => resolve(2));
+  });
+}
+
+
 
 const debug = process.argv.includes('--debug');
 try {
