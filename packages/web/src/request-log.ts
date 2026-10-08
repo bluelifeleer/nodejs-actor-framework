@@ -32,6 +32,7 @@ export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginS
   let detach: () => void = () => {};
   return {
     name: 'requestLog',
+    framework: true,
     config: {
       enabled: { type: 'boolean' as const, default: true },
       slowMs: { type: 'number' as const, default: 500, min: 0 },
@@ -42,15 +43,28 @@ export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginS
       const slowMs = options.slowMs ?? app.config.get<number>('plugins.requestLog.slowMs');
       const sampleRate = options.sampleRate ?? app.config.get<number>('plugins.requestLog.sampleRate');
       const format = options.format ?? 'line';
+      // 脱敏关键词：应用统一配置优先（`app.redactKeywords`），否则 Web 层默认名单
+      const redactOptions = app.redactKeywords === undefined ? {} : { keywords: app.redactKeywords };
+      const unified = app.logSink;
       const sink =
         options.onRequest ??
         ((entry: RequestLogEntry) => {
           const slow = entry.ms >= slowMs ? ' SLOW' : '';
-          if (format === 'json') {
-            // 结构化：字段齐全（bytesIn/bytesOut/userId），并且**过一遍脱敏**
-            console.log(JSON.stringify(toStructuredLog(entry, { slowMs })));
+          if (unified !== null) {
+            // 走统一出口：结构化（含 status/ms/requestId），由应用决定落地形态
+            unified('http', 'http:access', {
+              ...(redactValue(toStructuredLog(entry, { slowMs }), redactOptions) as Record<string, unknown>),
+              slow: entry.ms >= slowMs,
+            });
             return;
           }
+          if (format === 'json') {
+            // 结构化：字段齐全（bytesIn/bytesOut/userId），并且**过一遍脱敏**
+            // console-ok: 兜底 —— 应用没配统一出口时才打到 console
+            console.log(JSON.stringify(redactValue(toStructuredLog(entry, { slowMs }), redactOptions)));
+            return;
+          }
+          // console-ok: 同上（默认 line 形态）
           console.log(
             `[http] ${entry.method} ${entry.path} ${String(entry.status)} ${String(entry.ms)}ms ` +
               `rid=${entry.requestId}${slow}` +
@@ -73,7 +87,9 @@ export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginS
         if (options.includeHeaders === true) {
           const raw = (record as { headers?: Record<string, unknown> }).headers ?? {};
           const safe: Record<string, unknown> = {};
-          for (const [key, value] of Object.entries(raw)) safe[key] = shouldRedact(key) ? '[redacted]' : value;
+          for (const [key, value] of Object.entries(raw)) {
+            safe[key] = shouldRedact(key, redactOptions.keywords) ? '[redacted]' : value;
+          }
           (sanitized as { headers?: Record<string, unknown> }).headers = safe;
         }
         sink(sanitized);

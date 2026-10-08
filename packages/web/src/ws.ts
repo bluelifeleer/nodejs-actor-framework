@@ -24,10 +24,10 @@ const { WebSocketServer } = require('nodejs-actor-framework/src/ops/index.ts') a
   WebSocketServer: new (options: Record<string, unknown>) => KernelWebSocketServer;
 };
 
-import { toErrorResponse, toResponse, createRequestContext, type HeaderValue } from './context.ts';
+import { toErrorResponse, toResponse, createRequestContext, inReservedPrefix, RESERVED_PREFIX_OWNERS, type HeaderValue } from './context.ts';
 import { createConnectionRegistry, type MutableConnectionRegistry, type WsConnection } from './connections.ts';
 import { composeMiddleware, type Middleware } from './middleware.ts';
-import { buildRouteTable, matchRoute, type Route, type RouteMethod } from './routes.ts';
+import { buildRouteTable, matchRoute, reservedPrefixIssues, type Route, type RouteMethod } from './routes.ts';
 import { flattenRoutes } from './router.ts';
 
 export interface WsPluginOptions {
@@ -105,6 +105,7 @@ async function handleMessage(
     actor: (name: string) => app.actor(name),
     get: (name: string) => app.get(name),
     config: app.config,
+    // console-ok: 注入给 WS 控制器的内置 log 默认实现
     log: { info: console.info, warn: console.warn, error: console.error },
   });
 
@@ -138,6 +139,7 @@ async function handleMessage(
       socket.sendJson({ error: { status: 400, message: 'input validation failed', details: { issues } } });
       return;
     }
+    // console-ok: 兜底 —— WS 控制器抛错必须留痕
     console.error('[ws] handler error:', error);
     socket.send(String(toErrorResponse(error).body));
   }
@@ -153,6 +155,7 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
 
   const plugin = {
     name: 'ws',
+    framework: true,
     config: {
       // 刻意**不给默认值**（改成可空）：未配置才能与'显式配置'区分，从而决定是否与 HTTP 共享端口；
       // 若既不共享也未配置，运行期回落到 9001。
@@ -184,6 +187,17 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
       const flattened = flattenRoutes(app.routes);
       const { routes, issues } = buildRouteTable(flattened.entries as never);
       issues.unshift(...flattened.issues);
+      // 与 httpPlugin 同一口径：WS 路由也装在保留前缀里就明确报错（两处装的是同一份路由表）
+      issues.unshift(
+        ...reservedPrefixIssues(
+          flattened.entries.filter((entry) => {
+            const meta = entry[4] as { module?: string; router?: string } | undefined;
+            return meta?.module !== undefined || meta?.router !== undefined;
+          }) as never,
+          RESERVED_PREFIX_OWNERS,
+          inReservedPrefix,
+        ),
+      );
       if (issues.length > 0) {
         throw new Error(
           `路由配置有问题（${issues.length} 项）：\n` + issues.map((i) => `  - ${i.message}`).join('\n'),
@@ -237,9 +251,14 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
 
       await wsServer.listen();
       bound = { host, port: wsServer.port };
-      console.log(
-        `[@actor/web] ws listening on ${host}:${String(wsServer.port)}${share ? '（与 HTTP 共享端口）' : ''}`,
-      );
+      if (app.logSink === null) {
+        // console-ok: 兜底 —— 配了统一出口就走 plugin:ws_listening
+        console.log(
+          `[@actor/web] ws listening on ${host}:${String(wsServer.port)}${share ? '（与 HTTP 共享端口）' : ''}`,
+        );
+      } else {
+        app.logSink('plugin', 'plugin:ws_listening', { host, port: wsServer.port, sharedWithHttp: share });
+      }
     },
     async onStopping(app: Application) {
       const timeoutMs = options.shutdownTimeoutMs ?? app.config.get<number>('plugins.ws.shutdownTimeoutMs');

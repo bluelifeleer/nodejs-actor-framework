@@ -13,11 +13,17 @@ import type { Application, PluginSpec } from '@actor/app';
 
 import { dispatch } from './controller.ts';
 import type { Middleware } from './middleware.ts';
-import type { HeaderValue } from './context.ts';
+import {
+  duplicatePrefixOwners,
+  inReservedPrefix,
+  pluginPrefixCollisions,
+  RESERVED_PREFIX_OWNERS,
+  type HeaderValue,
+} from './context.ts';
 import { createRequestLogger, type LogSink } from './logging.ts';
 import { WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
 import { STREAM_ROUTES_SERVICE } from './upload/plugin.ts';
-import { buildRouteTable, type HttpMethod, type Route } from './routes.ts';
+import { buildRouteTable, type HttpMethod, type Route, reservedPrefixIssues } from './routes.ts';
 import { flattenRoutes } from './router.ts';
 
 export interface HttpPluginOptions {
@@ -82,6 +88,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
 
   const plugin = {
     name: 'http',
+    framework: true,
     config: readSchema(),
     async onReady(app: Application) {
       const config = app.config;
@@ -93,6 +100,35 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       const flattened = flattenRoutes(app.routes);
       const { routes, issues } = buildRouteTable(flattened.entries as never);
       issues.unshift(...flattened.issues);
+      // 框架保留前缀（唯一来源 RESERVED_ROUTE_PREFIXES / RESERVED_PREFIX_OWNERS）：撞名字不是"模式重复"，
+      // 所以路由表检查发现不了 —— 这里显式拦住，延续"响亮失败优于静默覆盖"。
+      // ① 插件层：第三方插件不许把自己声明的前缀与保留区重叠（这一层归属明确，判得准）；
+      // ② 路由层：**模块/路由器**路由落在保留区 → 报错。插件路由不带归属信息（RouteMeta 只记模块/路由器名），
+      //    所以那一半交给①去判 —— 这里显式只查带归属的路由，而不是"猜不了就放过"。
+      for (const collision of pluginPrefixCollisions(app.plugins ?? [])) {
+        issues.push({
+          message:
+            `插件 '${collision.owner}' 声明的路由前缀 "${collision.prefix}" 与框架保留前缀 ` +
+            `"${collision.reserved}" 重叠 —— 这片命名空间由内置插件占用，请换一个前缀`,
+        });
+      }
+      for (const duplicate of duplicatePrefixOwners(app.plugins ?? [])) {
+        issues.push({
+          message:
+            `路由前缀 "${duplicate.prefix}" 被多个插件声明占用（${duplicate.owners.join(' / ')}）—— ` +
+            `同一片命名空间只能有一个主人，请给其中一个换 routePrefix/prefix`,
+        });
+      }
+      issues.unshift(
+        ...reservedPrefixIssues(
+          flattened.entries.filter((entry) => {
+            const meta = entry[4] as { module?: string; router?: string } | undefined;
+            return meta?.module !== undefined || meta?.router !== undefined;
+          }) as never,
+          RESERVED_PREFIX_OWNERS,
+          inReservedPrefix,
+        ),
+      );
       if (issues.length > 0) {
         throw new Error(
           `路由配置有问题（${issues.length} 项）：\n` + issues.map((i) => `  - ${i.message}`).join('\n'),
@@ -101,6 +137,9 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
 
       const accessLog = options.accessLog ?? config.get<boolean>('plugins.http.accessLog');
       const slowMs = options.slowMs ?? config.get<number>('plugins.http.slowMs');
+      // 插件级 logger（给了就优先于应用统一出口）
+      const pluginLogger = options.logger;
+      // console 兜底只在"应用没配统一出口"时走到（见下面各处的 app.logSink === null 判断）
 
       server = http.createServer((req, res) => {
         inFlight += 1;
@@ -155,16 +194,17 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               config: app.config,
               // 插件声明的 context 钩子（defineWebPlugin({ context }) → 服务）
               contextHooks: readContextHooks(app),
-              // 有 logger 就用**请求级子日志**（每条带 requestId）；否则退回 console
-              // （这里原来是硬编码的 console 对象 —— 与上面的 log 是重复键，会把子日志覆盖掉）
-              log:
-                options.logger === undefined
-                  ? { info: console.info, warn: console.warn, error: console.error }
-                  : createRequestLogger(options.logger, {
-                      requestId: String(req.headers['x-request-id'] ?? ''),
-                      method: req.method ?? 'GET',
-                      path: String(req.url ?? '/'),
-                    }),
+              // 请求级子日志：优先级 = 插件 logger > 应用统一出口（`app.logSink`）> console 兜底
+              // （早先这里是硬编码的 console 对象，与上面的 log 是重复键，会把子日志覆盖掉）
+              log: createRequestLogger(
+                pluginLogger ??
+                  (app.logSink === null ? undefined : (event, meta) => app.logSink?.('http', `http:${event}`, meta)),
+                {
+                  requestId: String(req.headers['x-request-id'] ?? ''),
+                  method: req.method ?? 'GET',
+                  path: String(req.url ?? '/'),
+                },
+              ),
               // 5xx 必须在服务端可见：转成应用事件（由使用者决定怎么记日志）
               onError: (error, info) => {
                 app.emit('http:error', {
@@ -202,14 +242,29 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             if (accessLog) {
               const elapsed = Date.now() - startedAt;
               const slow = elapsed >= slowMs ? ' SLOW' : '';
-              console.log(
+              const line =
                 `[http] ${req.method ?? 'GET'} ${req.url ?? '/'} ${String(result.response.status)} ` +
-                  `${String(elapsed)}ms rid=${result.requestId}${slow}`,
-              );
+                `${String(elapsed)}ms rid=${result.requestId}${slow}`;
+              // 有统一出口就走它（结构化：event=http:request），否则保持原样打到 console
+              // console-ok: 应用没配 logging.logger 时的兜底（配了就走 http:request）
+              if (app.logSink === null) console.log(line);
+              else {
+                app.logSink('http', 'http:request', {
+                  method: req.method ?? 'GET',
+                  path: req.url ?? '/',
+                  status: result.response.status,
+                  ms: elapsed,
+                  requestId: result.requestId,
+                  ...(result.userId === undefined ? {} : { userId: result.userId }),
+                  slow: elapsed >= slowMs,
+                });
+              }
             }
           } catch (error) {
             // 500 必须留痕：响应里不含细节（安全），但服务端日志要能定位
-            console.error('[http] handler error:', error);
+            // console-ok: 兜底 —— 5xx 必须留痕，配了统一出口就走 http:handler_error
+            if (app.logSink === null) console.error('[http] handler error:', error);
+            else app.logSink('http', 'http:handler_error', { error: error instanceof Error ? error.message : String(error) });
             res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ error: { status: 500, message: 'internal error' } }));
             void error;
@@ -225,7 +280,9 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
       app.provide('httpServer', server);
       const addr = server.address();
       bound = typeof addr === 'object' && addr !== null ? { host, port: addr.port } : null;
-      console.log(`[@actor/web] http listening on ${host}:${String(bound?.port)}`);
+      // console-ok: 兜底 —— 配了统一出口就走 plugin:http_listening
+      if (app.logSink === null) console.log(`[@actor/web] http listening on ${host}:${String(bound?.port)}`);
+      else app.logSink('plugin', 'plugin:http_listening', { host, port: bound?.port ?? null });
     },
     async onStopping(app: Application) {
       if (!server) return;

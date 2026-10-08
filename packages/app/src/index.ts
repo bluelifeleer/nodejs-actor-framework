@@ -74,9 +74,24 @@ export const APP_LAYER_VERSION = '0.1.0';
 
 export { runApp, type RunAppOptions } from './run.ts';
 
+// --- 统一日志（P2）------------------------------------------------------------
+export {
+  createAppLogger,
+  defaultLevelOf,
+  matchesPattern,
+  type AppLogger,
+  type LogFamily,
+  type LoggingConfig,
+  type LogLevelName,
+  type LogSinkFn,
+  type LogTargetLike,
+  type RoutedLogEvent,
+} from './logging.ts';
+
 // --- 错误出口（P1）------------------------------------------------------------
 export {
   bridgeKernelEvents,
+  normalizeDeadLetter,
   type ActorCrashHook,
   type ActorCrashInfo,
   type DeadLetterLike,

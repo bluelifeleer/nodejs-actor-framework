@@ -7,6 +7,7 @@ import {
   type DeadLetterLike,
   type ErrorHooks,
 } from './errors.ts';
+import { createAppLogger, type AppLogger, type LoggingConfig } from './logging.ts';
 import {
   defineConfig,
   type ConfigSchema,
@@ -181,6 +182,11 @@ export interface CreateAppOptions {
    * 不注册任何钩子 = 不转发（默认静默，行为与从前一致）；细节见 `./errors.ts`。
    */
   errors?: ErrorHooks;
+  /**
+   * **统一日志入口**（P2）：一处配好级别/过滤/脱敏/上下文字段，三类事件汇到一个出口。
+   * 不给 `logger` 就走 console 兜底（与从前行为一致）；细节见 `./logging.ts`。
+   */
+  logging?: LoggingConfig;
   env?: Record<string, string | undefined>;
   envPrefix?: string;
   overrides?: Record<string, unknown>;
@@ -361,6 +367,8 @@ export class Application {
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
   private loadedConfig: LoadedConfig | null = null;
   private system: unknown = null;
+  /** 统一日志路由器（P2）：`logging.logger` 给了才非 null。 */
+  private readonly logRouter: AppLogger | null;
   /**
    * 路径 → 该 Actor 的崩溃回执（`ActorSpec.onCrash`；只通知，不干预监督）。
    *
@@ -382,6 +390,25 @@ export class Application {
   constructor(spec: AppSpec, options: CreateAppOptions = {}) {
     this.spec = spec;
     this.options = options;
+    // 日志路由器只需要配置，不需要加载配置/启动内核 → 构造期就建好，
+    // 这样插件在 setup 阶段就能通过 `app.logSink` 用上统一出口。
+    this.logRouter = options.logging === undefined ? null : createAppLogger(options.logging);
+  }
+
+  /**
+   * **统一日志出口**（P2；插件用）：把插件自己的事件按统一策略记出去。
+   *
+   * 没配 `logging.logger` 时是 null —— 插件应当**自己兜底**（通常是 console），
+   * 而不是把日志丢掉（库代码不决定输出，但也不能吞掉可观测性）。
+   */
+  get logSink(): ((family: 'app' | 'kernel' | 'http' | 'plugin', event: string, meta?: Record<string, unknown>) => void) | null {
+    if (this.logRouter === null) return null;
+    return (family, event, meta) => this.logRouter?.publish(family, event, meta);
+  }
+
+  /** 脱敏关键词覆盖（`logging.redactKeywords`；没配就是 undefined = 用 Web 层默认名单）。 */
+  get redactKeywords(): readonly string[] | undefined {
+    return this.logRouter?.redactKeywords;
   }
 
   get config(): LoadedConfig {
@@ -532,7 +559,7 @@ export class Application {
           onCrash: (path) => this.crashHooks.get(path),
         },
         // 给了 logger：内核日志已直达出口，桥只负责崩溃回执（避免重复）
-        { includeKernelLog: true },
+        { includeKernelLog: this.logRouter === null || !this.logRouter.handlesKernel },
       );
     }
 
@@ -687,7 +714,16 @@ export class Application {
     // 5) 启动内核并 spawn Actor —— 插件贡献的内核能力在此一次性装入
     // （显式启用：未声明的能力不会被挂上，内核的加载面因此可控）
     const contributed = this.pluginSpecs.flatMap((plugin) => plugin.kernelPlugins ?? []);
-    const kernelOptions: Record<string, unknown> = { ...(this.options.kernel ?? { logger: false }) };
+    const explicitKernel = this.options.kernel ?? {};
+    const kernelOptions: Record<string, unknown> = { ...explicitKernel };
+    if (explicitKernel['logger'] === undefined) {
+      // 没配 logging.logger 时保持**从前行为**（内核日志关闭，不产生新输出）；
+      // 配了就把内核日志接进统一出口（`kernel:*`）。
+      kernelOptions['logger'] =
+        this.logRouter === null || !this.logRouter.handlesKernel
+          ? false
+          : (event: string, meta?: Record<string, unknown>) => this.logRouter?.publish('kernel', `kernel:${event}`, meta);
+    }
     if (contributed.length > 0) {
       const existing = (kernelOptions.plugins as readonly unknown[] | undefined) ?? [];
       kernelOptions.plugins = [...existing, ...contributed];
@@ -716,6 +752,13 @@ export class Application {
 
     // 7) 插件的"就绪"动作（此时 Actor 已 spawn、模块 onStart 已完成）：端口监听等放这里
     for (const plugin of this.pluginSpecs) await plugin.onReady?.(this);
+
+    // 7b) 生命周期事件也走统一出口（P2）：`app:started` 带上模块数与插件数，便于排障
+    this.logRouter?.publish('app', 'app:started', {
+      modules: this.modules_.length,
+      plugins: this.pluginSpecs.length,
+      actors: this.actorSpecs.size,
+    });
 
     // 8) 保持进程存活：start() 之后应用一直运行，直到 stop()
     this.keepAlive = setInterval(() => {}, 2 ** 31 - 1);
@@ -767,6 +810,8 @@ export class Application {
         /* 插件释放失败不阻断停止流程 */
       }
     }
+    this.logRouter?.publish('app', 'app:stopped', { reason: 'stop()' });
+
     for (const name of [...this.disposedProviders].reverse()) {
       const spec = this.providerSpecs.get(name);
       if (spec?.dispose) {

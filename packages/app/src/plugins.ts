@@ -166,6 +166,7 @@ export function clusterPlugin(options: ClusterPluginOptions = {}): ClusterPlugin
       gateway = server ? { host: server.host, port: server.boundPort } : { host, port };
       // 默认端口是 0（随机的），所以要把它打出来——否则运维没法配防火墙规则。
       // 与 httpPlugin 的启动日志同一约定。
+      // console-ok: 内核插件没有 app 引用（拿不到统一出口）；这一条是内核插件自带的可观测性
       console.log(`[@actor/app] cluster gateway listening on ${gateway.host}:${String(gateway.port)}`);
     },
 
