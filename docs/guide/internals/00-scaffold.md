@@ -179,6 +179,170 @@ await runApp(app, {
 退出行为可注入（`exit`，默认 `process.exit`），所以这条路径**能被测试**：`packages/web/test/run-app.test.ts`
 真的发一个信号、断言"停一次、退 0、重复信号不重复退"。
 
+### 参数简写（T2：省掉样板，但一次都不含糊）
+
+三处简写都遵循同一条纪律：**糖与全量写法产出同一份数据**（有"深比较相等"的门禁盯着），
+并且随时可以只在一处写全量形式（混用没问题）。
+
+**① 配置值即 schema** —— 直接写值，类型与默认值从值推断：
+
+```ts
+config({
+  port: 3000,                       // = { type: 'number', default: 3000 }
+  name: 'app',                      // = { type: 'string', default: 'app' }
+  tags: ['a'],                      // = { type: 'json',   default: ['a'] }
+  token: { type: 'string', secret: true },     // 需要校验/打码/必填就写全量形式
+});
+```
+
+要 `min`/`regex`/`enum`/`secret`/`nullable` 或"必填（不给默认值）"时写全量形式；
+**普通对象永远是分组**（不会被当成"默认值是个对象"）—— 要对象默认值请写 `{ type: 'json', default: { … } }`。
+
+**② 输入声明合一** —— 不用再手写 `body: [...]` 与 `input` 两处（不带 `from` 的输入**默认来自请求体**）：
+
+```ts
+controller({
+  input: {
+    filename: 'string',                                  // 字符串别名：string / int / number / bool / boolean / json
+    size: 'int',
+    id: { from: 'params', type: 'string' },              // 路径参数
+    limit: { from: 'query', type: 'number', default: 20 }, // 查询参数（路由模式里要写 ?limit= 声明"会读取"）
+  },
+  handle: (input) => input,
+});
+```
+
+`body` 会被自动补齐（于是"每个输入键都要有来源"的启动期校验照旧生效）。要"部分更新"（只校验给了的字段）
+就在字段上写 `required: false`。
+
+**③ 中间件阶段即函数名** —— `atPre` / `atAuth` / `atParse` / `atHandler` / `atPost` / `atError`：
+
+```ts
+import { atAuth, atPost } from '@actor/web';
+
+controller({
+  middleware: [
+    atAuth(async (ctx, next) => { /* 校验 token */ return next(); }),   // = { handler, phase: 'auth' }
+    atPost(async (_ctx, next) => { const result = await next(); /* 后置 */ return result; }),
+  ],
+  handle: () => ({ ok: true }),
+});
+```
+
+（名字带 `at` 前缀是为了不与既有导出/全局撞：`post` 已经是路由助手、`parse` 撞 `JSON.parse`。）
+
+### 工厂糖（T3）：CRUD 与健康检查
+
+`crudRoutes` 生成 list/get/create/update/delete 五条路由（含分页、404/409、输入校验），
+每一项都能**逐项覆盖**；`healthRoutes` 生成一个"只报告进程形状"的 `/health`：
+
+```ts
+import { crudRoutes, healthRoutes, get } from '@actor/web';
+
+module({
+  name: 'notes',
+  router: crudRoutes('/notes', notesRepository, {
+    name: 'note',
+    fields: ['title', 'body'],          // 可写字段（数组 = 必填字符串；对象 = 值即 schema）
+    auth: { required: true },           // 由 authPlugin 解释
+    routes: { list: get('/notes', customListController) },  // 想换哪条就换哪条
+  }),
+});
+```
+
+| 方法/模式 | 语义 |
+|---|---|
+| `GET /notes?limit=&offset=` | 列表（默认 `limit=20`、上限 100，参数透传给仓储） |
+| `GET /notes/:id` | 取一条；仓储返回 `null` → 404 |
+| `POST /notes` | 创建 → 201；仓储抛 `status: 409` 或 `name` 含 Conflict → 409 |
+| `PUT /notes/:id` | 更新（默认**部分更新**，`updateRequired: true` 可改成全量）→ 200；不存在 → 404 |
+| `DELETE /notes/:id` | 删除 → 204；返回 `false` → 404 |
+
+仓储只要求**结构化最小形状**（`list/get/create/update/remove`），不依赖 `@actor/db`：
+
+```ts
+module({ name: 'notes', providers: { notesRepository: () => ({ list, get, create, update, remove }) } });
+```
+
+### 保留名与命名冲突（框架守的那一层）
+
+框架占了几个**全局名字**，撞上会在**启动期明确报错**（不是静默覆盖）：
+
+| 保留物 | 值 | 单一来源 |
+|---|---|---|
+| ctx 字段 | `method` `path` `requestId` `body` `params` `qs` `headers` `route` 等（`ctx.extend` 撞上会报错） | `RESERVED_CONTEXT_KEYS`（`@actor/web`） |
+| 路由前缀 | `/uploads`（uploadPlugin）、`/__debug`（debugPlugin） | `RESERVED_ROUTE_PREFIXES` / `RESERVED_PREFIX_OWNERS`（`@actor/web`） |
+| 服务名 | `config` `log` `httpServer` `wsConnections` 与 `@actor/` 命名空间 | `RESERVED_SERVICE_NAMES`（`@actor/app`） |
+
+自定义插件想占自己的前缀就声明 `routePrefix`（`defineWebPlugin({ routePrefix: '/mine' })`）；
+服务名用自己项目的名字（控制器里 `ctx.get('mine')` 取）。
+
+**编译器挡不住的那一层已经有人管**：重复标识符（`import { config }` 和 `const config`）由 TypeScript 报错，
+框架不重复做；框架只守"保留位"（上面那张表）。真要撞名就 `import { config as appConfig }`。
+
+### 诊断路由的可见性作用域（debug 四层）
+
+`debugPlugin` 打开后会挂 `/__debug/routes|health|config`（默认关闭、需 token、生产拒绝启动）。
+**诊断输出里暴露什么**可以按四层收窄：
+
+```ts
+debugPlugin({ enabled: true, token, expose: { hidePrefixes: ['/internal'] } })   // 全局：按前缀
+module({ name: 'admin', debug: { hidePrefixes: ['/admin/audit'] } })             // 路由前缀（模块级叠加）
+module({ name: 'secret', debug: { expose: false } })                             // 模块：整棵子树不进输出
+controller({ debug: 'off', handle })                                            // 控制器：这条不进输出
+```
+
+> ⚠️ **这不是安全边界**：它只让诊断输出少暴露信息，**不影响路由是否可用、也不改变鉴权**。
+> 真正的门是 token + "生产环境拒绝启动"。把隐藏当安全用是常见误解。
+
+### 生成插件骨架：四种 kind
+
+```bash
+actor new plugin my-plugin --kind app|web|resource|mail
+```
+
+| kind | 内容 | 自证方式 |
+|---|---|---|
+| `app` | `definePlugin` 骨架（配置节 + setup/onReady/onStopping/teardown + 一个服务） | 骨架自带行为测试（生命周期顺序 / 配置节 / 服务可获取 / 停机幂等） |
+| `web` | `defineWebPlugin`（routes + 带阶段中间件 + ctx 扩展槽） | `runWebPluginContract`（已发布） |
+| `resource` | `defineResourceAdapter`（connect/healthCheck/keepAlive/close/stats） | `runManagedResourceContract`（已发布） |
+| `mail` | `defineMailTransport`（send + verify，发前先 `assertSendable`） | `runMailTransportContract`（已发布） |
+
+每种骨架都带 `package.json` / `src/index.ts` / `test/contract.test.ts` / `README.md`，
+生成的测试**当场可跑**（`cd my-plugin && npm test`）；仓库内模式（`--repo`）还会打印四张矩阵的接线清单。
+
+### 这四种骨架真的能跑（这条示例会被测试执行）
+
+```js verify
+import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const cli = path.join(process.cwd(), 'packages', 'cli', 'src', 'cli.ts');
+const dir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-plugin-kinds-'));
+
+try {
+  for (const kind of ['app', 'web', 'resource', 'mail']) {
+    const { stdout } = await run(process.execPath, [cli, 'new', 'plugin', `doc-${kind}-plugin`, '--kind', kind, '--dir', dir]);
+    assert.match(stdout, new RegExp(`已生成 ${kind} 插件`), `${kind} 骨架应当生成：\n${stdout}`);
+    const project = path.join(dir, `doc-${kind}-plugin`);
+    assert.ok(fs.existsSync(path.join(project, 'test', 'contract.test.ts')), `${kind} 骨架要自带契约测试`);
+    // 关键：**生成的骨架当场能跑自己的契约套件**（不是空壳）
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const test = await run('npm', ['test'], { cwd: project, timeout: 120_000, env });
+    assert.ok(!/fail [1-9]/.test(test.stdout), `${kind} 骨架的契约测试不该有失败：\n${test.stdout}`);
+    assert.match(test.stdout, /pass [1-9]/, `${kind} 骨架的契约测试应当真的跑起来：\n${test.stdout}`);
+  }
+} finally {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+console.log('ok');
+```
+
 ### 另一种布局：`--layout flat`
 
 ```bash
@@ -269,4 +433,5 @@ node packages/cli/src/cli.ts --version
 2. **class 形态的 Actor 不能开 `snapshot`/`events` 持久化**：框架在启动期就会明确拒绝
    （类实例的状态无法被正确恢复）。要用持久化就用 handler bag 或 `@actor/data` 的 `defineAggregate`。
 
-下一步：[第一个 Actor](./01-first-actor.md) / [HTTP 应用](./03-http-app.md) / [数据层](./04-data-layer.md)。
+下一步：[第一个 Actor](./01-first-actor.md) / [HTTP 应用](./03-http-app.md) / [数据层](./04-data-layer.md)
+/ [应用层语法糖](../09-app-sugar.md)（短名、简写、工厂、保留名 —— 上面这些骨架写法背后的那套约定）。

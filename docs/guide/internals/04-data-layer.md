@@ -216,7 +216,7 @@ console.log('ok');
 ```
 
 设计与取舍（为什么"事件日志即 outbox"、为什么游标只带 tie-breaker、快照缓存怎么工作）见
-[设计文档 M3](../design/m3-data-evolution.md)；可运行的整体示例见
-[`examples/app-data`](../../examples/app-data/README.md)。
+[设计文档 M3](../../design/m3-data-evolution.md)；可运行的整体示例见
+[`examples/app-data`](../../../examples/app-data/README.md)。
 
 下一步：[集群](./05-cluster.md)。

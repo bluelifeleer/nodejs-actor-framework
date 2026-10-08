@@ -102,4 +102,4 @@ console.log('ok');
 ## 指标
 
 `metricsPlugin()` 暴露计数器（Actor 数、消息数、延迟、错误…），应用层可以直接接 Prometheus 文本格式
-或任何抓取器。见 [`examples/app-data`](../../examples/app-data/README.md)。
+或任何抓取器。见 [`examples/app-data`](../../../examples/app-data/README.md)。

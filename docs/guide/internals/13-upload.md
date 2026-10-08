@@ -123,7 +123,7 @@ runChunkStoreContract({ name: 'my-store', make: () => myStore, reopen: () => myS
 
 ## 前端怎么配合
 
-见示例的 [`examples/app-upload/README.md`](../../examples/app-upload/README.md)：整文件 sha256 用 **WebCrypto** 算、
+见示例的 [`examples/app-upload/README.md`](../../../examples/app-upload/README.md)：整文件 sha256 用 **WebCrypto** 算、
 分片**并发**（默认 4）、失败**退避重试**、把 `uploadId` 存 `localStorage`，
 **续传时先 `GET /uploads/chunked/:id` 拿 `missing`，只补缺口**再 `complete`。
 

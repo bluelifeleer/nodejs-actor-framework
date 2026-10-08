@@ -13,4 +13,4 @@ curl -s localhost:PORT/send
   `/__debug/health` 的受管资源清单里（配上 `debugPlugin` 就能看到）。
 - 想验证真投递：`node scripts/dev-databases.mjs up mailhog`，然后设 `ACTOR_TEST_SMTP_URL` 跑 `npm test`。
 
-细节见指南 [docs/guide/16-mail.md](../../docs/guide/16-mail.md)。
+细节见指南 [docs/guide/16-mail.md](../../docs/guide/internals/16-mail.md)。

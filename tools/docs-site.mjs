@@ -514,7 +514,15 @@ export async function build({ log = console.log } = {}) {
   }
 
   // 断链检查：只查相对链接与图片，外部链接不管（离线也要能构建）
-  const broken = findBrokenLinks(pages, (relative) => fs.existsSync(path.join(ROOT, relative)));
+  //
+  // `api.html` 是**构建时生成**的页面（源码里没有对应文件），所以单独认它：
+  // 文档里从任何目录写 `../../api.html` 都合法，但只有站在站点根（`site/`）时才对得上。
+  // 这是唯一一个这样的目标 —— 不放进"已存在文件"的判定里（那会把真实断链也放过）。
+  const generated = new Set(['api.html']);
+  const broken = findBrokenLinks(
+    pages,
+    (relative) => fs.existsSync(path.join(ROOT, relative)) || generated.has(path.posix.basename(relative)),
+  );
 
   const nav = new Map();
   const listing = pages

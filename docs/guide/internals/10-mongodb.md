@@ -1,7 +1,7 @@
 # MongoDB（@actor/mongodb）
 
 `@actor/mongodb` 是 MongoDB 适配器：连接生命周期（建连/探活/保活/事件转发/drain/关闭）由
-[`@actor/db-core`](../design/m7-multi-database.md) 的 `supervise()` 统一提供；
+[`@actor/db-core`](../../design/m7-multi-database.md) 的 `supervise()` 统一提供；
 这一层管"怎么用集合"，外加一个**声明式集合**（`defineCollection`）。
 
 ```bash

@@ -8,6 +8,14 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 const ROOT = path.join(import.meta.dirname, '..');
 const GUIDE_DIR = path.join(ROOT, 'docs', 'guide');
+/**
+ * 指南分两层（M9 文档改版）：
+ *   - `docs/guide/*.md`            面向使用者的主线（快速上手 + 按任务 + 排错）；
+ *   - `docs/guide/internals/*.md`  按里程碑写的旧指南（开发/设计视角，原样保留）；
+ *   - `docs/guide/reference/*.md`  查阅型页面。
+ * 两层都算"指南"，都要有标题与可执行示例 —— 只是索引规则不同（主线必须被 README 全量链上）。
+ */
+const MAIN_GUIDE_DIRS = [GUIDE_DIR];
 const TMP = path.join(ROOT, '.tmp-docs-guides');
 
 /**
@@ -19,6 +27,23 @@ const TMP = path.join(ROOT, '.tmp-docs-guides');
  * 这样 workspace 里的包名解析得到。
  */
 
+/** 递归收集一个目录下的 .md（内部目录也算，见 MAIN_GUIDE_DIRS 的注释）。 */
+function markdownFiles(dir) {
+  const found = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...markdownFiles(full));
+    else if (entry.name.endsWith('.md')) found.push(full);
+  }
+  return found;
+}
+
+/** 全部指南页（含 internals/ 与 reference/）—— 都要有标题 + verify 示例。 */
+function allGuideFiles() {
+  return markdownFiles(GUIDE_DIR);
+}
+
+/** 主线指南页（顶层，不含 README）—— 必须被索引页链上。 */
 function guideFiles() {
   return fs
     .readdirSync(GUIDE_DIR)
@@ -26,6 +51,8 @@ function guideFiles() {
     .sort()
     .map((name) => path.join(GUIDE_DIR, name));
 }
+
+const relativePath = (file) => path.relative(ROOT, file);
 
 function verifiedSnippets(markdown) {
   const blocks = [];
@@ -51,8 +78,8 @@ function verifiedSnippets(markdown) {
 }
 
 test('docs guides: 指南目录结构完整，每篇都有标题与验证示例', () => {
-  const files = guideFiles();
-  assert.ok(files.length >= 3, `指南太少：${files.length}`);
+  const files = allGuideFiles();
+  assert.ok(files.length >= 6, `指南太少：${files.length}`);
   assert.ok(fs.existsSync(path.join(GUIDE_DIR, 'README.md')), '指南要有索引页');
 
   for (const file of files) {
@@ -62,12 +89,12 @@ test('docs guides: 指南目录结构完整，每篇都有标题与验证示例'
     if (name === 'README.md') continue;
     assert.ok(
       verifiedSnippets(markdown).length > 0,
-      `${name} 里没有任何 \`verify\` 示例——指南的示例必须可执行`,
+      `${relativePath(file)} 里没有任何 \`verify\` 示例——指南的示例必须可执行`,
     );
   }
 });
 
-test('docs guides: 索引页把每一篇都链上了（不遗漏、不指向不存在的文件）', () => {
+test('docs guides: 索引页把每一篇主线都链上了（不遗漏、不指向不存在的文件）', () => {
   const index = fs.readFileSync(path.join(GUIDE_DIR, 'README.md'), 'utf8');
   const linked = [...index.matchAll(/\]\(\.\/([\w.-]+\.md)\)/g)].map((match) => match[1]);
   const present = guideFiles()
@@ -76,16 +103,33 @@ test('docs guides: 索引页把每一篇都链上了（不遗漏、不指向不�
   assert.deepStrictEqual([...linked].sort(), [...present].sort(), '索引与实际文件不一致');
 });
 
+test('docs guides: internals/ 旧指南有子索引，且逐篇可达（不悬空）', () => {
+  const internals = path.join(GUIDE_DIR, 'internals');
+  const subIndex = path.join(internals, 'README.md');
+  assert.ok(fs.existsSync(subIndex), 'internals/ 要有自己的索引页');
+  const index = fs.readFileSync(subIndex, 'utf8');
+  const linked = [...index.matchAll(/\]\(\.\/([\w.-]+\.md)\)/g)].map((match) => match[1]);
+  const present = fs
+    .readdirSync(internals)
+    .filter((name) => name.endsWith('.md') && name !== 'README.md')
+    .sort();
+  assert.deepStrictEqual([...linked].sort(), present, 'internals 子索引与实际文件不一致');
+  // 主线索引要能走到 internals（一层入口即可）
+  const main = fs.readFileSync(path.join(GUIDE_DIR, 'README.md'), 'utf8');
+  assert.match(main, /\]\(\.\/internals\/\)/, '主线索引要指向 internals/');
+});
+
 test('docs guides: 每个 `verify` 示例都真的执行（真内核、真文件、真断言）', async () => {
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
   let executed = 0;
   try {
-    for (const file of guideFiles()) {
+    for (const file of allGuideFiles()) {
       const markdown = fs.readFileSync(file, 'utf8');
       const snippets = verifiedSnippets(markdown);
       for (const [position, snippet] of snippets.entries()) {
-        const name = `${path.basename(file, '.md')}-${position + 1}`;
+        // 文件名里带上子目录名，避免 internals/ 与主线重名（例如两边都有 03-*）
+        const name = `${path.relative(GUIDE_DIR, file).replace(/[\\/]/g, '-').replace(/\.md$/, '')}-${position + 1}`;
         const target = path.join(TMP, `${name}.mjs`);
         fs.writeFileSync(target, snippet.code, 'utf8');
         try {
@@ -102,5 +146,5 @@ test('docs guides: 每个 `verify` 示例都真的执行（真内核、真文件
   } finally {
     fs.rmSync(TMP, { recursive: true, force: true });
   }
-  assert.ok(executed >= 5, `执行的示例太少（${executed}）——指南不能只有文字`);
+  assert.ok(executed >= 10, `执行的示例太少（${executed}）——指南不能只有文字`);
 });

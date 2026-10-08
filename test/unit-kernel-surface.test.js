@@ -108,13 +108,18 @@ test('kernel surface: 漂移门禁能证伪 —— 声明里少写一个参数�
 });
 
 test('kernel surface: 用户文档代码块里用到的内核成员都必须在 index.d.ts 里有声明', () => {
+  // 用户文档 = 根 README + quickstart + 指南主线 + internals 旧指南（两层都算：
+  // 那些页面里的 `ctx.xxx` 同样是"使用者照着写的" —— 而且可证伪用例的锚点 `ctx.sleep` 就在 internals 里）
+  const guideDirs = ['docs/guide', 'docs/guide/internals', 'docs/guide/reference'];
   const files = [
     'README.md',
     'docs/quickstart.md',
-    ...fs
-      .readdirSync(path.join(ROOT, 'docs', 'guide'))
-      .filter((name) => name.endsWith('.md'))
-      .map((name) => `docs/guide/${name}`),
+    ...guideDirs.flatMap((dir) =>
+      fs
+        .readdirSync(path.join(ROOT, dir))
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => `${dir}/${name}`),
+    ),
   ];
   const docs = files.map((file) => ({ file, text: fs.readFileSync(path.join(ROOT, file), 'utf8') }));
   const declaration = fs.readFileSync(path.join(ROOT, KERNEL_DECLARATION_FILE), 'utf8');

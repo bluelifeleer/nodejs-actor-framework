@@ -113,5 +113,5 @@ drain（在途归零 + 超时如实上报）、健康失败 → `degraded` → �
 `db.withDb(fn)`（MongoDB）、`kv.command([...])`（Redis）、`db.raw(sql, params)`（SQL）。
 框架不拦你，也不假装替你封装完。
 
-完整可跑示例：[`examples/app-multi-db`](../../examples/app-multi-db/README.md)
+完整可跑示例：[`examples/app-multi-db`](../../../examples/app-multi-db/README.md)
 （一个自装适配器 + 两个可选 Redis 实例 + 控制器 `ctx.get(...)`）。

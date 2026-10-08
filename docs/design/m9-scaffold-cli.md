@@ -29,18 +29,31 @@
 
 ### 未完成（按建议顺序）
 
-1. **M9e 剩余：保留名常量 + 启动期校验**（对应 `m9-define-sugar.md` §8.5 的②）。
-   现状：`ctx` 保留键的洞已修（`RESERVED_CONTEXT_KEYS` 已导出、框架槽改用 WeakMap，见 `28e26b2`），
-   但**service 名 / 路由前缀**的保留名清单与启动期校验还没做。做法：`@actor/web` 导出单一来源的
-   `RESERVED_SERVICE_NAMES` / `RESERVED_ROUTE_PREFIXES`，装配期撞名**明确报错**（延续"响亮失败优于静默覆盖"）。
-2. **M9f（T2 参数简写）**：config 值即 schema（值推 `{type,default}`，全量写法保留可混用）；
-   controller 输入声明合一（字符串简写展开、默认来自 body，`from:'query'|'params'` 保留）；
-   中间件阶段简写。**每条都要有"糖产出与长名深比较相等"的可证伪测试**。
-3. **M9g（T3 工厂 + debug 作用域）**：`crudRoutes(prefix, model, opts)`（五路由 + input + 404/409 + 分页，可逐项覆盖）、
-   `healthRoutes()`；debug 的**四层可见性作用域**（全局 / 路由前缀 / 模块 / 控制器，见 `m9-define-sugar.md` §6）
-   影响 `/__debug/routes` 与 `/__debug/config` 的暴露，并写死"只减少信息面、不是安全边界"。
-4. **`actor new plugin` 补 `app` / `mail` 两种 kind**（目前只有 `web` / `resource`；未知 kind 会明确拒绝）。
-5. 次要：`doctor` 的"模板漂移"提示（原计划在 M9c，优先级最低）。
+（本轮已把 1–4 全部做完；只剩第 5 条这个**次要项**。）
+
+1. ✅ **M9e 剩余：保留名常量 + 启动期校验** —— `@actor/web` 导出 `RESERVED_ROUTE_PREFIXES` /
+   `RESERVED_PREFIX_OWNERS`，`@actor/app` 导出 `RESERVED_SERVICE_NAMES`；装配期撞名**明确报错**。
+   过程中修掉三个真问题（见下面"本轮踩到的坑"）。
+2. ✅ **M9f（T2 参数简写）**：config 值即 schema；controller 输入声明合一（默认来自 body，`from` 保留）；
+   中间件阶段简写（`atPre`/`atAuth`/…）。每条都有"糖与全量写法**深比较相等**"的可证伪测试
+   （`packages/app/test/sugar-config.test.ts`、`packages/web/test/sugar-input.test.ts`）。
+3. ✅ **M9g（T3 工厂 + debug 作用域）**：`crudRoutes` / `healthRoutes`（`packages/web/src/factories.ts`）
+   + debug **四层可见性作用域**（`packages/web/test/debug-scope.test.ts`：六个用例，含"隐藏不等于下线"）。
+4. ✅ **`actor new plugin` 补 `app` / `mail` 两种 kind**（`PLUGIN_KINDS` 现在是 `app|web|resource|mail`，
+   四种骨架的 `npm test` 都真的跑得起来 —— 指南里那段 verify 块就是逐种生成 + 逐种跑）。
+5. ⏳ 次要：`doctor` 的"模板漂移"提示（原计划在 M9c，优先级最低）。
+
+### 本轮踩到的坑（都值得写进纪律）
+
+1. **"绿但不覆盖"第 4 次**：保留前缀校验第一版把 `flattenRoutes` 的**元组**当 `{ pattern }` 对象读，
+   于是 `pattern` 恒为 `undefined` —— **校验装了但一条都没查**。抓住它的是"白名单关掉也要能拦住"的用例。
+2. **白名单不能把"保留清单"算进去**：第二版把保留前缀也算作"已认领" → 所有 `/__debug/*` 都成了合法，
+   校验整体失效。最终规则：**只有框架自带插件（`framework: true`）+ 精确落在它自己声明的前缀里**才放行
+   （而且"框架自带"由插件显式标记，不靠插件名眼熟）。
+3. **拦截点选错层会拦到自己人**：保留服务名最初在运行时 `provide()` 拦 → `httpPlugin` 注册 `httpServer`
+   被自己拒掉（框架插件与用户调用在那一层分不出来）。改到**声明层**（插件名 / provides / provider 名）。
+4. **前缀被套两次**：`debugPlugin`/`uploadPlugin` 自己拼了前缀，`defineWebPlugin({ routePrefix })` 又套一遍
+   → `/__debug/__debug/routes`、`/uploads/uploads`。修法：插件内用**裸模式**，前缀只在一处套。
 
 ### 等你拍板的三件事（都不阻塞实现，按我给的默认继续即可）
 
@@ -73,7 +86,7 @@
 | 模板 | **真实文件**在 `packages/cli/templates/app/`（10 个文件：`.gitignore`、`README.md`、`config/default.ts`、`main.ts`、`package.json`、`src/{app,module,notes,counter}.ts`、`test/app.test.ts`），随包发布（`files` 含 `templates`，有测试盯着） |
 | 生成项目 | 依赖**固定** `@actor/app` + `@actor/data` + `@actor/web`；自带 4 条端到端测试（CRUD 201/200/409/204、Actor、重启后持久化、400/404/405） |
 | 门禁 | `packages/cli/test/scaffold.test.ts`：文件清单、项目名替换、**拒绝覆盖非空目录**（`--force` 也不删用户文件）、缺目录报用法错误、**并且真的跑生成项目的 4 条测试（`pass 4`）** |
-| 文档 | 指南 `docs/guide/00-scaffold.md`；设计 `docs/design/m5-cli-and-testkit.md`（其中提到 `actor new-plugin <name>`，**未实现**） |
+| 文档 | 指南 `docs/guide/internals/00-scaffold.md`；设计 `docs/design/m5-cli-and-testkit.md`（其中提到 `actor new-plugin <name>`，**未实现**） |
 
 **结论**：生成器不是"要不要做"，而是"从固定三件套 → 可选能力 + layered 布局 + 可增量加能力"。
 
@@ -172,7 +185,7 @@ actor migrate                                                 # 不变
 | 模板清单 | 文件集合与 `files` 字段（模板必须随包发布） |
 | 非破坏性 | 非空目录拒绝、`--force` 不删用户文件、`--dry-run` 不落盘、`add` 不改动无关文件 |
 | 闭包正确性 | `capabilities.json` == 各包 `package.json` 依赖的真实闭包 |
-| 指南 | `docs/guide/00-scaffold.md` 的 verify 块**跑同一份模板**（指南与模板不能两处真相） |
+| 指南 | `docs/guide/internals/00-scaffold.md` 的 verify 块**跑同一份模板**（指南与模板不能两处真相） |
 
 ## 8. 风险与明确不做
 

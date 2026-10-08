@@ -96,7 +96,7 @@ runWebPluginContract({ name: 'my-plugin', define: () => myPlugin });
 检查：名字/阶段合法、路由带前缀且插件内不冲突、`context` 钩子注册成服务、
 非法阶段与重复路由在**定义期**被拒、阶段排序（真实执行验证）。
 
-完整可跑示例：[`examples/app-plugin`](../../examples/app-plugin/README.md)。
+完整可跑示例：[`examples/app-plugin`](../../../examples/app-plugin/README.md)。
 
 ## 与"自装适配器"的关系
 
@@ -107,3 +107,12 @@ runWebPluginContract({ name: 'my-plugin', define: () => myPlugin });
 | HTTP 行为（路由/中间件/请求上下文） | `defineWebPlugin()` | `@actor/web` |
 | 一种"数据库"/中间件（连接与生命周期） | `defineResourceAdapter()` / `resourceAdapter()` | `@actor/resource` |
 | 纯服务与生命周期（无 HTTP） | `definePlugin()` | `@actor/app` |
+
+## 命名空间：`routePrefix` 与保留前缀
+
+插件贡献的路由应该落在**自己的前缀**下（声明 `routePrefix`，框架在定义时套到每条模式上）。
+框架自己占着两片命名空间 —— `/uploads`（`uploadPlugin`）与 `/__debug`（`debugPlugin`）——
+用户路由落进去会在**启动期报错**（不是静默共存：撞名字不是"模式重复"，光靠路由表查不出来）。
+
+保留清单是单一来源（`RESERVED_ROUTE_PREFIXES` / `RESERVED_PREFIX_OWNERS`，`@actor/web` 导出），
+细节见[应用层语法糖 §6](../09-app-sugar.md)。

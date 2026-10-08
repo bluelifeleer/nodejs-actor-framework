@@ -159,7 +159,8 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 }
 ```
 
-完整可运行示例见 [`examples/app-data`](../../examples/app-data/README.md)（CRUD + Actor + 投影 + 迁移门）
-与 [`examples/app-web`](../../examples/app-web/README.md)。
+完整可运行示例见 [`examples/app-data`](../../../examples/app-data/README.md)（CRUD + Actor + 投影 + 迁移门）
+与 [`examples/app-web`](../../../examples/app-web/README.md)。
 
-下一步：[数据层](./04-data-layer.md)。
+下一步：[数据层](./04-data-layer.md) / [应用层语法糖](../09-app-sugar.md)（控制器输入简写、
+中间件阶段简写、`crudRoutes`/`healthRoutes` 工厂，以及保留名与 debug 可见性）。

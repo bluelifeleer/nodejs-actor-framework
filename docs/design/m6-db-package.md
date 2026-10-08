@@ -187,7 +187,7 @@ const Note = defineModel({
 
 ### Round 4（已完成）：文档 + 门禁 + 示例
 
-- 用户指南 `docs/guide/08-database.md`：装驱动 → 连接配置（DSN/字段式/池）→ model 声明 → `sync` 与漂移/自动迁移
+- 用户指南 `docs/guide/internals/08-database.md`：装驱动 → 连接配置（DSN/字段式/池）→ model 声明 → `sync` 与漂移/自动迁移
   → 仓储（乐观锁、关联、findMany 的输入校验）→ **用户可写的两层映射** → `raw()` 与 `@actor/data` 组合
   → 接 `@actor/app` 的写法 → 诚实的边界（SQLite 真库验证 / PG·MySQL 仅契约级）。**9 个 verify 代码块全部真跑**。
 - API 页收录 `@actor/db`（`tools/docs-site.mjs` 的 PACKAGES 加一行，已核对 `site/api.html` 里出现 `createDatabase`/`defineModel`）。
@@ -219,7 +219,7 @@ const Note = defineModel({
   PostgreSQL 走独立的 `COMMENT ON TABLE/COLUMN … IS '…'`（`sync()` 每次重新应用，**幂等**）、
   SQLite 不支持 → `SyncReport.unsupportedComments` **如实报告**（不假装应用了）。
   `SyncReport` 因此新增 `comments` / `unsupportedComments` 两个字段。
-- 指南 `docs/guide/08-database.md` 增加完整类型对照表与注释示例（新 verify 块真跑）。
+- 指南 `docs/guide/internals/08-database.md` 增加完整类型对照表与注释示例（新 verify 块真跑）。
 
 ### Round 6（已完成）：让 web 层开箱可用（用户反馈第 ③ 点）
 
@@ -292,5 +292,5 @@ const Note = defineModel({
 > [m7-multi-database.md](./m7-multi-database.md) 定稿设计，会把本文的连接生命周期提炼成 `@actor/db-core`。
 
 ### 待做
- —— 用户指南一篇（`docs/guide/08-database.md`）、API 页覆盖、
+ —— 用户指南一篇（`docs/guide/internals/08-database.md`）、API 页覆盖、
   接入 `@actor/app` 的示例（`examples/app-db`）+ 示例冒烟门禁、成员级门禁覆盖本包。

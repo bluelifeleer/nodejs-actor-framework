@@ -235,7 +235,7 @@ export function runMailTransportContract(...): void;                      // 契
 - `RequestContext` 新增 `extend(values)`（写到 ctx 本身 + `state`，**拒绝覆盖框架保留字段**，有测试）
   与 `extension<T>(key)`；约定字段 `user`/`files`/`log` 已声明（由后续 M8b/M8c/M8d 写入）。
 - 测试：`packages/web/test/plugins.test.ts` 11 条（含契约套件 5 条）；`web + app` 44/44 全绿。
-- 本期已收尾：`examples/app-plugin`（自定义 web 插件 + 冒烟门禁通过）+ 指南 `docs/guide/12-web-plugin.md`
+- 本期已收尾：`examples/app-plugin`（自定义 web 插件 + 冒烟门禁通过）+ 指南 `docs/guide/internals/12-web-plugin.md`
   （含**离线可跑**的 verify 块：`defineWebPlugin` 校验 + `orderMiddleware` 阶段顺序真实执行验证）。
 
 ### M8b（已完成）：上传（流式 + 分片 + 断点续传 + sha256）
@@ -262,7 +262,7 @@ export function runMailTransportContract(...): void;                      // 契
   **超限全回滚** + 分片全流程 + **断点续传（先查 missing 再补）** + 分片 sha256 不符 +
   整文件 sha256 不符报期望/实际且不留文件）。
 - 示例 `examples/app-upload`（自带**前端页面**：分片/并发/退避重试/断点续传/WebCrypto sha256）+ 冒烟门禁；
-  指南 `docs/guide/13-upload.md`（含**离线可跑** verify 块：本地磁盘存储 + 分片会话）。
+  指南 `docs/guide/internals/13-upload.md`（含**离线可跑** verify 块：本地磁盘存储 + 分片会话）。
 
 **自我修正（本轮抓到 4 个真 bug，都是我的）**：
 1. `defineWebPlugin` **覆盖**而不是组合调用方的 `setup` → 插件注册的服务（流式路由表、存储）全丢，

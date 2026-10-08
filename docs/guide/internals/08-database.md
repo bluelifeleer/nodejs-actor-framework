@@ -1,7 +1,7 @@
 # 数据库（@actor/db）
 
 `@actor/db` 是**应用层**的数据库能力：方言（PostgreSQL 默认 / MySQL / SQLite）、连接与连接池管理、
-model 声明、以及实体 ↔ 行的 ORM 映射。设计见 [M6 设计](../design/m6-db-package.md)。
+model 声明、以及实体 ↔ 行的 ORM 映射。设计见 [M6 设计](../../design/m6-db-package.md)。
 
 ## 先装驱动（框架不引任何运行时依赖）
 
@@ -466,7 +466,7 @@ APP_PLUGINS__DB__URL='pgsql://user:pass@host:5432/appdb' node main.ts
 > 所以要在 provider 里同步建句柄并返回仓储（惰性 runner 让它先可用），把 `connect()`/`sync()` 放进 `onStart`、
 > 把 `db.close()` 放进 `onStop` —— 这也正是 `databasePlugin` 内部做的事。
 
-完整可跑示例：[`examples/app-db`](../../examples/app-db/README.md)。
+完整可跑示例：[`examples/app-db`](../../../examples/app-db/README.md)。
 
 ## 怎么跑真库测试（可选的"真验"）
 

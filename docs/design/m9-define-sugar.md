@@ -199,6 +199,19 @@ defineUploadStorage defineWebPlugin
 - ② 的**其余部分**（保留名常量扩到 service 名/路由前缀 + 启动期校验）并进 **M9e**（短名落地那一期）；
 - ③（用户代码与短名同名的启发式提示）并进 doctor 扩展（与 M9c 余下 / M9d 一起）；本条结论写进指南的"命名与保留名"一节。
 
+## 8.6 实施结果（M9f / M9g 已落地；本节是"设计 vs 实现"的对照）
+
+| 期 | 设计里的糖 | 实现（文件） | 与设计的差异（如实记） |
+|---|---|---|---|
+| M9e | 短名 | 各包 `index.ts` | 按设计落地；`test/unit-sugar-aliases.test.js` 用 `===` 钉住 |
+| M9e | 保留名 + 启动期校验（§8.5 ②） | `@actor/web` 的 `RESERVED_ROUTE_PREFIXES`/`RESERVED_PREFIX_OWNERS`、`@actor/app` 的 `RESERVED_SERVICE_NAMES` | **服务名改在"声明层"拦**（插件名/provides/provider 名）：运行时 `provide()` 分不出"框架插件"与"用户插件"，在那里拦会把 `httpPlugin` 自己拒掉。路由前缀两层拦（插件声明的前缀 + 模块路由落在保留区） |
+| M9f | config 值即 schema | `packages/app/src/config.ts` | 普通对象**永远是分组**（不做"对象默认值"推断）——要对象默认值写 `{ type: 'json', default }`；另加 `FieldSpec.required: false`（部分更新用） |
+| M9f | controller 输入合一 | `packages/web/src/controller.ts` | 字符串简写是**别名表**（`string/int/number/bool/boolean/json`），打错的名字**定义期报错**；`input` 归一化后的来源表不上公开面（WeakMap + 一份不可枚举副本给 routes.ts 的规则 3） |
+| M9f | 中间件阶段简写 | `packages/web/src/middleware.ts` | 名字改成 `atPre`/`atAuth`/`atParse`/`atHandler`/`atPost`/`atError`（**不是**设计里的 `pre`/`post`/`parse`：`post` 已是路由助手、`parse` 撞 `JSON.parse` —— 实测示例直接编译不过）；实现是**包一层**而不是给原函数挂属性（函数 `name` 只读，挂属性会抛） |
+| M9g | `crudRoutes(prefix, model, opts)` | `packages/web/src/factories.ts` | 第二个参数是**结构化最小仓储**（`list/get/create/update/remove`），不是 `@actor/db` 的 `Model`（保持"工厂不依赖具体数据层"）；字段用 `fields` 显式声明（数组 = 必填字符串；对象 = 值即 schema），PUT 默认**部分更新** |
+| M9g | `healthRoutes()` | 同上 | 只报告"进程形状"（`status`/`uptimeMs`/受管资源**数量**）；深度健康留给 `/__debug/health?check=1`（需要 token，不该公开） |
+| M9g | debug 四层作用域 | `packages/web/src/debug.ts` | 四层全部落地（全局 `expose.hidePrefixes`、模块 `debug.hidePrefixes/expose`、控制器 `debug:'off'`）；**模块归属**用的是 `RouteMeta.router`（`module` 字段历史上从没被写过，如实记下）；`/__debug/config` 的**模块级打码**没做（路由可见性已覆盖设计意图，配置打码留下一轮） |
+
 ## 9. 已确认（用户拍板）
 
 1. ✅ `model()` **小写**（`Model` 在 `@actor/db` 已是类型名）；且**所有短名统一小写**（见 §2 第 4 条）；

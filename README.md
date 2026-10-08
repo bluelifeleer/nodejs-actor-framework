@@ -978,7 +978,7 @@ node packages/cli/src/cli.ts doctor                   # 体检：Node/依赖/配
 优雅停止、真 HTTP 测试。约定：目标目录非空就拒绝写入（要 `--force`）、不自动装依赖、
 退出码有意义（0 成功 / 1 用法错误 / 2 项目或环境问题）且默认不打印堆栈。
 `migrate status` **有待处理迁移时退出码 2**，可直接当 CI/启动门禁。
-见 [CLI 指南](docs/guide/00-scaffold.md)。
+见 [CLI 指南](docs/guide/internals/00-scaffold.md)。
 
 ## 测试工具（`@actor/testkit`）
 
@@ -998,7 +998,7 @@ await timedOut;
 
 超时、限流、`ctx.sleep`、outbox/投影的轮询都由**你推进的时间**驱动，顺序确定。
 三条规则：**advance 之前先 `drain()`**、**停系统之前先推进**、**网络 I/O 仍需要真实时间**
-（时钟只管纯逻辑定时）。见 [测试指南](docs/guide/06-testing.md)。
+（时钟只管纯逻辑定时）。见 [测试指南](docs/guide/internals/06-testing.md)。
 
 ## 发布前检查与版本策略
 

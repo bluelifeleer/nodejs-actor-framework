@@ -444,7 +444,7 @@ export const myDb = defineDatabaseAdapter({
   真库开关用例（`ACTOR_TEST_REDIS_URL`/`ACTOR_TEST_IOREDIS_URL`）在本环境 **4 条显式跳过**。
 - 矩阵与门禁：进 `npm test` 工作区矩阵、`tsconfig.json` include、`tools/docs-site.mjs` PACKAGES；
   自带公开面门禁（含证伪）；kind 门禁通过（kind 分支只在 `src/adapters/`）。
-- 文档：新增指南 `docs/guide/09-redis.md`（含**离线可跑**的 verify 块：DSN 解析 + 驱动注册表）。
+- 文档：新增指南 `docs/guide/internals/09-redis.md`（含**离线可跑**的 verify 块：DSN 解析 + 驱动注册表）。
 
 **过程中的自我修正（两处，都是"测试/假数据写错"）**：
 1. 契约套件里"健康失败"那条断言在**规定措辞**（`/超时|timeout|fail/i`）—— 中文"失败"直接不匹配，
@@ -492,7 +492,7 @@ export const myDb = defineDatabaseAdapter({
   事件只转发、声明式集合端到端、安装提示、DSN 解析）；公开面门禁 2 条；真库开关 2 条（本环境跳过）。
 - 矩阵：进 npm test 工作区矩阵、tsconfig include、docs-site PACKAGES、npm install link；
   kind 门禁通过（kind 分支只在 `src/adapters/`）。
-- 文档：新增指南 `docs/guide/10-mongodb.md`（含**离线可跑**的 verify 块：`$jsonSchema` 生成 + DSN 解析）。
+- 文档：新增指南 `docs/guide/internals/10-mongodb.md`（含**离线可跑**的 verify 块：`$jsonSchema` 生成 + DSN 解析）。
 
 **自我修正（四处）**：
 1. 假 mongo 的 `bucket()` 写成 `docs.get(name) ?? []` —— `insertOne` 里两次调用各拿到一个新数组，
@@ -518,7 +518,7 @@ export const myDb = defineDatabaseAdapter({
     **使用者能拿框架发布的套件给自己的适配器自证合规**；
   - 真机端到端（手工验证并记录）：POST 201 → GET 列表 200 → GET 单条 200 → health → SIGTERM 优雅停 →
     **数据已落盘** → 重启后仍能读到 → DELETE 200 → GET 404。
-- 文档：新增指南 `docs/guide/11-custom-adapter.md`（三个层次怎么选、`databaseAdapter` 多实例、
+- 文档：新增指南 `docs/guide/internals/11-custom-adapter.md`（三个层次怎么选、`databaseAdapter` 多实例、
   **用契约套件自证合规**、逃生通道），含**离线可跑**的 verify 块（定义并连一个内存适配器，
   含"关闭后 `acquire()` 快速失败"的演示）；索引页链上（迁移顺延为 12）。
 
