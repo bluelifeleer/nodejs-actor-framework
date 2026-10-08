@@ -13,6 +13,7 @@
  * 邮件是应用级 I/O 能力 —— 与数据库/Redis 同层，独立成包。
  */
 export {
+  assertSendable,
   parseMailHeaders,
   renderMail,
   type MailAddress,

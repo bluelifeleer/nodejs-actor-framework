@@ -4,7 +4,7 @@ import { DbConfigError } from '@actor/resource';
 
 import { HttpError, reply } from './context.ts';
 import { defineWebPlugin, type WebPluginSpec } from './plugins.ts';
-import { defineController } from './controller.ts';
+import { debugVisibilityOf, defineController } from './controller.ts';
 import { defineRoutes, get } from './routes.ts';
 import { flattenRoutes } from './router.ts';
 import type { Route } from './routes.ts';
@@ -28,7 +28,25 @@ export interface DebugPluginOptions {
   allowInProduction?: boolean;
   /** 路由前缀（默认 `/__debug`）。 */
   prefix?: string;
+  /**
+   * **诊断可见性**（M9g 四层作用域之"全局层"）。
+   *
+   * ⚠️ 它只减少**诊断输出**里暴露的信息，**不影响路由是否可用、也不改变鉴权** ——
+   * 真正的门是 token + 生产拒绝启动。把"隐藏"当安全用是常见误解（设计文档 §6 写死了这条边界）。
+   */
+  expose?: {
+    /** 全局按前缀隐藏：这些前缀下的路由不出现在 `/__debug/routes`（如 `/internal`）。 */
+    hidePrefixes?: readonly string[];
+  };
   logger?: (event: string, meta?: Record<string, unknown>) => void;
+}
+
+/** 模块级 debug 声明的形状（`defineModule({ debug })` 的值；由本插件解读）。 */
+interface ModuleDebugScope {
+  /** `false` = 该模块的路由不进 `/__debug/routes`（等价于整个模块标 off）。 */
+  expose?: boolean;
+  /** 该模块内按前缀隐藏（叠加在全局 hidePrefixes 之上）。 */
+  hidePrefixes?: readonly string[];
 }
 
 interface ManagedResourceLike {
@@ -67,8 +85,33 @@ export function debugPlugin(options: DebugPluginOptions = {}): WebPluginSpec {
   if (production) options.logger?.('debug_routes_enabled_in_production', {});
 
   const prefix = (options.prefix ?? '/__debug').replace(/\/$/, '');
+  const globalHide = (options.expose?.hidePrefixes ?? []).map((item) => item.replace(/\/$/, ''));
   // 路由处理器需要 app：在 onReady 里抓一份（只读用途）
   let appRef: { routes: readonly unknown[]; config: { get<T>(key: string): T; all(): Record<string, unknown> }; get<T>(name: string): T } | null = null;
+
+  /**
+   * 这条路由**能不能**出现在诊断输出里（四层作用域的第二、四层）。
+   *
+   * 判据（任一命中即隐藏）：
+   *   ① 控制器自己声明了 `debug: 'off'`（第四层：控制器）；
+   *   ② 它所属模块（`meta.router` 就是模块名，见 flattenRouter）声明了 `expose: false`（第三层：模块）；
+   *   ③ 路径落在**全局**或**模块级** hidePrefixes 里（第一/二层：路由前缀）。
+   *
+   * 注意这里只影响**输出**：路由照样可用、鉴权照样生效（设计文档 §6 的语义边界）。
+   */
+  const isVisible = (
+    pattern: string,
+    meta: { router?: string; debug?: unknown } | undefined,
+    controller: unknown,
+  ): boolean => {
+    if (debugVisibilityOf(controller) === 'off') return false;
+    const scope = (meta?.debug ?? undefined) as ModuleDebugScope | undefined;
+    if (scope?.expose === false) return false;
+    const path = pattern.split('?', 1)[0] ?? pattern;
+    const under = (hidden: string): boolean => path === hidden || path.startsWith(`${hidden}/`);
+    if ([...globalHide, ...(scope?.hidePrefixes ?? [])].some(under)) return false;
+    return true;
+  };
 
   const readRegistry = (): Array<{ name: string; resource: ManagedResourceLike }> => {
     try {
@@ -80,10 +123,13 @@ export function debugPlugin(options: DebugPluginOptions = {}): WebPluginSpec {
   };
 
   const routes = defineRoutes([
-    get(`${prefix}/routes`, defineController({ async handle(): Promise<unknown> {
+    get('/routes', defineController({ async handle(): Promise<unknown> {
       const flattened = flattenRoutes(appRef?.routes ?? []);
+      const visible = flattened.entries.filter((entry) =>
+        isVisible(String(entry[1]), entry[4], entry[2]),
+      );
       return {
-        routes: flattened.entries.map((entry) => ({
+        routes: visible.map((entry) => ({
           method: entry[0],
           pattern: entry[1],
           middleware: (entry[3] ?? []).map((item) => {
@@ -95,7 +141,7 @@ export function debugPlugin(options: DebugPluginOptions = {}): WebPluginSpec {
       };
     } })),
 
-    get(`${prefix}/health`, defineController({ async handle(_input, ctx): Promise<unknown> {
+    get('/health', defineController({ async handle(_input, ctx): Promise<unknown> {
       // 从 query 读（`input` 是"校验后的输入"，没声明过的键不会出现在里面）
       const deep = String(ctx.qs('check') ?? '') === '1';
       const resources = readRegistry();
@@ -121,7 +167,7 @@ export function debugPlugin(options: DebugPluginOptions = {}): WebPluginSpec {
       return { resources: report, count: report.length, deep };
     } })),
 
-    get(`${prefix}/config`, defineController({ async handle(): Promise<unknown> {
+    get('/config', defineController({ async handle(): Promise<unknown> {
       // 走**有效配置**（`config.all()`，各插件配置节都在里面）。注意它含 schema 默认值，
       // 所以这里的 `default: true` 表示"这一项的值等于声明里的默认值"（能算的只有这个，
       // 框架不保留"用户是否显式写过"的信息 —— 如实标注，不假装知道）。
@@ -155,6 +201,9 @@ export function debugPlugin(options: DebugPluginOptions = {}): WebPluginSpec {
 
   return defineWebPlugin({
     name: 'debug',
+    framework: true,
+    // 声明自己占用的前缀（默认 /__debug）：装配期校验据此放行，改 prefix 也会跟着改
+    routePrefix: prefix,
     routes: routes as unknown as readonly Route[],
     middleware: [
       {

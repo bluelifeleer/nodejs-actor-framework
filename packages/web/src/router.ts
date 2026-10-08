@@ -20,6 +20,11 @@ export type RouteEntry = readonly [RouteMethod, string, unknown, (readonly unkno
 export interface RouteMeta {
   module?: string;
   router?: string;
+  /**
+   * 路由所属模块的**诊断可见性**声明（`defineModule({ debug })` 的原样透传，由 debugPlugin 解读）。
+   * 应用层不认识它的内容，所以这里是不透明类型。
+   */
+  debug?: unknown;
 }
 
 /** 扁平化后的条目：中间件已在构建期合成完毕。 */
@@ -28,6 +33,8 @@ export type FlatRouteEntry = readonly [RouteMethod, string, unknown, readonly Mi
 export interface RouterSpec {
   /** 该路由器下所有路由的公共前缀，如 '/game'。必须以 / 开头、不含 ?。 */
   prefix?: string;
+  /** 模块级诊断可见性声明（不透明：应用层/路由器都不解释，只有 debugPlugin 读）。 */
+  debug?: unknown;
   /** 作用于整个子树的中间件（外层先执行）。 */
   middleware?: readonly Middleware[];
   /** 叶子路由。 */
@@ -68,14 +75,17 @@ const join = (parent: string, child: string): string =>
  */
 export function flattenRouter(
   spec: RouterSpec,
-  parent: { prefix?: string; middleware?: readonly Middleware[]; router?: string } = {},
+  parent: { prefix?: string; middleware?: readonly Middleware[]; router?: string; debug?: unknown } = {},
 ): { entries: FlatRouteEntry[]; issues: RouterIssue[] } {
   const issues: RouterIssue[] = [];
   const prefix = join(parent.prefix ?? '', normalizePrefix(spec.prefix, issues, spec.name ? ` '${spec.name}'` : ''));
   const middleware: readonly Middleware[] = [...(parent.middleware ?? []), ...(spec.middleware ?? [])];
   const routerName = spec.name ?? parent.router;
+  // 模块级 debug 声明：本层没写就继承父层（模块根声明对整棵子树生效）
+  const debug = spec.debug ?? parent.debug;
   const meta: RouteMeta = {
     ...(routerName === undefined ? {} : { router: routerName }),
+    ...(debug === undefined ? {} : { debug }),
   };
 
   const entries: FlatRouteEntry[] = [];
@@ -101,7 +111,12 @@ export function flattenRouter(
     ]);
   }
   for (const child of spec.children ?? []) {
-    const result = flattenRouter(child, { prefix, middleware, ...(routerName === undefined ? {} : { router: routerName }) });
+    const result = flattenRouter(child, {
+      prefix,
+      middleware,
+      ...(routerName === undefined ? {} : { router: routerName }),
+      ...(debug === undefined ? {} : { debug }),
+    });
     entries.push(...result.entries);
     issues.push(...result.issues);
   }

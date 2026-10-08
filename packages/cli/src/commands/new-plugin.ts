@@ -8,7 +8,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { UsageError } from '../args.ts';
-import { PLUGIN_KINDS, PLUGIN_KIND_DEPS, pluginIdentifier, pluginTemplates, type PluginKind } from '../templates/plugin.ts';
+import {
+  PLUGIN_KINDS,
+  PLUGIN_KIND_DEPS,
+  PLUGIN_KIND_PROOF,
+  pluginIdentifier,
+  pluginTemplates,
+  type PluginKind,
+} from '../templates/plugin.ts';
 
 export interface NewPluginResult {
   readonly dir: string;
@@ -43,7 +50,7 @@ export async function newPlugin(
   if (!(PLUGIN_KINDS as readonly string[]).includes(kind)) {
     throw new UsageError(
       `未知的插件类型 '${String(kind)}'`,
-      `可选：${PLUGIN_KINDS.join(' / ')}（app / mail 两种骨架还没实现；不生成一半）`,
+      `可选：${PLUGIN_KINDS.join(' / ')}`,
     );
   }
   const typedKind = kind as PluginKind;
@@ -77,6 +84,7 @@ export async function newPlugin(
   const relativeDir = path.relative(process.cwd(), dir) || '.';
   const wiring = [
     `依赖：${PLUGIN_KIND_DEPS[typedKind]}`,
+    `自证合规：${PLUGIN_KIND_PROOF[typedKind]}`,
     `1) 工作区测试矩阵：根 package.json 的 scripts.test 加上 '${relativeDir}/test/*.test.ts'`,
     `2) 类型检查：根 tsconfig.json 的 include 加上 '${relativeDir}/src/**/*.ts'`,
     `3) API 文档：tools/docs-site.mjs 的 PACKAGES 加上它（公开包才需要）`,

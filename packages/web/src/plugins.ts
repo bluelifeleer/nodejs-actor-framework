@@ -32,6 +32,14 @@ export interface WebPluginSpec {
   requires?: readonly string[];
   provides?: readonly string[];
   description?: string;
+  /**
+   * **框架自带**标记：由 `@actor/web` 自己的插件工厂（upload / debug / http / ws / requestLog）设置。
+   *
+   * 用途只有一个、且是安全相关：装配期"保留前缀"校验只放行**框架自己的**插件占用 `/uploads`、`/__debug`
+   * —— 没有这个标记就无法区分"框架插件"与"恰好同名的第三方插件"，也就只能靠插件名去猜（会分叉）。
+   * 用户插件不要设置它：设了就等于宣称自己是框架插件。
+   */
+  framework?: true;
   config?: Record<string, unknown>;
   /** 贡献的路由（`routePrefix` 会在定义时套到每个模式上）。 */
   /**
@@ -254,7 +262,9 @@ export function runWebPluginContract(options: {
     ]);
     assert.strictEqual(ordered.length, 4, '排序不该丢项');
     // 真的按顺序执行一遍（Middleware 的签名是 (ctx, next)）
-    for (const handler of ordered) await handler({} as never, async () => undefined);
+    // 变量名刻意不叫 handler：`middleware.ts` 导出的阶段简写里就有一个 `handler()`，
+    // 这里再叫 handler 会让"读代码的人以为在调它"（同文件里 import 的话还会真撞名）
+    for (const step of ordered) await step({} as never, async () => undefined);
     assert.deepStrictEqual(
       labels,
       ['unphased-1', 'unphased-2', 'auth', 'post'],

@@ -74,6 +74,141 @@ export function routeSpecOf<T = unknown>(ctx: object): T | undefined {
 
 const CORE_CONTEXT_KEYS = new Set(RESERVED_CONTEXT_KEYS);
 
+/**
+ * **框架保留的路由前缀**（唯一来源：内置插件与文档都读它）。
+ *
+ * 为什么要有它：内置插件占了 `/uploads`（uploadPlugin）与 `/__debug`（debugPlugin）两片命名空间，
+ * 而路由表检查的是"模式是否重复"——**撞名字不是重复**（`/uploads` 与 `/uploads/:key` 是两个模式），
+ * 于是用户路由与框架路由会**同时存在**，谁先匹配到取决于声明顺序，变成静默的行为漂移。
+ * 所以这里显式守住：装配期发现"用户路由落在框架保留前缀里"就**明确报错**，而不是让两套路由共存。
+ *
+ * 与 `RESERVED_CONTEXT_KEYS` 同一形态（单一来源 + 一致性门禁）：
+ * 门禁断言"内置插件实际占用的前缀 ⊆ 这份清单"（见 packages/web/test/run-app.test.ts）。
+ *
+ * 注意它是**命名空间**保留：改了内置前缀（如 `uploadPlugin({ routePrefix: '/files' })`）就绕开了这层校验
+ * —— 那是使用者自愿接管那片命名空间，与本清单无关。
+ */
+export const RESERVED_ROUTE_PREFIXES: readonly string[] = ['/uploads', '/__debug'];
+
+/**
+ * 谁（哪个框架插件）占用哪个保留前缀 —— 装配期校验与门禁都读它，避免"口径两处写"。
+ *
+ * 它与 `RESERVED_ROUTE_PREFIXES` 必须互相覆盖（有测试断言：两边集合相等，且各插件的**实际默认前缀**
+ * 就落在这里面）—— 所以这份映射是唯一来源，不是又抄一遍。
+ */
+export const RESERVED_PREFIX_OWNERS: readonly { owner: string; prefix: string }[] = [
+  { owner: 'upload', prefix: '/uploads' },
+  { owner: 'debug', prefix: '/__debug' },
+];
+
+/** 模式是否落在某个前缀的命名空间里（`/__debug` 与 `/__debug/x` 都算，`/__debugger` 不算）。 */
+function pathIsUnder(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+/**
+ * 从已装配的插件里读出"**谁声明占用了哪个路由前缀**"（`WebPluginSpec.routePrefix`）。
+ *
+ * 为什么需要：装配期要判断"这条路由落在保留前缀里、但它是前缀主人的路由" —— 这个判据必须来自
+ * 插件自己的声明，而不是硬编码插件名（硬编码一定会分叉：改个 `prefix` 就错）。
+ * 应用层不依赖 Web 层，所以插件类型上只可能有 `routePrefix?: string`（结构化读取）。
+ */
+export function declaredPrefixOwners(
+  plugins: readonly unknown[],
+): Array<{ owner: string; prefix: string }> {
+  const owners: Array<{ owner: string; prefix: string }> = [];
+  for (const plugin of plugins) {
+    if (typeof plugin !== 'object' || plugin === null) continue;
+    const record = plugin as { name?: unknown; routePrefix?: unknown };
+    if (typeof record.name !== 'string' || typeof record.routePrefix !== 'string') continue;
+    if (record.routePrefix === '' || !record.routePrefix.startsWith('/')) continue;
+    owners.push({ owner: record.name, prefix: record.routePrefix.replace(/\/$/, '') || '/' });
+  }
+  return owners;
+}
+
+/**
+ * **框架自带**插件的标识清单（`WebPluginSpec.framework === true`）。
+ *
+ * 只用于一句判断："框架插件占自己的保留前缀是设计如此"。用显式标记而不是插件名 ——
+ * 名字可以撞、可以改，标记是插件自己的声明。
+ */
+export function frameworkPrefixOwners(plugins: readonly unknown[]): string[] {
+  return declaredPrefixOwners(plugins.filter(isFrameworkPlugin)).map((entry) => entry.owner);
+}
+
+function isFrameworkPlugin(plugin: unknown): boolean {
+  return typeof plugin === 'object' && plugin !== null && (plugin as { framework?: unknown }).framework === true;
+}
+
+/**
+ * 两个前缀是否重叠（相等、或一个是另一个的命名空间）。
+ *
+ * 前缀先归一化：**去掉尾斜杠**（`/` → 空串）。于是"根前缀 `/`"会与任何前缀重叠 ——
+ * 这正是想要的：`routePrefix: '/'` 等于把保留区也包进自己的命名空间。
+ * 早先没归一化时 `/` 被当成一个普通段，`/` vs `/uploads` 会算出"不重叠"（假阴性）。
+ */
+export function prefixesOverlap(left: string, right: string): boolean {
+  const normalize = (prefix: string): string => prefix.replace(/\/$/, '');
+  const a = normalize(left);
+  const b = normalize(right);
+  if (a === b) return true;
+  return a === '' || b === '' || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/**
+ * 校验**插件自己声明的路由前缀**（`WebPluginSpec.routePrefix`）：用户/第三方插件不许认领保留区。
+ *
+ * 为什么要单独一条，而不是复用"路由模式落在保留前缀里"的检查：插件路由进路由表后**不带插件归属**
+ * （`RouteMeta` 只记模块/路由器名），所以在那里无法区分"框架插件的 `/uploads`"与"第三方插件的 `/uploads`"。
+ * 而在插件这一层，归属是明确的（就是插件自己），所以这里判得准。
+ *
+ * 两个方向都拦：
+ *   - 用户插件声明的 `/__debug`、`/uploads/*` → 与框架命名空间重叠；
+ *   - 用户插件声明的**父前缀** `/` 或 `/__debug/extra` 之类 → 把保留区包进自己的命名空间同样危险。
+ */
+export function pluginPrefixCollisions(
+  plugins: readonly unknown[],
+): Array<{ owner: string; prefix: string; reserved: string }> {
+  const framework = new Set(frameworkPrefixOwners(plugins));
+  const collisions: Array<{ owner: string; prefix: string; reserved: string }> = [];
+  for (const { owner, prefix } of declaredPrefixOwners(plugins)) {
+    if (framework.has(owner)) continue;
+    for (const reserved of RESERVED_ROUTE_PREFIXES) {
+      if (prefixesOverlap(prefix, reserved)) {
+        collisions.push({ owner, prefix, reserved });
+        break;
+      }
+    }
+  }
+  return collisions;
+}
+
+/** 名字冲突检查：两个插件声明同一个路由前缀 → 必然互相覆盖（启动期报错，不静默）。 */
+export function duplicatePrefixOwners(
+  plugins: readonly unknown[],
+): Array<{ prefix: string; owners: string[] }> {
+  const byPrefix = new Map<string, string[]>();
+  for (const { owner, prefix } of declaredPrefixOwners(plugins)) {
+    byPrefix.set(prefix, [...(byPrefix.get(prefix) ?? []), owner]);
+  }
+  return [...byPrefix]
+    .filter(([, owners]) => owners.length > 1)
+    .map(([prefix, owners]) => ({ prefix, owners }));
+}
+
+/**
+ * 这个路由模式是否落在**框架保留前缀**里（查询声明不参与判定）。
+ *
+ * 只在装配路由表时使用（那时才看得到全部路由）。刻意**不做前缀归一化之外的猜测**：
+ * 只比较路径，不做"语义相似"判断。
+ */
+export function inReservedPrefix(pattern: string): boolean {
+  const raw = String(pattern);
+  const path = raw.split('?', 1)[0] ?? raw;
+  return RESERVED_ROUTE_PREFIXES.some((prefix) => pathIsUnder(path, prefix));
+}
+
 export interface RequestContextInit {
   /** 流式路由的原始请求体。 */
   stream?: AsyncIterable<Uint8Array>;

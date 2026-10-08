@@ -30,7 +30,19 @@ export {
   type WsConnections,
 } from './connections.ts';
 
-export { composeMiddleware, defineMiddleware, defineMiddleware as middleware, type Middleware } from './middleware.ts';
+export {
+  atAuth,
+  atError,
+  atHandler,
+  atParse,
+  atPost,
+  atPre,
+  composeMiddleware,
+  defineMiddleware,
+  defineMiddleware as middleware,
+  phase,
+  type Middleware,
+} from './middleware.ts';
 export {
   defineRouter,
   defineRouter as router,
@@ -48,20 +60,36 @@ export {
 } from './router.ts';
 
 export {
+  debugVisibilityOf,
   defineController,
   defineController as controller,
   dispatch,
+  inputSchemaOf,
+  inputSourcesOf,
   type Controller,
   type ControllerSpec,
   type DispatchOptions,
   type DispatchRequest,
+  type DebugVisibility,
   type DispatchResult,
+  type InputEntry,
+  type InputFromSpec,
+  type InputSource,
 } from './controller.ts';
 
 export {
   createRequestContext,
+  declaredPrefixOwners,
+  duplicatePrefixOwners,
+  frameworkPrefixOwners,
+  inReservedPrefix,
+  pluginPrefixCollisions,
+  prefixesOverlap,
   HttpError,
   reply,
+  RESERVED_CONTEXT_KEYS,
+  RESERVED_PREFIX_OWNERS,
+  RESERVED_ROUTE_PREFIXES,
   toErrorResponse,
   toResponse,
   type Accessor,
@@ -87,6 +115,7 @@ export {
   patch,
   post,
   put,
+  reservedPrefixIssues,
   ROUTE_METHODS,
   ws,
   type ControllerLike,
@@ -195,3 +224,13 @@ export {
 } from './logging.ts';
 
 export { debugPlugin, type DebugPluginOptions } from './debug.ts';
+
+// --- T3 工厂糖（M9g）--------------------------------------------------------
+export {
+  crudRoutes,
+  healthRoutes,
+  type CrudPagination,
+  type CrudRoutesOptions,
+  type CrudStore,
+  type HealthRoutesOptions,
+} from './factories.ts';

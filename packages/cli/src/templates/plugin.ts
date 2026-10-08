@@ -7,13 +7,26 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export const PLUGIN_KINDS = ['web', 'resource'] as const;
+export const PLUGIN_KINDS = ['app', 'web', 'resource', 'mail'] as const;
 export type PluginKind = (typeof PLUGIN_KINDS)[number];
 
 /** 每种 kind 需要的依赖（生成到 package.json）。 */
 export const PLUGIN_KIND_DEPS: Record<PluginKind, string> = {
+  app: '@actor/app',
   web: '@actor/web',
   resource: '@actor/resource',
+  mail: '@actor/mail',
+};
+
+/**
+ * 每种 kind 的**自证方式**（生成到 README 的说明里，也是"骨架不是空壳"的证据）：
+ * 能复用已发布契约套件的就复用，没有套件的（app）用骨架自带的行为断言。
+ */
+export const PLUGIN_KIND_PROOF: Record<PluginKind, string> = {
+  app: '骨架自带行为测试（生命周期顺序 / 配置节 / 服务可获取 / 停机幂等）',
+  web: '`runWebPluginContract`（已发布）',
+  resource: '`runManagedResourceContract`（已发布）',
+  mail: '`runMailTransportContract`（已发布）',
 };
 
 const PLUGIN_ROOT = path.join(import.meta.dirname, '..', '..', 'templates', 'plugin');

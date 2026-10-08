@@ -54,6 +54,15 @@ export interface Route {
   readonly meta?: { module?: string; router?: string };
 }
 
+/**
+ * 结构式读取"这个控制器声明了哪些输入来源"（不 import controller.ts：routes.ts 是被它依赖的下层）。
+ * 读不到（普通对象/未归一化的 spec）就当空表。
+ */
+function readDeclaredInputSources(controller: unknown): Map<string, string> {
+  const lookup = (controller as { __inputSources?: unknown }).__inputSources;
+  return lookup instanceof Map ? (lookup as Map<string, string>) : new Map();
+}
+
 function isControllerObject(value: unknown): value is ControllerLike {
   return typeof value === 'object' && value !== null && 'handle' in (value as Record<string, unknown>);
 }
@@ -107,20 +116,25 @@ export function parsePattern(
     }
     queryParams.push(name);
   }
-  // 规则 3：input schema 的键必须来自路径参数或已声明的查询参数
+  // 规则 3：input schema 的键必须有**来源** —— 路径参数、已声明的查询参数、body，或显式的 from 声明。
+  //
+  // M9f 起 `defineController` 会把"来自 body 的输入键"自动补进 `controller.body`，所以这条校验
+  // 主要在"手写 spec 忘了声明来源"时起作用（错字/漏写仍然被拦）。`from` 声明由控制器模块记账
+  // （`inputSourcesOf`），这里按结构读一次即可 —— 有意不 import controller.ts，保持 routes.ts 的依赖方向。
   if (isControllerObject(controller) && controller.input) {
     const declared = new Set([...pathParams, ...queryParams, ...(controller.body ?? [])]);
     for (const key of Object.keys(controller.input)) {
-      if (!declared.has(key)) {
-        return {
-          issue: {
-            message:
-              `input 声明了 '${key}'，但它既不是路径参数、也不是查询参数、也不在 body 声明里（${pattern}）——` +
-              `请写成 /:${key}、?${key}= 或 body: ['${key}']`,
-            route: pattern,
-          },
-        };
-      }
+      if (declared.has(key)) continue;
+      const declaredFrom = readDeclaredInputSources(controller).get(key);
+      if (declaredFrom !== undefined) continue; // 显式声明了来源（from: 'query' | 'params' | 'body'）
+      return {
+        issue: {
+          message:
+            `input 声明了 '${key}'，但它既不是路径参数、也不是查询参数、也不在 body 声明里（${pattern}）——` +
+            `请写成 /:${key}、?${key}= 或 body: ['${key}']`,
+          route: pattern,
+        },
+      };
     }
   }
   return {
@@ -304,4 +318,56 @@ export const ws = (
  */
 export function defineRoutes<T extends readonly (readonly unknown[])[]>(entries: T): T {
   return entries;
+}
+
+/**
+ * 检查"落在框架保留前缀里"的**模块/路由器路由**，转成启动期 issue。
+ *
+ * 为什么单独一条检查：路由表查的是**模式重复**，而撞名字不是重复（`/uploads` 与 `/uploads/:key` 是两个模式）
+ * —— 于是用户路由与框架路由会同时存在，匹配到谁取决于声明顺序，属于静默漂移。
+ * `httpPlugin` / `wsPlugin` 都用这一条（两处装的是同一份路由表，不该有两套口径）。
+ *
+ * 输入是 `flattenRoutes` 的**扁平元组** `[method, pattern, controller, middleware?, meta?]`。
+ * 早先这里按 `{ pattern }` 对象读，而调用方传的是元组 → `pattern` 恒为 `undefined`，校验**看着装了、
+ * 其实一条都没查**（"绿但不覆盖"那类事故）。现在同时接受两种形状，并有"必须能拦住"的用例盯着。
+ *
+ * **没有放行名单**：这条检查只对"带归属信息"的路由生效（即模块/路由器声明的路由），
+ * 它们落在保留区一律报错。框架自带插件的路由**不带归属**（`RouteMeta` 只记模块/路由器名），
+ * 因此不经过这里 —— 它们在**插件层**被 `pluginPrefixCollisions` 校验（那一层归属明确）。
+ *
+ * 两次静默失效的教训（都是实测踩到的）：
+ *   ① 早先按 `{ pattern }` 对象读元组 → `pattern` 恒为 `undefined`，校验一条都没查；
+ *   ② 早先把保留清单算作"已认领/可放行" → 所有 `/__debug/*` 都成了合法。
+ * 所以这里坚持：判据只有一个，就是"模式是否落在保留前缀里"。
+ */
+export function reservedPrefixIssues(
+  entries: readonly unknown[],
+  reserved: readonly { owner: string; prefix: string }[],
+  isReserved: (pattern: string) => boolean,
+): RouteIssue[] {
+  const issues: RouteIssue[] = [];
+  for (const item of entries) {
+    let pattern: string | undefined;
+    let owner: string | undefined;
+    if (Array.isArray(item)) {
+      // 扁平元组：[method, pattern, controller, middleware?, meta?]
+      pattern = typeof item[1] === 'string' ? item[1] : undefined;
+      const meta = item[4] as { module?: string; router?: string } | undefined;
+      owner = meta?.module ?? meta?.router;
+    } else if (typeof item === 'object' && item !== null) {
+      const record = item as { pattern?: unknown; meta?: { module?: string; router?: string } };
+      pattern = typeof record.pattern === 'string' ? record.pattern : undefined;
+      owner = record.meta?.module ?? record.meta?.router;
+    }
+    if (pattern === undefined || !isReserved(pattern)) continue;
+    issues.push({
+      message:
+        `路由 "${pattern}" 落在框架保留前缀里 —— 这片命名空间由内置插件占用` +
+        `（${reserved.map((entry) => `${entry.owner}=${entry.prefix}`).join(' / ')}），` +
+        `请换一个前缀，或给对应插件传 routePrefix/prefix 换到你的命名空间` +
+        (owner === undefined ? '（这条路由没有归属信息）' : `（路由归属：${owner}）`),
+      route: pattern,
+    });
+  }
+  return issues;
 }

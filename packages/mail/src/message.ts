@@ -88,10 +88,27 @@ function asBuffer(content: Uint8Array | string): Buffer {
   return typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
 }
 
-/** 把消息渲染成 `.eml`（RFC 5322 + MIME）。 */
-export function renderMail(message: MailMessage, options: { now?: Date; messageId?: string; domain?: string } = {}): RenderedMail {
+/**
+ * **发送前的合法性检查**（自定义 transport 请先调它，再发）。
+ *
+ * 为什么单独导出：`renderMail` 会做这些检查，但把信交给 HTTP API（Resend/SES…）的传输**不渲染**
+ * ——于是它会漏掉"没有收件人"与"主题里藏 CRLF（头部注入）"这两个洞。契约套件要求这些错误必须响亮，
+ * 所以规则做成**单一来源**，而不是让每个实现各抄一遍。
+ */
+export function assertSendable(message: MailMessage): void {
   if (message.to === undefined || message.to.length === 0) throw new DbConfigError('mail: 至少一个收件人（to）');
   assertNoInjection(message.subject, 'subject');
+  // 地址（含显示名）也走同一套规范化：格式不对/带换行都会在这里响亮报错
+  addressOf(message.from);
+  for (const recipient of message.to) addressOf(recipient);
+  for (const recipient of message.cc ?? []) addressOf(recipient);
+  for (const recipient of message.bcc ?? []) addressOf(recipient);
+  if (message.replyTo !== undefined) addressOf(message.replyTo);
+}
+
+/** 把消息渲染成 `.eml`（RFC 5322 + MIME）。 */
+export function renderMail(message: MailMessage, options: { now?: Date; messageId?: string; domain?: string } = {}): RenderedMail {
+  assertSendable(message);
 
   const from = addressOf(message.from);
   const to = message.to.map(addressOf);

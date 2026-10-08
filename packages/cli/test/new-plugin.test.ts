@@ -17,8 +17,8 @@ function tempDir(name: string): string {
   return dir;
 }
 
-test('new plugin: 两种 kind 都生成骨架，且**生成的插件真能跑自己的契约套件**', async () => {
-  for (const kind of ['web', 'resource'] as const) {
+test('new plugin: 四种 kind 都生成骨架，且**生成的插件真能跑自己的契约/行为套件**', async () => {
+  for (const kind of ['app', 'web', 'resource', 'mail'] as const) {
     const parent = tempDir(`plugin-${kind}`);
     try {
       const result = await newPlugin(`probe-${kind}-plugin`, { kind, dir: parent });
@@ -28,16 +28,23 @@ test('new plugin: 两种 kind 都生成骨架，且**生成的插件真能跑自
         ['README.md', 'package.json', 'src/index.ts', 'test/contract.test.ts'],
         `骨架文件清单不对：${result.files.join(', ')}`,
       );
-      // 关键：用框架**已发布**的契约套件（而不是自己编一套断言）
+      // 关键：web/resource/mail 用框架**已发布**的契约套件；app 没有已发布套件，用骨架自带的行为断言
       const contract = fs.readFileSync(path.join(result.dir, 'test', 'contract.test.ts'), 'utf8');
-      const expectedSuite = kind === 'web' ? 'runWebPluginContract' : 'runManagedResourceContract';
+      const expectedSuite = {
+        web: 'runWebPluginContract',
+        resource: 'runManagedResourceContract',
+        mail: 'runMailTransportContract',
+        app: 'createApp',
+      }[kind];
       assert.match(contract, new RegExp(expectedSuite), `${kind} 骨架应当用 ${expectedSuite}`);
       const pkg = JSON.parse(fs.readFileSync(path.join(result.dir, 'package.json'), 'utf8')) as {
         name: string;
         dependencies: Record<string, string>;
       };
       assert.strictEqual(pkg.name, `probe-${kind}-plugin`, '包名要用用户给的名字');
-      assert.deepStrictEqual(Object.keys(pkg.dependencies), [kind === 'web' ? '@actor/web' : '@actor/resource']);
+      assert.deepStrictEqual(Object.keys(pkg.dependencies), [
+        { app: '@actor/app', web: '@actor/web', resource: '@actor/resource', mail: '@actor/mail' }[kind],
+      ]);
 
       // 跑它自带的契约套件（生成物在仓库内，所以 @actor/* 能解析）
       const env = { ...process.env };
@@ -67,9 +74,9 @@ test('new plugin: --dry-run 一个字节都不写；非空目录拒绝；未知 
     await assert.rejects(() => newPlugin('', { kind: 'web', dir: parent }), /缺少插件名/);
     await assert.rejects(() => newPlugin('Bad_Name', { kind: 'web', dir: tempDir('plugin-badname') }), /插件名不合法/);
     await assert.rejects(
-      () => newPlugin('kind-plugin', { kind: 'mail', dir: tempDir('plugin-badkind') }),
-      /未知的插件类型 'mail'/,
-      'app / mail 骨架还没实现 → 明确拒绝，不生成一半',
+      () => newPlugin('kind-plugin', { kind: 'nope', dir: tempDir('plugin-badkind') }),
+      /未知的插件类型 'nope'/,
+      '未知 kind → 明确拒绝，不生成一半',
     );
   } finally {
     fs.rmSync(parent, { recursive: true, force: true });
@@ -84,7 +91,7 @@ test('new plugin: --repo 给出四张矩阵的接线清单（漏一处不会静�
     const result = await newPlugin('@me/scoped-plugin', { kind: 'web', dir: parent, repo: true, dryRun: true });
     assert.strictEqual(result.dir, path.join(parent, 'scoped-plugin'), '作用域包用短名做目录');
     // 依赖 1 行 + 四张矩阵 4 行 + 门禁提示 1 行
-    assert.strictEqual(result.wiring.length, 6, `接线清单应当有 6 行：${JSON.stringify(result.wiring)}`);
+    assert.strictEqual(result.wiring.length, 7, `接线清单应当有 7 行：${JSON.stringify(result.wiring)}`);
     for (const keyword of ['scripts.test', 'tsconfig.json', 'docs-site.mjs', '导出基线', 'unit-package-matrices']) {
       assert.ok(result.wiring.some((line) => line.includes(keyword)), `清单里该提 ${keyword}`);
     }

@@ -6,7 +6,13 @@
  * 派发是纯函数（不依赖 http 模块），便于单测与替换服务器实现。
  */
 
-import { validateValues, type ConfigIssue, type ConfigSchema } from '@actor/app';
+import {
+  validateValues,
+  type ConfigEntry,
+  type ConfigIssue,
+  type ConfigSchemaInput,
+  type FieldType,
+} from '@actor/app';
 
 import {
   setRouteSpec,
@@ -22,6 +28,36 @@ import { composeMiddleware, type Middleware } from './middleware.ts';
 import { orderMiddleware } from './plugins.ts';
 import { matchRoute, type HttpMethod, type Route } from './routes.ts';
 
+/** 输入来源（**默认来自请求体**：写 `input: { filename: 'string' }` 就是在声明一个 body 字段）。 */
+export type InputSource = 'body' | 'query' | 'params';
+
+/**
+ * **诊断可见性**（M9g）：`'inherit'`（默认，跟随上层）/ `'off'`（这条不出现在 `/__debug/routes`）。
+ *
+ * 语义边界（必须记住）：它**只减少诊断输出的信息面**，不影响路由是否可用、也不改变鉴权 ——
+ * 真正的门是 debugPlugin 的 token 与"生产拒绝启动"。
+ */
+export type DebugVisibility = 'inherit' | 'off';
+
+/** 输入字段的**来源声明**形态：`{ from: 'query', … }`（`type` 可省，取值简写照旧）。 */
+export interface InputFromSpec {
+  from: InputSource;
+  type?: FieldType;
+  default?: unknown;
+  /** 可缺省（`false` = 没给就跳过；用于部分更新）。 */
+  required?: boolean;
+  secret?: boolean;
+  nullable?: boolean;
+  min?: number;
+  max?: number;
+  regex?: RegExp | string;
+  enum?: readonly (string | number | boolean)[];
+  description?: string;
+}
+
+/** 输入声明的一项：全量 `FieldSpec`、简写值（值即 schema），或带 `from` 的来源声明。 */
+export type InputEntry = ConfigEntry | InputFromSpec;
+
 export interface ControllerSpec {
   /** 依赖的 provider 名字（由 httpPlugin 在启动时解析并注入 ctx.get）。 */
   deps?: readonly string[];
@@ -33,22 +69,169 @@ export interface ControllerSpec {
   /** 控制器级中间件（在全局与路由级之后）。 */
   middleware?: readonly Middleware[];
   /**
+   * 诊断可见性：`'off'` 让这条路由不出现在 `/__debug/routes`（内部端点常用）。
+   *
+   * 不是安全边界（见 `DebugVisibility` 的注释）：隐藏的是**诊断输出**，不是路由本身。
+   */
+  debug?: DebugVisibility;
+  /**
    * 输入里来自**请求体**的键。
    *
    * 路由表校验会检查：`input` 的每个键必须是路径参数、查询参数，或者出现在这里。
-   * （这个字段一直在被 httpPlugin 使用与校验，但**类型里漏了** —— M8b 实施时我据此误判
-   * "body 是静默无效的"并删掉了它，结果启动期直接报错，才把类型补齐。）
+   * **M9f 起通常不用手写**：输入声明合一后，不带 `from` 的 `input` 字段默认就是 body，
+   * `defineController` 会自动把它补进这里（显式写仍然有效，两者取并集）。
    */
   body?: readonly string[];
-  /** 输入校验：复用应用层的字段描述符。键必须来自路径参数、已声明的查询参数或 `body`。 */
-  input?: ConfigSchema;
+  /**
+   * 输入校验：复用应用层的字段描述符（**支持简写，值即 schema**）。
+   *
+   * ```ts
+   * defineController({ input: { filename: 'string', size: 'int' }, handle })   // 默认来自 body
+   * defineController({ input: { id: { type: 'string', from: 'params' } }, handle })
+   * defineController({ input: { limit: { from: 'query', type: 'number', default: 20 } }, handle })
+   * ```
+   *
+   * 规则：键必须来自路径参数、查询参数或 `body`；声明了 `from` 就按它取，否则按 body 处理。
+   */
+  input?: { [key: string]: InputEntry };
   handle: (input: Record<string, unknown>, ctx: RequestContext) => unknown | Promise<unknown>;
 }
 
 export type Controller = ControllerSpec | ((input: Record<string, unknown>, ctx: RequestContext) => unknown);
 
+/**
+ * 每个控制器**显式声明**的"输入来源"表（`input` 键 → 来源）。
+ *
+ * 只有 `from` 与"简写的默认 body"写进来；**路由模式里的 `:param` / `?query=` 也是来源声明**，
+ * 但那只在 dispatch/规则 3 看得到模式时才参与判定（优先于这里的默认 body，见 `sourcesFor`）。
+ *
+ * 为什么用 WeakMap 而不是把 `from` 留在 spec 上：`from` 是**连线信息**（这个键从哪取），
+ * 不是字段约束 —— 留在 spec 里会流进 `validateValues`（它按 FieldSpec 读，多出来的键没有意义）。
+ * 用 WeakMap 则既不改公开形状，又能在 dispatch 时按来源精确组装输入。
+ */
+const INPUT_SOURCES = new WeakMap<ControllerSpec, Map<string, InputSource>>();
+
+/** 归一化后的输入 schema（与 `INPUT_SOURCES` 同时写入：dispatch 只读这一份，不再看 `spec.input`）。 */
+const INPUT_SCHEMAS = new WeakMap<ControllerSpec, ConfigSchemaInput>();
+
+/** 取归一化后的输入 schema（`defineController` 写进去的；手写 spec 没经过归一化时回落到 spec.input）。 */
+export function inputSchemaOf(spec: ControllerSpec): ConfigSchemaInput | undefined {
+  return INPUT_SCHEMAS.get(spec) ?? (spec.input as ConfigSchemaInput | undefined);
+}
+
+/** 控制器声明的诊断可见性（`'off'` 表示不出现在 `/__debug/routes`；没声明就是 `inherit`）。 */
+const DEBUG_VISIBILITY = new WeakMap<ControllerSpec, DebugVisibility>();
+
+export function debugVisibilityOf(controller: unknown): DebugVisibility {
+  if (typeof controller !== 'object' || controller === null) return 'inherit';
+  return DEBUG_VISIBILITY.get(controller as ControllerSpec) ?? 'inherit';
+}
+
+/**
+ * **输入字段的字符串简写**（M9f T2）：`'string'` / `'int'` / `'number'` / `'bool'` / `'boolean'` / `'json'`
+ * → 对应的字段声明（都**不带默认值**，即必填；要默认值就写全量写法）。
+ *
+ * 为什么需要单独一张别名表：`'int'` / `'bool'` 是"给人看的类型名"，而 `FieldType` 只有
+ * `string|number|boolean|json`。不肯定的名字（打错的那种）**明确报错**，不静默当字符串。
+ */
+function expandTypeAlias(value: string, key: string): { type: FieldType } {
+  switch (value) {
+    case 'string':
+      return { type: 'string' };
+    case 'int':
+    case 'number':
+      return { type: 'number' };
+    case 'bool':
+    case 'boolean':
+      return { type: 'boolean' };
+    case 'json':
+      return { type: 'json' };
+    default:
+      throw new Error(
+        `defineController: 输入项 '${key}' 的类型简写 '${value}' 不认识` +
+          `（支持：string / int / number / bool / boolean / json；要别的写法请用 { type: … } 全量形式）`,
+      );
+  }
+}
+
+/** 数组简写 = JSON 数组（`['x']` 给出一个示例元素，仅用于表意）。 */
+function isAlias(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+/** 取某个控制器声明的输入来源（没声明过就是空表 → 全部按 body/路径/查询的既有规则）。 */
+export function inputSourcesOf(spec: ControllerSpec): Map<string, InputSource> {
+  return INPUT_SOURCES.get(spec) ?? new Map();
+}
+
+function isFromSpec(value: unknown): value is InputFromSpec {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { from?: unknown }).from === 'string' &&
+    ['body', 'query', 'params'].includes((value as { from: string }).from)
+  );
+}
+
+function isFieldSpecLike(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && typeof (value as { type?: unknown }).type === 'string';
+}
+
+/**
+ * 声明一个控制器。
+ *
+ * 定义期做两件事（都是"归一化"，不改变语义）：
+ *   ① **输入声明合一**：`input: { x: 'string' }`（值即 schema）与 `{ x: { from: 'query' } }` 都归一成
+ *      标准字段声明，并记下来源（`body` 是默认来源）；
+ *   ② 把"来自 body 的输入键"补进 `spec.body`，于是路由表的"键必须有来源"校验照旧生效
+ *      （用户不再需要手写 `body: [...]` 与 `input` 两处）。
+ */
 export function defineController(spec: ControllerSpec): ControllerSpec {
-  return spec;
+  if (!spec.input) {
+    if (spec.debug !== undefined) DEBUG_VISIBILITY.set(spec, spec.debug);
+    return spec;
+  }
+  const sources = new Map<string, InputSource>();
+  const normalized: ConfigSchemaInput = {};
+  for (const [key, value] of Object.entries(spec.input)) {
+    if (isFromSpec(value)) {
+      const { from, ...rest } = value;
+      sources.set(key, from);
+      // `{ from: 'query' }`（只写来源）= 该键必填字符串；给了 type/default 就用它。
+      // `rest` 本身是合法字段声明（`from` 之外的键就是 FieldSpec 的键），这里只是收一次类型。
+      normalized[key] = Object.keys(rest).length === 0 ? { type: 'string' } : (rest as ConfigEntry);
+      continue;
+    }
+    sources.set(key, 'body'); // 默认来自 body（设计已定）
+    if (isAlias(value)) {
+      normalized[key] = expandTypeAlias(value, key); // 字符串简写 → 对应字段声明
+      continue;
+    }
+    if (isFieldSpecLike(value) || typeof value !== 'object' || value === null) {
+      normalized[key] = value as ConfigEntry;
+      continue;
+    }
+    // 普通对象（且没写 from）：输入是一层**扁平的表**，所以按 json 默认值处理（不展开成分组）
+    normalized[key] = { type: 'json', default: value };
+  }
+  const bodyKeys = [...sources].filter(([, from]) => from === 'body').map(([key]) => key);
+  const body = [...new Set([...(spec.body ?? []), ...bodyKeys])];
+  const next: ControllerSpec = {
+    ...spec,
+    input: normalized,
+    ...(body.length === 0 ? {} : { body }),
+  };
+  INPUT_SOURCES.set(next, sources);
+  INPUT_SCHEMAS.set(next, normalized);
+  if (spec.debug !== undefined) DEBUG_VISIBILITY.set(next, spec.debug);
+  // routes.ts（被本模块依赖的下层）也要能知道"每个输入键的来源"，但它不能 import 本模块。
+  // 所以额外挂一份**不可枚举**的副本：deepStrictEqual/JSON 都看不见它，只有规则 3 会读。
+  Object.defineProperty(next, '__inputSources', {
+    value: sources,
+    enumerable: false,
+    configurable: true,
+  });
+  return next;
 }
 
 function isControllerSpec(value: Controller): value is ControllerSpec {
@@ -142,14 +325,42 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
   const { route, params, query } = match;
   const querySource = new URLSearchParams(rawQuery);
   const body = request.body;
+  // 来源表（M9f）：没声明过来源的控制器按既有规则（路径 → 查询 → body 兜底）；
+  // 声明过就**按来源精确组装**（`from: 'query'` 的键不再被同名 body 字段顶掉）。
+  const rawController = route.controller as unknown as Controller;
+  // 来源表：控制器显式声明的来源优先；**路由模式里的 `:param` / `?query=` 也是来源声明**
+  // （没写 from 的旧写法靠它们定位，所以先把它们补进来，显式声明再覆盖）
+  // 优先级：**显式 `from`** > 路由模式（`:param` / `?query=`）> 输入的默认来源（body）。
+  // 为什么"显式 from"优先：它是使用者写下来的意图（`{ from:'query' }` 就该读查询）。
+  // 为什么模式优先于"默认 body"：老写法（没有 from 概念）一直靠模式定位，
+  // 而 `defineController` 给每个输入都记了默认 `body` —— 若不让模式插在中间，
+  // `get('/rooms/:id?verbose=', controller({ input: { verbose: {type:'boolean'} } }))`
+  // 里的 verbose 会被当成 body 字段，查询值直接被丢掉（实测回归）。
+  const sources = new Map<string, InputSource>();
+  const explicit = isControllerSpec(rawController) ? INPUT_SOURCES.get(rawController) : undefined;
+  for (const name of route.pathParams) sources.set(name, 'params');
+  for (const name of route.queryParams) sources.set(name, 'query');
+  for (const [key, from] of explicit ?? []) {
+    if (from !== 'body') sources.set(key, from); // 显式 from 覆盖模式
+  }
+  for (const [key, from] of explicit ?? []) {
+    if (from === 'body' && !sources.has(key)) sources.set(key, 'body');
+  }
+
   const declared: Record<string, unknown> = { ...params };
   for (const name of route.queryParams) {
     const fromQuery = querySource.get(name);
-    if (fromQuery !== null) declared[name] = fromQuery;
+    if (fromQuery === null) continue;
+    if (sources.get(name) !== 'query') continue; // 声明为 params/body 的键不接查询
+    declared[name] = fromQuery;
   }
-  // 允许 JSON body 覆盖/补充（POST 场景）
+  // body：允许覆盖/补充（POST 场景）；声明了来源的键只接自己那一路
   if (body !== undefined && typeof body === 'object' && body !== null) {
-    for (const [key, value] of Object.entries(body)) declared[key] ??= value;
+    for (const [key, value] of Object.entries(body)) {
+      const from = sources.get(key);
+      if (from !== undefined && from !== 'body') continue;
+      declared[key] ??= value;
+    }
   }
 
   // routes.ts 里的控制器类型是有意"不透明"的（routes 不依赖 ctx 类型，避免循环引用），
@@ -196,8 +407,9 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchResult
     const run = composeMiddleware(chain);
     const result = await run(ctx, async () => {
       let input: Record<string, unknown> = declared;
-      if (spec.input) {
-        const { values, issues } = validateValues(spec.input, declared, `请求输入`);
+      const inputSchema = inputSchemaOf(spec);
+      if (inputSchema) {
+        const { values, issues } = validateValues(inputSchema, declared, `请求输入`);
         if (issues.length > 0) {
           throw new HttpError(400, 'input validation failed', { issues: issues satisfies ConfigIssue[] });
         }

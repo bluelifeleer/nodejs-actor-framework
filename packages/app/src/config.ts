@@ -16,6 +16,12 @@ export interface FieldSpec {
   type: FieldType;
   /** 有默认值即非必填（0 / false / '' 都算有值）。 */
   default?: unknown;
+  /**
+   * 显式声明必填性（默认 `true`：既没默认值也没写明可缺省就是必填）。
+   *
+   * `required: false` 用于**部分更新**（PATCH/PUT 的写入字段）：没给就跳过，给了就照常校验。
+   */
+  required?: boolean;
   /** 机密项：诊断与 redacted() 中打码。 */
   secret?: boolean;
   /** 允许显式 null。 */
@@ -28,6 +34,49 @@ export interface FieldSpec {
 }
 
 export type ConfigSchema = { [key: string]: FieldSpec | ConfigSchema };
+
+/**
+ * **值即 schema（M9f T2）**：直接写值就得到"该类型的字段，默认值是这个值"。
+ *
+ * ```ts
+ * config({ port: 3000, name: 'app', verbose: false })    // 简写（值即 schema）
+ * config({ port: { type: 'number', default: 3000 } })     // 全量写法，随时可混用
+ * ```
+ *
+ * 规则（刻意窄，避免歧义）：
+ *   - 字符串/数字/布尔/数组 → 推断成 `string` / `number` / `boolean` / `json`，并把这个值作为 `default`；
+ *   - 普通对象 → **永远是嵌套分组**（不会被当成"默认值是对象"）；
+ *     要对象默认值就写 `{ type: 'json', default: { ... } }`（意图明确）；
+ *   - `null` / 函数 / symbol → 报错（没有类型可推断，写全量写法）；
+ *   - 需要 env 映射名、校验（min/regex/enum）、`secret`、`nullable` 或**不写默认值**时 → 写全量写法。
+ *
+ * 注意"必填项"只能靠全量写法（`{ type: 'string' }`）：简写总有默认值。
+ */
+export type ConfigValue = string | number | boolean | readonly unknown[];
+
+/** 配置项：全量字段声明（`{ type, … }`）或简写值（值即 schema）。 */
+export type ConfigEntry = FieldSpec | ConfigValue | ConfigSchema;
+
+/** 宽松 schema：允许简写值。`defineConfig` 与 `app.config` 用它，加载时按同一套规则归一化。 */
+export type ConfigSchemaInput = { [key: string]: ConfigEntry };
+
+const FIELD_TYPES: readonly string[] = ['string', 'number', 'boolean', 'json'];
+
+/** 值 → 字段类型（简写推断）。 */
+function inferFieldType(value: unknown, dotted: string): FieldType {
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'number') return 'number';
+  if (typeof value === 'boolean') return 'boolean';
+  if (Array.isArray(value)) return 'json';
+  throw new ConfigValidationError([
+    {
+      path: dotted,
+      message:
+        `无法从值推断配置项类型（${value === null ? 'null' : typeof value}）—— ` +
+        `请写全量写法，例如 { type: 'json', default: … } 或 { type: 'string' }（后者表示必填）`,
+    },
+  ]);
+}
 
 export interface ConfigIssue {
   path: string;
@@ -44,6 +93,38 @@ export class ConfigValidationError extends Error {
     this.name = 'ConfigValidationError';
     this.issues = issues;
   }
+}
+
+/**
+ * 把一项归一化成 `FieldSpec`：全量写法原样返回，简写值按 `inferFieldType` 展开。
+ *
+ * 普通对象**不是**简写（它要递归成分组）；带 `type` 却不认识的（例如 `{ type: 'strng' }`）
+ * 要给"支持哪些类型 + 对象默认值怎么写"的明确提示，而不是当成分组下探（那会报出莫名其妙的叶子错）。
+ */
+function normalizeEntry(value: unknown, dotted: string): FieldSpec {
+  if (isFieldSpec(value)) return value;
+  if (isPlainObject(value)) {
+    // 带 type 但不是合法字段声明 = **拼错的类型**（`{ type: 'strng' }` / `type: [...]`）或"想写对象默认值"
+    if ('type' in (value as Record<string, unknown>)) {
+      throw new ConfigValidationError([
+        {
+          path: dotted,
+          message:
+            `未知的字段类型 '${String((value as { type: unknown }).type)}'（支持：${FIELD_TYPES.join(' / ')}）；` +
+            `若这里想表达"默认值是一个对象"，请写 { type: 'json', default: { … } }`,
+        },
+      ]);
+    }
+    throw new ConfigValidationError([
+      {
+        path: dotted,
+        message:
+          '配置项既不是字段声明（要有 type），也不是嵌套分组对象 —— ' +
+          "普通对象一律按**分组**展开；要对象默认值请写 { type: 'json', default: { … } }",
+      },
+    ]);
+  }
+  return { type: inferFieldType(value, dotted), default: value };
 }
 
 export interface ConfigDefinition<S extends ConfigSchema = ConfigSchema> {
@@ -74,32 +155,34 @@ export interface LoadedConfig {
   readonly sources: readonly string[];
 }
 
+/**
+ * 是不是"全量字段声明"。
+ *
+ * 刻意**同时校验 type 的取值**：`{ type: 'strng' }`（拼错）在定义期就该报"未知的字段类型"，
+ * 而不是被当成合法 spec 留到加载期才报一句含混的错 —— 更糟的是它还会被当成"有 type 的普通对象"，
+ * 走进分组展开那条路（报出莫名其妙的叶子错误）。简写值没有 `type`，因此不受影响。
+ */
 function isFieldSpec(value: unknown): value is FieldSpec {
-  return typeof value === 'object' && value !== null && typeof (value as FieldSpec).type === 'string';
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as FieldSpec).type === 'string' &&
+    FIELD_TYPES.includes((value as FieldSpec).type)
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * 只递归**纯对象**，并且对"把 defineConfig() 的结果当 schema 传进来"这种常见误用给出明确错误。
- *
- * 之前的写法是 `else flattenSchema(value as ConfigSchema, ...)`：遇到字符串/数组也会递归，
- * 于是 `validateValues(defineConfig({...}), {})`（把定义当 schema）会**栈溢出**，
- * 报错信息是一条 `Maximum call stack size exceeded`，完全指不到问题所在（写文档的示例时踩到）。
- */
-function flattenSchema(
-  schema: ConfigSchema,
-  prefix = '',
-  out = new Map<string, FieldSpec>(),
-): Map<string, FieldSpec> {
+/** 归一化 schema：简写值原地展开成 `FieldSpec`（`schema` 与 `fields` 都由它产出 → 两处不可能分叉）。 */
+function normalizeSchema(schema: ConfigSchemaInput): ConfigSchema {
   if (!isPlainObject(schema)) {
     throw new ConfigValidationError([
       {
         path: 'schema',
         message:
-          '配置 schema 必须是普通对象（形如 { key: { type: ... } }）' +
+          '配置 schema 必须是普通对象（形如 { key: { type: ... } } 或 { key: 默认值 }）' +
           `，当前是 ${schema === null ? 'null' : typeof schema}`,
       },
     ]);
@@ -114,27 +197,54 @@ function flattenSchema(
       },
     ]);
   }
+  const out: ConfigSchema = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (isFieldSpec(value)) {
+      out[key] = value;
+      continue;
+    }
+    // 普通对象（**没有 type 键**）= 分组，递归展开；带 type 键的一律交给 normalizeEntry 判
+    if (isPlainObject(value) && !('type' in (value as Record<string, unknown>))) {
+      out[key] = normalizeSchema(value as ConfigSchemaInput);
+      continue;
+    }
+    // 其余交给 normalizeEntry：简写值在这里展开；"带 type 却不认识"（如 `{ type: 'strng' }`）
+    // 也在这里被拒（否则它会被当成普通对象走进分组展开，报出莫名其妙的叶子错误）
+    out[key] = normalizeEntry(value, key);
+  }
+  return out;
+}
+
+/**
+ * 把（已归一化的）schema 摊平成 `点路径 → FieldSpec`。
+ *
+ * 归一化只在 `normalizeSchema` 里做一次：配置加载与 `validateValues` 都走这一条路，
+ * 所以"值即 schema"只实现一次，两侧行为不可能分叉。
+ */
+function flattenSchema(
+  schema: ConfigSchema,
+  prefix = '',
+  out = new Map<string, FieldSpec>(),
+): Map<string, FieldSpec> {
   for (const [key, value] of Object.entries(schema)) {
     const dotted = prefix ? `${prefix}.${key}` : key;
     if (isFieldSpec(value)) {
       out.set(dotted, value);
       continue;
     }
-    if (!isPlainObject(value)) {
-      throw new ConfigValidationError([
-        {
-          path: dotted,
-          message: `配置项既不是字段声明（要有 type），也不是嵌套分组对象（当前是 ${typeof value}）`,
-        },
-      ]);
-    }
     flattenSchema(value as ConfigSchema, dotted, out);
   }
   return out;
 }
 
-export function defineConfig<const S extends ConfigSchema>(schema: S): ConfigDefinition<S> {
-  return Object.freeze({ __kind: 'actor.config' as const, schema, fields: flattenSchema(schema) });
+/** 定义配置：schema 支持全量写法与**简写（值即 schema）**混用。 */
+export function defineConfig<const S extends ConfigSchemaInput>(schema: S): ConfigDefinition {
+  const normalized = normalizeSchema(schema);
+  return Object.freeze({
+    __kind: 'actor.config' as const,
+    schema: normalized,
+    fields: flattenSchema(normalized),
+  });
 }
 
 function setDeep(target: Record<string, unknown>, dotted: string, value: unknown): void {
@@ -323,11 +433,11 @@ export interface ValidateValuesResult {
  * 于是一套校验、一种错误格式、一次性报出全部问题（与配置系统完全一致）。
  */
 export function validateValues(
-  schema: ConfigSchema,
+  schema: ConfigSchemaInput,
   source: Record<string, unknown>,
   sourceLabel = 'input',
 ): ValidateValuesResult {
-  const fields = flattenSchema(schema);
+  const fields = flattenSchema(normalizeSchema(schema));
   const issues: ConfigIssue[] = [];
   const values = new Map<string, unknown>();
 
@@ -336,6 +446,7 @@ export function validateValues(
     if (raw === undefined) {
       if (spec.default !== undefined) raw = spec.default;
       else if (spec.nullable) { values.set(dotted, null); continue; }
+      else if (spec.required === false) continue; // 可缺省（部分更新）：不报错、也不塞进结果
       else { issues.push({ path: dotted, message: '缺少必填项（无默认值，且未提供）' }); continue; }
     }
     if (raw === null && spec.nullable) { values.set(dotted, null); continue; }
@@ -352,8 +463,8 @@ export function validateValues(
   return { values: unflatten(values), issues };
 }
 
-export async function loadConfig<S extends ConfigSchema>(
-  definition: ConfigDefinition<S>,
+export async function loadConfig(
+  definition: ConfigDefinition,
   options: LoadConfigOptions = {},
 ): Promise<LoadedConfig> {
   const env = options.env ?? process.env;

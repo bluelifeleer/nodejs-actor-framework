@@ -118,11 +118,12 @@ test('config: 把 defineConfig() 的结果当 schema 传进来 → 明确报错�
   // 非对象 schema 也一样要清楚
   assert.throws(() => validateValues('nope' as never, {}), /必须是普通对象/);
 
-  // 字段既不是字段声明也不是分组 → 指出具体路径
+  // 字段既不是字段声明也不是分组、也不是可推断的简写值（null / 函数）→ 明确指出是哪一项
   assert.throws(
-    () => validateValues({ group: { broken: 42 } } as never, {}),
+    () => validateValues({ group: { broken: null } } as never, {}),
     (err: unknown) => {
-      assert.match((err as Error).message, /group\.broken/);
+      assert.match((err as Error).message, /broken/);
+      assert.match((err as Error).message, /无法从值推断/);
       return true;
     },
   );

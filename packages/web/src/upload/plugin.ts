@@ -74,6 +74,7 @@ function pushStream(): {
 }
 
 export interface UploadPluginOptions {
+  /** **必需**：文件写到哪（`localDiskStorage({ dir })` / `memoryUploadStorage()` / 自定义实现）。 */
   storage: UploadStorage;
   /** 分片会话存储；默认内存（单节点）。多节点部署请换成磁盘/共享存储实现。 */
   chunkStore?: ChunkSessionStore;
@@ -121,6 +122,14 @@ function extensionOf(filename: string): string {
  *   - `DELETE /uploads/chunked/:uploadId`：作废会话（清理分片）。
  */
 export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
+  // `storage` 是**必需**的（收下来的文件得有地方去）。缺了就在**定义期**说清楚，
+  // 而不是等到第一个上传请求才 500 —— 与框架"启动期失败优于运行期事故"的姿态一致。
+  if (options.storage === undefined || options.storage === null) {
+    throw new DbConfigError(
+      'uploadPlugin: 必须给 "storage"（收下来的文件要写到哪）—— ' +
+        "用内置的 localDiskStorage({ dir }) / memoryUploadStorage()，或自己实现 defineUploadStorage",
+    );
+  }
   const prefix = (options.routePrefix ?? '/uploads').replace(/\/$/, '');
   const chunkStore =
     options.chunkStore ??
@@ -181,9 +190,11 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     }
   };
 
+  // 路由写成**裸模式**（不带 prefix）：前缀由 `defineWebPlugin({ routePrefix })` 统一套一次。
+  // 早先这里自己拼了 prefix、而 defineWebPlugin 又套一遍 → 路径变成 `/uploads/uploads/...`（实测踩到）。
   const routes = defineRoutes([
     post(
-      prefix,
+      '/',
       defineController({
         async handle(_input, ctx): Promise<unknown> {
           const stream = (ctx as unknown as { stream?: AsyncIterable<Uint8Array> }).stream;
@@ -235,7 +246,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     get(
-      `${prefix}/:key`,
+      '/:key',
       defineController({
         input: { key: { type: 'string', min: 1 } },
         async handle(input, ctx): Promise<unknown> {
@@ -256,7 +267,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     post(
-      `${prefix}/chunked/init`,
+      '/chunked/init',
       defineController({
         body: ['filename', 'size', 'chunkSize', 'sha256'],
         input: {
@@ -297,7 +308,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     put(
-      `${prefix}/chunked/:uploadId/:index`,
+      '/chunked/:uploadId/:index',
       defineController({
         input: { uploadId: { type: 'string', min: 1 }, index: { type: 'string', min: 1 } },
         async handle(input, ctx): Promise<unknown> {
@@ -327,7 +338,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     get(
-      `${prefix}/chunked/:uploadId`,
+      '/chunked/:uploadId',
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
         async handle(input, ctx): Promise<unknown> {
@@ -351,7 +362,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     post(
-      `${prefix}/chunked/:uploadId/complete`,
+      '/chunked/:uploadId/complete',
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
         async handle(input, ctx): Promise<unknown> {
@@ -390,7 +401,7 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     ),
 
     del(
-      `${prefix}/chunked/:uploadId`,
+      '/chunked/:uploadId',
       defineController({
         input: { uploadId: { type: 'string', min: 1 } },
         async handle(input, ctx): Promise<unknown> {
@@ -416,6 +427,9 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
 
   return defineWebPlugin({
     name: 'upload',
+    framework: true,
+    // 声明自己占用的前缀：装配期校验据此知道"这片命名空间是这个插件的"（按声明的前缀判定，不靠插件名猜）
+    routePrefix: prefix,
     routes: declaredRoutes as unknown as readonly Route[],
     config: {
       maxFileSize: { type: 'number' as const, default: limits.maxFileSize },
