@@ -16,6 +16,9 @@ export {
   validateValues,
   ConfigValidationError,
   type ConfigSchema,
+  type ConfigSchemaInput,
+  type ConfigEntry,
+  type ConfigValue,
   type ConfigDefinition,
   type ConfigIssue,
   type FieldSpec,
@@ -36,6 +39,9 @@ export {
   Application,
   AssemblyError,
   ActorNotResolvableError,
+  isReservedServiceName,
+  reservedServiceNamesIn,
+  RESERVED_SERVICE_NAMES,
   type ActorHandle,
   type AppDeps,
   type ConfigReader,
@@ -67,3 +73,13 @@ export {
 export const APP_LAYER_VERSION = '0.1.0';
 
 export { runApp, type RunAppOptions } from './run.ts';
+
+// --- 错误出口（P1）------------------------------------------------------------
+export {
+  bridgeKernelEvents,
+  type ActorCrashHook,
+  type ActorCrashInfo,
+  type DeadLetterLike,
+  type ErrorHooks,
+  type KernelLogInfo,
+} from './errors.ts';
