@@ -4,8 +4,9 @@
   "private": false,
   "type": "module",
   "description": "邮件：消息模型 + MIME/.eml 渲染 + transport 契约（fileTransport 离线真验 / smtpTransport 懒加载）+ mailPlugin",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
   "files": [
+    "dist",
     "src"
   ],
   "engines": {
@@ -20,5 +21,18 @@
     "smtp",
     "mime",
     "email"
-  ]
+  ],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
+  }
 }

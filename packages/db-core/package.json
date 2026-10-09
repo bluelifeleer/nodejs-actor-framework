@@ -4,9 +4,10 @@
   "private": false,
   "type": "module",
   "description": "数据库适配器契约与连接管控（连接/健康检查/保活/重连事件/drain/关闭）—— 与具体数据库无关，零运行时依赖",
-  "main": "src/index.ts",
-  "types": "src/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
+    "dist",
     "src"
   ],
   "engines": {
@@ -20,5 +21,17 @@
   ],
   "dependencies": {
     "@actor/resource": "*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
   }
 }

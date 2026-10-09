@@ -4,9 +4,10 @@
   "private": false,
   "type": "module",
   "description": "MongoDB 适配器（官方 mongodb 驱动）+ defineCollection（索引 / $jsonSchema validator / sync 漂移检测）",
-  "main": "src/index.ts",
-  "types": "src/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
+    "dist",
     "src"
   ],
   "engines": {
@@ -20,5 +21,17 @@
   ],
   "dependencies": {
     "@actor/resource": "*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
   }
 }

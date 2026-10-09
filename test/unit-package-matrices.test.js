@@ -85,7 +85,13 @@ function readPackages() {
 function reality() {
   return {
     packages: readPackages(),
-    testScript: JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts.test,
+    // 测试 glob 的**唯一来源**是 `tools/test.mjs`（它给整棵进程树加 development 导出条件）；
+    // 根 scripts.test 只是 `node tools/test.mjs`，所以门禁要读包装脚本本身。
+    testScript: (() => {
+      const wrapper = path.join(ROOT, 'tools', 'test.mjs');
+      if (fs.existsSync(wrapper)) return fs.readFileSync(wrapper, 'utf8');
+      return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts.test;
+    })(),
     tsconfigInclude: stripJsonComments(fs.readFileSync(path.join(ROOT, 'tsconfig.json'), 'utf8')),
     docsSite: fs.readFileSync(path.join(ROOT, 'tools', 'docs-site.mjs'), 'utf8'),
     surfaceBaseline: fs.readFileSync(path.join(ROOT, 'test', 'unit-package-surfaces.test.js'), 'utf8'),

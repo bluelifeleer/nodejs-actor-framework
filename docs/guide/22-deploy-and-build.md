@@ -161,7 +161,41 @@ try {
 > 整条脚手架链路（`npm run build` → 起 `dist/main.js` → `/health` 200 → 直跑与产物行为一致 →
 > 产物无 `.ts` 残留）在仓库门禁 `test/unit-build-path.test.js` 里每次都会真跑一遍。
 
-## 8. 选型速查
+## 8. 框架自己的包怎么发（`exports` 的两套形态）
+
+框架的 10 个公开包（内核 + 9 个 `@actor/*`）用的是"**仓库内看源码、发布出去看产物**"：
+
+```jsonc
+// packages/<pkg>/package.json
+"exports": {
+  ".": {
+    "types": "./dist/index.d.ts",
+    "development": "./src/index.ts",   // 仓库内：npm test / npm run example 走这里（零构建）
+    "default": "./dist/index.js"       // 消费者：编译产物
+  },
+  "./src/*": "./src/*",                // 保留：想直跑/读源码的人可以直接引用
+  "./package.json": "./package.json"
+}
+```
+
+- 仓库内跑测试时由 `tools/test.mjs` 给**整个进程树**加上 `--conditions=development`
+  （子进程不继承命令行参数，但继承 `NODE_OPTIONS`，所以一处设置、处处生效）——
+  改了源码立刻生效，**不需要先构建**；
+- 构建/发布：`node tools/build-packages.mjs`（逐包 `tsc`，10 个包约 0.7 秒）→
+  各包 `prepublishOnly` 会在发布前自动重建；
+- 内核是**手写 CJS**，源码里全是 `require('./x.ts')`。TypeScript 的
+  `rewriteRelativeImportExtensions` **只改写 `import`/`export`/`import()`，不管 `require()`** ——
+  实测编译出的 `dist/index.js` 里仍旧是 `require('./actor/actor.ts')`，运行时直接
+  "Cannot find module"。所以构建脚本对 CJS 包多做一步**确定性改写**（只把相对路径的字面量
+  `require('./x.ts')` 换成 `.js`），并有门禁断言 `dist` 里不残留 `.ts` 说明符；
+- 内核还有两个 ESM 包装：`index.mjs`（发布，从 `dist` 重导出）与 `index.dev.mjs`
+  （仓库内，从 `src` 重导出）。为什么要两个：CJS 的具名导出探测认不全本包的公共名，
+  ESM 用户必须走手写重导出列表；而仓库内要零构建。**两个包装的导出列表由门禁断言必须一致**；
+- 内核里的 worker 宿主路径也踩过同一个坑：早先硬编码 `worker-host.ts`，编译后
+  `dist/worker/` 里只有 `.js` → Worker 起不来。现在优先 `.js`、回退 `.ts`，门禁里有一条
+  真起 worker 隔离 Actor 的用例。
+
+## 9. 选型速查
 
 | 你的情况 | 选 |
 |---|---|
@@ -169,7 +203,7 @@ try {
 | 目标环境 Node < 24、要发 npm 包、有 APM/打包约束 | **编译**（`npm run build` + `npm start:prod`，镜像用 `Dockerfile`） |
 | 不确定 | 先直跑；等遇到上面任意一条再切编译 —— **切换成本很低**（一条 `npm run build`，源码不用改） |
 
-## 9. 接下来
+## 10. 接下来
 
 - 生产清单（信号处理、优雅停机、诊断路由、日志）→ [18 可观测与部署](./18-observability-deploy.md)
 - 错误出口与日志出口 → [20 错误与日志](./20-errors-and-logging.md)

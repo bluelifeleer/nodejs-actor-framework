@@ -123,6 +123,41 @@ M9（脚手架与 CLI + 应用层语法糖）的收尾：**保留名的单一来
 
 ### Added
 
+**发布形态：包默认入口改为编译产物，仓库内仍走源码（development 条件）**
+
+- 10 个公开包（内核 + 9 个 `@actor/*`）的 `exports` 改为
+  `{ "types": "./dist/index.d.ts", "development": "./src/index.ts", "default": "./dist/index.js" }`
+  并保留 `./src/*`；`files` 带上 `dist` 与 `src`；每个包加 `prepublishOnly` 自动重建；
+- 新增 `tools/build-packages.mjs`（逐包 `tsc`，10 个包约 0.7 秒；`--check` 自检产物齐备/未过期/exports 目标存在）
+  与各包 `tsconfig.build.json`（`rootDir: src` + `outDir: dist` + `rewriteRelativeImportExtensions` + sourceMap）；
+- 仓库内测试走 `tools/test.mjs`：给**整棵进程树**加 `--conditions=development`
+  （子进程不继承命令行参数、会继承 `NODE_OPTIONS`），所以内部循环**不需要先构建**；
+  TS 侧用 `customConditions: ["development"]` 对齐；
+- 示例统一为 `npm run example <文件>`（同样带条件）；README 的 8 处 `node examples/...` 同步更新。
+
+**过程中被实测抓出来的三个真问题（都不是猜的）**：
+
+1. **TS 的 `rewriteRelativeImportExtensions` 不管 `require()`**：内核是手写 CJS、源码全是
+   `require('./x.ts')`，编译出的 `dist/index.js` 里 `.ts` 说明符原样留着 → 运行时
+   "Cannot find module"（内核门禁当场红）。构建脚本现在对 CJS 包做**确定性改写**
+   （只动相对路径字面量），并有门禁断言 dist 里不残留 `.ts` 说明符；
+2. **内核的 ESM 具名导出不能走源码**：`development` 条件直指 `src/index.ts` 会绕过手写的
+   `index.mjs`（CJS 命名探测认不全公共名），`import { createLogAdapter }` 直接报错。
+   现在有两个包装：`index.mjs`（发布 → dist）与 `index.dev.mjs`（仓库内 → src），
+   并加"**两个包装的具名导出列表必须一致**"的门禁；
+3. **worker 宿主路径是编译后会断的资产**：`worker-delegate.ts` 硬编码 `__dirname + 'worker-host.ts'`，
+   编译后 `dist/worker/` 里只有 `.js` → worker 隔离起不来。现在优先 `.js`、回退 `.ts`，
+   门禁里有一条**从 dist 真起 worker 隔离 Actor** 的用例。
+
+**顺带修掉两处"门禁自身要跟着走"的地方**：`package matrices` 门禁原本读根 `scripts.test`
+（glob 已搬到 `tools/test.mjs`）；构建自检把**手写声明面 `src/index.d.ts`** 当成构建输入
+（不参与 dist 产出，且 mtime 会被 git 操作刷新 → 4 个包误报"陈旧"）。
+
+**新增门禁** `test/unit-package-shape.test.js`（9 条）：默认入口在无条件时指向 dist（10 个包逐个解析 +
+探针导出存在）、development 条件回到源码、内核 CJS `require` 走 dist、dist 无 `.ts` 残留、
+**用 dist 真起应用并打 `/health`**、**用 dist 真起 worker 隔离 Actor**、`--check` 能发现缺产物/陈旧、
+**`npm pack` 的 tarball 里确实带 dist 且不含测试**、CLI 保持私有 TS-only。
+
 **`actor generate ... --mount`：可选的自动接线**（默认仍然只打印片段）
 
 - 只往**显式标记** `// @actor:mount <槽位>` 后面插入整行；文件里没有标记 → **一个字节都不改**，

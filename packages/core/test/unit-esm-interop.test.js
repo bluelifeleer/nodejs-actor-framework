@@ -15,7 +15,12 @@ test('esm interop: every public export is available as a named ESM export', asyn
   const cjs = require('nodejs-actor-framework');
   const esm = await import('nodejs-actor-framework');
 
-  const names = Object.keys(cjs);
+  /**
+   * `__esModule` 是 tsc 编译 CJS 时加的**互操作标记**（`Object.defineProperty(exports, '__esModule', …)`），
+   * 不是本包的公共导出：手写的 `src/index.d.ts` 里没有它，用户也不该 import 它。
+   * 编译产物（dist）必然带它，所以这里显式排除 —— 但**其余名字一个都不能少**。
+   */
+  const names = Object.keys(cjs).filter((name) => name !== '__esModule');
   assert.ok(names.length >= 30, `expected the public surface, got ${names.length} names`);
 
   const missing = names.filter((name) => !(name in esm));

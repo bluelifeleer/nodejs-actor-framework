@@ -8,6 +8,9 @@
     "target": "es2023",
     "module": "nodenext",
     "moduleResolution": "nodenext",
+    // 仓库内解析 `@actor/*` 时走源码（见各包 exports 的 development 条件）：
+    // 发布出去的包默认入口是 dist，而**在仓库里**跑测试/类型检查不该要求先构建。
+    "customConditions": ["development"],
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "isolatedModules": true,

@@ -4,14 +4,15 @@
   "description": "Node.js Actor framework: in-process actor kernel with supervision, persistence and worker isolation, plus optional cluster/observability plugins.",
   "license": "MIT",
   "author": "bluelife <thebubblelife@163.com>",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
   "types": "src/index.d.ts",
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
+      "development": "./index.dev.mjs",
       "import": "./index.mjs",
-      "require": "./src/index.ts",
-      "default": "./src/index.ts"
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
@@ -23,8 +24,10 @@
     "classic-level": "^3.0.0"
   },
   "files": [
+    "dist",
     "src",
-    "index.mjs"
+    "index.mjs",
+    "index.dev.mjs"
   ],
   "keywords": [
     "actor",
@@ -33,5 +36,8 @@
     "supervision",
     "concurrency",
     "worker-threads"
-  ]
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
+  }
 }

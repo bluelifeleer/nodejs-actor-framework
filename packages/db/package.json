@@ -4,9 +4,10 @@
   "private": false,
   "type": "module",
   "description": "Application-layer database support for nodejs-actor-framework: dialects (pgsql/mysql/sqlite), connection-pool management, model definitions and ORM row mapping. Zero runtime dependencies (drivers are lazy-loaded from the user's project).",
-  "main": "src/index.ts",
-  "types": "src/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
+    "dist",
     "src"
   ],
   "engines": {
@@ -18,5 +19,17 @@
   "devDependencies": {
     "@actor/data": "*",
     "@actor/app": "*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
   }
 }

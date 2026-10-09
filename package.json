@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --test-timeout=120000 'packages/cli/test/*.test.ts' 'packages/testkit/test/*.test.ts' 'packages/core/test/*.test.js' 'packages/app/test/*.test.ts' 'packages/web/test/*.test.ts' 'packages/data/test/*.test.ts' 'packages/resource/test/*.test.ts' 'packages/db-core/test/*.test.ts' 'packages/db/test/*.test.ts' 'packages/redis/test/*.test.ts' 'packages/mongodb/test/*.test.ts' 'packages/mail/test/*.test.ts' 'test/*.test.js'",
+    "test": "node tools/test.mjs",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.types.json",
     "ci": "npm run typecheck && npm test && npm run docs:build",
     "start": "node actor-main.js",
@@ -20,7 +20,8 @@
     "docs:build": "node tools/docs-site.mjs build",
     "docs:serve": "node tools/docs-site.mjs serve",
     "release:check": "node tools/release-check.mjs",
-    "capabilities:freeze": "node packages/cli/src/freeze-capabilities.ts"
+    "capabilities:freeze": "node packages/cli/src/freeze-capabilities.ts",
+    "example": "node --conditions=development"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

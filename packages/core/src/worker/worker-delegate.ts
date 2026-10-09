@@ -25,7 +25,18 @@ const { DefinitionError, ActorStoppedError } = require('../actor/errors.ts');
  * stays on the owning ActorCell, so the two isolation modes share one model.
  */
 
-const HOST_PATH = path.join(__dirname, 'worker-host.ts');
+/**
+ * Worker 宿主的入口路径。
+ *
+ * **优先编译产物**：包发布出去后（或被 `npm run build` 编译进 dist）运行时会在 `dist/worker/` 下，
+ * 那里只有 `worker-host.js`；只有在仓库内直跑源码时才是 `worker-host.ts`。
+ * 早先硬编码 `.ts`，一旦走编译/发布路线，Worker 会找不到入口 —— 这类"资产没跟着构建走"
+ * 的问题只在真起 worker 时才暴露，所以门禁里有一条真的 spawn worker actor 的用例。
+ */
+const HOST_PATH = path.join(
+  __dirname,
+  fs.existsSync(path.join(__dirname, 'worker-host.js')) ? 'worker-host.js' : 'worker-host.ts',
+);
 
 /** Resolve an actor module path, refusing anything outside the project root. */
 function resolveActorModule(requested: string): string {

@@ -10,6 +10,9 @@ actor.log
 # secrets
 .actor-token
 
+# 构建产物（tools/build-packages.mjs 生成，发布时由 prepublishOnly 重建）
+dist/
+
 # deps
 node_modules/
 

@@ -38,7 +38,10 @@ const hp = await player.ask({ type: 'hurt', damage: 5 });  // 请求-响应
 await system.stop();
 ```
 
-可直接运行：[examples/game-server.js](examples/game-server.js)（`node examples/game-server.js`）。
+可直接运行：[examples/game-server.js](examples/game-server.js)（`npm run example examples/game-server.js`）。
+
+> 仓库内跑示例要走 `npm run example <文件>`：它给进程加上 `development` 导出条件（解析到源码，零构建）。
+> 发布出去的包默认入口是编译产物 `dist/`，所以在你自己的项目里就是普通的 `node your-app.js`。
 
 ### 编程模型
 
@@ -279,9 +282,9 @@ kill player_001                 # 主动停止 -> 不会被重启
 和 [examples/game-client.js](examples/game-client.js)（TCP 客户端）。
 
 ```bash
-node examples/game-server.js          # 默认 127.0.0.1:7777，另开一个终端：
-node examples/game-client.js 7777     # 脚本化跑一遍：join / hit / move / stats / top / chat
-# 交互模式： node examples/game-client.js 7777 --interactive
+npm run example examples/game-server.js   # 默认 127.0.0.1:7777，另开一个终端：
+npm run example examples/game-client.js 7777   # 脚本化跑一遍：join / hit / move / stats / top / chat
+# 交互模式： npm run example examples/game-client.js 7777 -- --interactive
 ```
 
 ### 需求 → 用哪个 API
@@ -386,7 +389,7 @@ class Room extends Actor {
   卡死的 Actor 到点被强制终止，不会拖着进程不退出。
 
 ```
-node examples/game-server.js
+npm run example examples/game-server.js
 # 第一个进程：join alice / hit 30 → SIGTERM
 # 第二个进程（同 DATA_DIR）：自动 "已恢复房间名册并重建玩家 Actor：alice"，stats 直接返回 hp=70 score=30
 ```
@@ -400,10 +403,10 @@ node examples/game-server.js
 
 ```bash
 # 生成密钥并启动接入层（连本地房间）
-ACTOR_AUTH_SECRET=$(openssl rand -hex 24) node examples/access-node.js
+ACTOR_AUTH_SECRET=$(openssl rand -hex 24) npm run example examples/access-node.js
 # 生产：开 WSS + 指到集群节点
 ACTOR_AUTH_SECRET=... WSS_TLS=1 CERT=certs/server.crt KEY=certs/server.key \
-  SEEDS=10.0.0.1:7200 node examples/access-node.js
+  SEEDS=10.0.0.1:7200 npm run example examples/access-node.js
 ```
 
 ```js
@@ -438,11 +441,11 @@ wss.on('connection', async (socket, req) => {
 #### ② 多节点：房间分片 + 跨节点回信（`examples/game-cluster.js`）
 
 ```bash
-NODES=2 ROOM_COUNT=4 DATA_DIR=./data node examples/game-cluster.js
+NODES=2 ROOM_COUNT=4 DATA_DIR=./data npm run example examples/game-cluster.js
 #   game-1: 房间 room-1, room-3      game-2: 房间 room-2, room-4
 #   access-1: wss://127.0.0.1:<port>/game
 #   打印 alice/bob/carol 的去向 + 各自的 token + 可直接运行的客户端命令
-node examples/ws-client.js <url> <token>            # 或 CA=test/fixtures/tls/ca.crt ... 走校验
+npm run example examples/ws-client.js <url> <token>            # 或 CA=test/fixtures/tls/ca.crt ... 走校验
 ```
 
 ```
