@@ -54,8 +54,8 @@ test('cli: new app 生成后打印下一步；未知目录非空时退出码 1 �
   try {
     const created = await cli(['new', 'app', dir]);
     assert.strictEqual(created.code, 0);
-    // 默认 layered：17 个文件（flat 是 10 个，见 scaffold.test.ts）
-    assert.match(created.stdout, /已生成 17 个文件/);
+    // 默认 layered：23 个文件（含部署双轨的 Dockerfile/scripts/tsconfig.build.json；flat 是 16 个，见 scaffold.test.ts）
+    assert.match(created.stdout, /已生成 23 个文件/);
     assert.match(created.stdout, /npm install/, '要告诉用户下一步做什么');
     assert.ok(fs.existsSync(path.join(dir, 'main.ts')));
 

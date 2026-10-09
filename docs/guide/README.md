@@ -32,6 +32,7 @@
 | 想少写样板：短名、简写、CRUD 工厂 | [09 应用层语法糖](./09-app-sugar.md) | 与全量写法等价的糖，可逐处选择、可混用 |
 | **报错了，不知道为啥** | [19 排错手册](./19-troubleshooting.md) | 按报错原文查 → 原因 + 改法 |
 | 让失败看得见：错误钩子、统一日志 | [20 错误与日志](./20-errors-and-logging.md) | `errors` / `logging` 一处配好，崩溃与死信不再静默 |
+| 部署到服务器：直跑 `.ts` 还是编译成 JS | [22 部署与构建](./22-deploy-and-build.md) | 两条完整路线、Dockerfile、产物冒烟、选型速查 |
 | 生成骨架、加自己的 CLI 命令 | [21 CLI 进阶](./21-cli-generate-and-commands.md) | `actor generate`（7 种骨架）与 `.actor/commands/` 自定义命令 |
 | 查某个函数/类型 | [API 参考](./reference/api.md) | 自动从源码生成的导出清单 |
 

@@ -30,11 +30,16 @@ test('scaffold: 模板清单齐全，package.json / README 里的项目名被替
   const files = await appTemplates('demo-app');
   const names = files.map((file) => file.relative).sort();
   assert.deepStrictEqual(names, [
+    '.dockerignore',
     '.gitignore',
+    'Dockerfile',
+    'Dockerfile.direct',
     'README.md',
     'config/default.ts',
     'main.ts',
     'package.json',
+    'scripts/copy-assets.mjs',
+    'scripts/smoke.mjs',
     'server.ts',
     'src/actor/counter.actor.ts',
     'src/controller/counter.controller.ts',
@@ -46,6 +51,7 @@ test('scaffold: 模板清单齐全，package.json / README 里的项目名被替
     'src/schema/note.schema.ts',
     'src/service/notes.repository.ts',
     'test/api.test.ts',
+    'tsconfig.build.json',
     'tsconfig.json',
   ]);
 
@@ -53,8 +59,13 @@ test('scaffold: 模板清单齐全，package.json / README 里的项目名被替
   const flat = await appTemplates('demo-app', 'flat');
   assert.deepStrictEqual(
     flat.map((file) => file.relative).sort(),
-    ['.gitignore', 'README.md', 'config/default.ts', 'main.ts', 'package.json', 'src/app.ts', 'src/counter.ts', 'src/module.ts', 'src/notes.ts', 'test/app.test.ts'],
-    'flat 布局的清单不该变（它是"保留旧形状"的承诺）',
+    [
+      '.dockerignore', '.gitignore', 'Dockerfile', 'Dockerfile.direct', 'README.md',
+      'config/default.ts', 'main.ts', 'package.json', 'scripts/copy-assets.mjs', 'scripts/smoke.mjs',
+      'src/app.ts', 'src/counter.ts', 'src/module.ts', 'src/notes.ts', 'test/app.test.ts',
+      'tsconfig.build.json',
+    ],
+    'flat 布局同样带构建路线（两条部署路线的能力要对齐）',
   );
 
   const pkg = JSON.parse(files.find((file) => file.relative === 'package.json')!.content);

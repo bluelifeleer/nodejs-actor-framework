@@ -1,0 +1,13 @@
+# 单阶段：**直接跑 TypeScript**（Node ≥ 24 原生剥离类型，零构建）。
+# 体积换来的简单：没有构建阶段、没有 dist、镜像里的代码就是仓库里的代码。
+# 代价：运行时不做类型检查（CI 里要跑 npm run typecheck），且要求 Node ≥ 24。
+FROM node:24-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev || npm install --omit=dev
+COPY . .
+USER node
+EXPOSE 9000
+STOPSIGNAL SIGTERM
+CMD ["node", "main.ts"]

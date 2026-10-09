@@ -43,6 +43,99 @@ async function canListen(port: number): Promise<boolean> {
   });
 }
 
+/** 文件是否存在（doctor 内部工具；`fs/promises` 没有同步的 exists）。 */
+async function exists(file: string): Promise<boolean> {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 「生产构建」检查：只在**已经有 dist** 时才严格 —— 没有产物是"还没走构建路线"，不是问题。
+ *
+ * 两个实测踩过的坑，正是这里要抓的：
+ *   ① **陈旧产物**：改了 `src/` 却忘了 `npm run build`，部署上去还是旧代码；
+ *   ② **缺资产**：`main.ts` 用 `import.meta.url` 找 `./config`，编译后要 `dist/config` ——
+ *      非 TS 资产（JSON/模板/证书）不拷就启动失败。
+ */
+async function productionBuildCheck(dir: string): Promise<Check> {
+  const entry = path.join(dir, 'dist', 'main.js');
+  if (!(await exists(entry))) {
+    return { name: '生产构建', ok: true, detail: '还没有 dist（走直跑路线就不需要；要构建：npm run build）' };
+  }
+
+  // ① 陈旧：源码里最新的一个文件比产物新
+  const distMtime = (await fs.stat(entry)).mtimeMs;
+  let newest = { file: '', mtime: 0 };
+  for (const relative of ['main.ts', 'server.ts']) {
+    const file = path.join(dir, relative);
+    if (!(await exists(file))) continue;
+    const mtime = (await fs.stat(file)).mtimeMs;
+    if (mtime > newest.mtime) newest = { file: relative, mtime };
+  }
+  for (const relative of ['src', 'config']) {
+    const root = path.join(dir, relative);
+    if (!(await exists(root))) continue;
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      for (const item of await fs.readdir(current, { withFileTypes: true })) {
+        const full = path.join(current, item.name);
+        if (item.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (!item.name.endsWith('.ts')) continue;
+        const mtime = (await fs.stat(full)).mtimeMs;
+        if (mtime > newest.mtime) newest = { file: path.relative(dir, full), mtime };
+      }
+    }
+  }
+  if (newest.mtime > distMtime) {
+    return {
+      name: '生产构建',
+      ok: false,
+      detail: `dist 比源码旧（${newest.file} 更新于产物之后）`,
+      fix: '重新构建：npm run build（部署前务必，否则上线的是旧代码）',
+    };
+  }
+
+  // ② 缺资产：有非 TS 资产却没拷进 dist
+  const configDir = path.join(dir, 'config');
+  const assetFiles: string[] = [];
+  if (await exists(configDir)) {
+    const stack = [configDir];
+    while (stack.length > 0) {
+      const current = stack.pop() as string;
+      for (const item of await fs.readdir(current, { withFileTypes: true })) {
+        const full = path.join(current, item.name);
+        if (item.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (!item.name.endsWith('.ts')) assetFiles.push(path.relative(configDir, full));
+      }
+    }
+  }
+  const missing: string[] = [];
+  for (const relative of assetFiles) {
+    if (!(await exists(path.join(dir, 'dist', 'config', relative)))) missing.push(relative);
+  }
+  if (missing.length > 0) {
+    return {
+      name: '生产构建',
+      ok: false,
+      detail: `dist/config 里缺少非 TS 资产：${missing.slice(0, 3).join('、')}`,
+      fix: '跑一次 npm run build（它会执行 scripts/copy-assets.mjs 把 config/ 拷进 dist/）',
+    };
+  }
+
+  return { name: '生产构建', ok: true, detail: `dist/main.js 是最新的（可 npm run smoke:prod 冒烟）` };
+}
+
 export async function doctor(dir: string, options: { data?: string; port?: number } = {}): Promise<DoctorResult> {
   const checks: Check[] = [];
   const project = await loadProject(dir, { data: options.data });
@@ -258,6 +351,9 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
           : '检查 .actor/commands.ts 与 .actor/commands/*.ts 的 defineCommand 声明',
     });
   }
+
+  // 6c) 生产构建（`npm run build` → dist/）：没有不加分，**陈旧**与**缺资产**要报出来
+  checks.push(await productionBuildCheck(project.dir));
 
   // 7) 端口能不能绑（默认 3000；被占用是最常见的"起不来"）
   const port = options.port ?? Number(process.env.APP_PLUGINS__HTTP__PORT ?? 3000);

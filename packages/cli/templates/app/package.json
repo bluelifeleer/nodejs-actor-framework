@@ -4,7 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node main.ts",
-    "test": "node --test --test-timeout=60000 'test/*.test.ts'"
+    "dev": "node --watch main.ts",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
+    "start:prod": "node dist/main.js",
+    "smoke:prod": "node scripts/smoke.mjs",
+    "test": "node --test --test-timeout=60000 'test/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
     "@actor/app": "*",

@@ -1,0 +1,23 @@
+{
+  // 生产构建：把 .ts 编译成 .js（**保留**源码里的 `./x.ts` 写法，由 rewriteRelativeImportExtensions 改写成 `./x.js`）
+  //
+  // 为什么需要它：直跑 .ts 是**开发与自托管的默认**（Node ≥ 24 原生剥离类型，零构建），
+  // 但下面这些情况需要真正的编译产物：
+  //   - 目标环境的 Node < 24；
+  //   - CI/APM/打包工具链只认真实的 .js 与 sourcemap；
+  //   - 要把代码作为库发给别人用。
+  // 两条路都受支持，行为一致性由仓库的门禁保证。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    // 关键：源码里写的是 `./foo.ts`，编译后必须变成 `./foo.js`，否则产物跑不起来
+    "rewriteRelativeImportExtensions": true,
+    // 生产要能定位到出错的源码行
+    "sourceMap": true,
+    "declaration": false
+  },
+  // 只编译运行时需要的部分（config/ 与 test/ 里的非 TS 资产由 scripts/copy-assets.mjs 处理）
+  "include": ["main.ts", "server.ts", "src/**/*.ts", "config/**/*.ts"]
+}
