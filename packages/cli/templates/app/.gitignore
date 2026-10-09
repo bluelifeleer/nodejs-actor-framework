@@ -2,3 +2,4 @@ node_modules/
 data/
 # 构建产物（npm run build 生成）
 dist/
+dist-test/

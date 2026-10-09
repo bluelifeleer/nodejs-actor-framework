@@ -6,9 +6,9 @@
  *   node tools/build-packages.mjs --package .     # 只构建当前包（各包 prepublishOnly 用）
  *   node tools/build-packages.mjs --check         # 只检查：dist 是否存在、是否比 src 旧、exports 目标是否齐
  *
- * 为什么不用 `tsc -b`（项目引用）：内核的声明面是**手写的** `src/index.d.ts`，
- * 而 composite 要求每个引用项目都生成声明；为它单独开例外反而更难懂。这里就是"按顺序逐包 tsc"，
- * 依赖顺序写在下面（改依赖时记得改这里，门禁会核对顺序是否满足实际 import 关系）。
+ * **一次构建**：`tsc -b tsconfig.build.json` 走项目引用（9 个 @actor/* 包，顺序由引用图决定）；
+ * **内核单独编译**：它的声明面是**手写的** `src/index.d.ts`，不进引用图（composite 要求生成声明，
+ * 为它开例外反而更难懂），所以用单包 `tsc -p packages/core/tsconfig.build.json`。
  *
  * **CJS 包的额外一步**：内核是手写 CJS，源码里全是 `require('./x.ts')`。TypeScript 的
  * `rewriteRelativeImportExtensions` **只改写 import/export/import() 的说明符，不管 require() 调用**
@@ -161,6 +161,38 @@ if (checkOnly) {
 }
 
 const started = Date.now();
+
+// 全量构建：先用项目引用一次构建 9 个包（增量、顺序自动），再单独编译内核
+if (only === undefined) {
+  const esm = selected.filter((pkg) => pkg.cjs !== true);
+  const kernel = selected.filter((pkg) => pkg.cjs === true);
+  if (esm.length > 0) {
+    const at = Date.now();
+    try {
+      await run(process.execPath, [TSC, '-b', path.join(ROOT, 'tsconfig.build.json')], { cwd: ROOT });
+    } catch (error) {
+      console.error(`[build] 项目引用构建失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
+      process.exit(1);
+    }
+    console.log(`[build] ${esm.map((pkg) => pkg.name).join(', ')} → 一次 tsc -b（${String(Date.now() - at)}ms）`);
+  }
+  for (const pkg of kernel) {
+    const at = Date.now();
+    try {
+      await run(process.execPath, [TSC, '-p', path.join(ROOT, pkg.dir, 'tsconfig.build.json')], { cwd: ROOT });
+    } catch (error) {
+      console.error(`[build] ${pkg.name} 构建失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
+      process.exit(1);
+    }
+    const rewritten = rewriteCjsRequires(pkg);
+    console.log(
+      `[build] ${pkg.name} → ${pkg.dir}/dist（${String(Date.now() - at)}ms${rewritten === 0 ? '' : `，改写 require 说明符 ${String(rewritten)} 个文件`}）`,
+    );
+  }
+  console.log(`[build] 完成 ${selected.length} 个包，用时 ${String(Date.now() - started)}ms`);
+  process.exit(0);
+}
+
 for (const pkg of selected) {
   const config = path.join(ROOT, pkg.dir, 'tsconfig.build.json');
   if (!fs.existsSync(config)) {

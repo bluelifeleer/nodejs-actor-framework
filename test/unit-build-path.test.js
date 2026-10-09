@@ -138,6 +138,65 @@ test('部署双轨: 真构建 → 产物能起、/health 200、无 .ts 残留、
   }
 });
 
+test('部署双轨: 编译后的测试也能跑（产物不只是"能启动"，还要过项目自己的测试）', async () => {
+  const project = tempProject('build-test-dist');
+  try {
+    await run(process.execPath, [CLI, 'new', 'app', project]);
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, 'package.json'), 'utf8'));
+    assert.ok(manifest.scripts['build:test'] !== undefined, '脚手架要有 build:test（把测试也编译一份）');
+    assert.ok(manifest.scripts['test:dist'] !== undefined, '脚手架要有 test:dist（在产物上跑测试）');
+
+    await run('npm', ['run', 'build:test'], { cwd: project, env: childEnv(), timeout: 240_000 });
+    assert.ok(fs.existsSync(path.join(project, 'dist-test', 'test', 'api.test.js')), '测试要编译到 dist-test（不污染生产 dist）');
+    assert.ok(!fs.existsSync(path.join(project, 'dist', 'test')), '生产 dist 里不该有测试文件');
+
+    const tests = await run('npm', ['run', 'test:dist'], { cwd: project, env: childEnv(), timeout: 240_000 });
+    const output = `${tests.stdout}${tests.stderr}`;
+    assert.match(output, /^ℹ pass [1-9]/m, `编译后的测试应当通过：\n${output}`);
+    assert.ok(!/fail [1-9]/.test(output), `编译后的测试不该有失败：\n${output}`);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('部署双轨: doctor 的「生产开关」看得出 NODE_ENV 与诊断路由的组合', async () => {
+  const project = tempProject('build-env-check');
+  try {
+    await run(process.execPath, [CLI, 'new', 'app', project]);
+    const checkOf = async (env) => {
+      // 有问题时 doctor 会以退出码 2 结束（这是刻意的），但 --json 的 stdout 仍然可用
+      const result = await run(process.execPath, [CLI, 'doctor', '--dir', project, '--port', '0', '--json'], {
+        cwd: project,
+        env: { ...childEnv(), ...env },
+      }).catch((error) => error);
+      const parsed = JSON.parse(String(result.stdout ?? '{}'));
+      const found = parsed.checks.find((check) => check.name === '生产开关');
+      assert.ok(found !== undefined, `doctor 要有「生产开关」一节：${parsed.checks.map((c) => c.name).join(', ')}`);
+      return found;
+    };
+
+    // ① 没开诊断路由：通过（并如实报当前 NODE_ENV）
+    const clean = await checkOf({ NODE_ENV: 'production' });
+    assert.strictEqual(clean.ok, true);
+    assert.match(clean.detail, /NODE_ENV=production/);
+    assert.match(clean.detail, /未启用诊断路由/);
+
+    // ② 生产环境开了 debugPlugin 又没 allowInProduction → 报问题（启动会被拒绝）
+    const configFile = path.join(project, 'config', 'default.ts');
+    fs.writeFileSync(
+      configFile,
+      fs.readFileSync(configFile, 'utf8') + "\n// 模拟：生产环境误开诊断路由\nexport const debugPluginEnabled = true; // debugPlugin({ token: '0123456789abcdef' })\n",
+      'utf8',
+    );
+    const risky = await checkOf({ NODE_ENV: 'production' });
+    assert.strictEqual(risky.ok, false, '生产 + 诊断路由 + 没有 allowInProduction 必须报出来');
+    assert.match(risky.detail, /allowInProduction/);
+    assert.match(risky.fix ?? '', /生产别开诊断路由/);
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test('部署双轨: 直跑与编译产物**行为一致**（同组请求状态码完全相同）', async () => {
   const project = tempProject('build-parity');
   let direct = null;

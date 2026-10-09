@@ -54,6 +54,60 @@ async function exists(file: string): Promise<boolean> {
 }
 
 /**
+ * 「生产开关」检查：`NODE_ENV` 与诊断路由的启用状态。
+ *
+ * 为什么单独一节：诊断路由（`/__debug/*`）会暴露路由表/配置形状/依赖状态，`debugPlugin` 在
+ * `NODE_ENV=production` 下**默认拒绝启动**（除非显式 `allowInProduction: true`）。
+ * 体检要能回答"我这次上线，生产开关对不对"，而不是等它在启动时把进程打挂。
+ */
+async function productionEnvCheck(dir: string, projectName: string): Promise<Check> {
+  const production = process.env['NODE_ENV'] === 'production';
+  const sources = ['config/default.ts', 'config/production.ts', 'config/local.ts', '.env'];
+  const texts: string[] = [];
+  for (const relative of sources) {
+    const file = path.join(dir, relative);
+    if (!(await exists(file))) continue;
+    try {
+      texts.push(await fs.readFile(file, 'utf8'));
+    } catch {
+      /* 读不到就跳过 */
+    }
+  }
+  const joined = texts.join('\n');
+
+  // 诊断路由：看是否声明了 debugPlugin / 是否显式允许生产
+  const mentionsDebug = /debugPlugin|plugins\.debug|__debug/.test(joined);
+  const allowsProduction = /allowInProduction\s*:\s*true/.test(joined);
+  const debugEnabled = /debugPlugin\s*\(/.test(joined) && !/plugins\.debug\.enabled\s*:\s*false/.test(joined);
+
+  if (!debugEnabled) {
+    return {
+      name: '生产开关',
+      ok: true,
+      detail: production
+        ? 'NODE_ENV=production；未启用诊断路由（推荐）'
+        : `NODE_ENV=${process.env['NODE_ENV'] ?? '(未设)'}；未启用诊断路由`,
+    };
+  }
+  if (production && !allowsProduction) {
+    return {
+      name: '生产开关',
+      ok: false,
+      detail: 'NODE_ENV=production 且启用了 debugPlugin，但没有 allowInProduction: true —— 启动会被拒绝',
+      fix: '生产别开诊断路由；要在生产排障就显式写 allowInProduction: true 并配 ≥16 字符 token，用完关掉',
+    };
+  }
+  return {
+    name: '生产开关',
+    ok: true,
+    detail: production
+      ? 'NODE_ENV=production 且显式 allowInProduction: true（诊断路由会暴露路由表/配置形状，用完请关）'
+      : `启用了诊断路由${allowsProduction ? '（allowInProduction: true）' : ''}；记得生产环境默认拒绝启动`,
+    ...(mentionsDebug || projectName !== '' ? {} : {}),
+  };
+}
+
+/**
  * 「生产构建」检查：只在**已经有 dist** 时才严格 —— 没有产物是"还没走构建路线"，不是问题。
  *
  * 两个实测踩过的坑，正是这里要抓的：
@@ -351,6 +405,9 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
           : '检查 .actor/commands.ts 与 .actor/commands/*.ts 的 defineCommand 声明',
     });
   }
+
+  // 6b-2) 生产开关：NODE_ENV 与诊断路由（这两件事只在生产环境危险，所以单独一节）
+  checks.push(await productionEnvCheck(project.dir, project.name));
 
   // 6c) 生产构建（`npm run build` → dist/）：没有不加分，**陈旧**与**缺资产**要报出来
   checks.push(await productionBuildCheck(project.dir));

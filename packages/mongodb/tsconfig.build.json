@@ -6,7 +6,8 @@
     "outDir": "dist",
     "declaration": true,
     "sourceMap": true,
-    "rewriteRelativeImportExtensions": true
+    "rewriteRelativeImportExtensions": true,
+    "composite": true
   },
   "include": [
     "src/**/*.ts"

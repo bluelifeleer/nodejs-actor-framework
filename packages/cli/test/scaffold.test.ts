@@ -51,6 +51,7 @@ test('scaffold: 模板清单齐全，package.json / README 里的项目名被替
     'src/schema/note.schema.ts',
     'src/service/notes.repository.ts',
     'test/api.test.ts',
+    'tsconfig.build-test.json',
     'tsconfig.build.json',
     'tsconfig.json',
   ]);
@@ -63,7 +64,7 @@ test('scaffold: 模板清单齐全，package.json / README 里的项目名被替
       '.dockerignore', '.gitignore', 'Dockerfile', 'Dockerfile.direct', 'README.md',
       'config/default.ts', 'main.ts', 'package.json', 'scripts/copy-assets.mjs', 'scripts/smoke.mjs',
       'src/app.ts', 'src/counter.ts', 'src/module.ts', 'src/notes.ts', 'test/app.test.ts',
-      'tsconfig.build.json',
+      'tsconfig.build-test.json', 'tsconfig.build.json',
     ],
     'flat 布局同样带构建路线（两条部署路线的能力要对齐）',
   );

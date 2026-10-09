@@ -9,7 +9,9 @@
     "start:prod": "node dist/main.js",
     "smoke:prod": "node scripts/smoke.mjs",
     "test": "node --test --test-timeout=60000 'test/*.test.ts'",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "build:test": "tsc -p tsconfig.build-test.json && node scripts/copy-assets.mjs",
+    "test:dist": "node --test --test-timeout=60000 'dist-test/test/*.test.js'"
   },
   "dependencies": {
     "@actor/app": "*",

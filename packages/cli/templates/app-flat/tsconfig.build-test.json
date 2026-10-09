@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "outDir": "dist-test",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": [
+    "main.ts",
+    "server.ts",
+    "src/**/*.ts",
+    "config/**/*.ts",
+    "test/**/*.ts"
+  ]
+}

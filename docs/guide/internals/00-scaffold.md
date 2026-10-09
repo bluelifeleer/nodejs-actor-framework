@@ -26,7 +26,7 @@ const dir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-'));
 try {
   const cli = path.join(process.cwd(), 'packages', 'cli', 'src', 'cli.ts');
   const { stdout } = await run(process.execPath, [cli, 'new', 'app', dir]);
-  assert.match(stdout, /已生成 23 个文件/);   // 默认 layered（含构建路线：Dockerfile ×2、scripts/、tsconfig.build.json）
+  assert.match(stdout, /已生成 24 个文件/);   // 默认 layered（含构建路线：Dockerfile ×2、scripts/、tsconfig.build.json）
 
   // layered：进程入口与装配分开，业务按层分目录
   for (const file of [
@@ -36,7 +36,7 @@ try {
     'src/schema/note.schema.ts', 'src/service/notes.repository.ts', 'src/plugin/index.ts',
     'test/api.test.ts',
     // 部署双轨：官方构建路径（见 22 部署与构建）
-    'tsconfig.build.json', 'scripts/copy-assets.mjs', 'scripts/smoke.mjs',
+    'tsconfig.build.json', 'tsconfig.build-test.json', 'scripts/copy-assets.mjs', 'scripts/smoke.mjs',
     'Dockerfile', 'Dockerfile.direct', '.dockerignore',
   ]) {
     assert.ok(fs.existsSync(path.join(dir, file)), `缺少 ${file}`);
@@ -46,7 +46,7 @@ try {
   const flatDir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-flat-'));
   try {
     const { stdout: flatOut } = await run(process.execPath, [cli, 'new', 'app', flatDir, '--layout', 'flat']);
-    assert.match(flatOut, /已生成 16 个文件/);
+    assert.match(flatOut, /已生成 17 个文件/);
     assert.ok(fs.existsSync(path.join(flatDir, 'src', 'app.ts')), 'flat 布局应当有 src/app.ts');
     assert.ok(!fs.existsSync(path.join(flatDir, 'server.ts')), 'flat 布局不该有 server.ts');
   } finally {

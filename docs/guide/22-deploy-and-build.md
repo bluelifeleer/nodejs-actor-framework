@@ -55,6 +55,10 @@ docker run --rm -p 9000:9000 -e NODE_ENV=production my-app:direct
 npm run build           # tsc -p tsconfig.build.json && node scripts/copy-assets.mjs
 npm run start:prod      # node dist/main.js
 npm run smoke:prod      # 起一次产物、打 /health，退出码 0/1（部署流水线用）
+
+# 想在**编译产物**上跑项目自己的测试（可选）：
+npm run build:test      # 把 test/ 也编译到 dist-test/（不污染生产 dist/）
+npm run test:dist       # node --test dist-test/test/*.test.js
 ```
 
 `tsconfig.build.json` 里两个关键点：
@@ -89,6 +93,7 @@ npm run smoke:prod      # ③ 冒烟：真起产物、真打 /health
 | 还没有 `dist/` | ✓（走直跑路线本来就不需要；要构建就 `npm run build`） |
 | `dist` 比源码**旧** | ✗ `dist 比源码旧（src/module.ts 更新于产物之后）` → 重新构建（部署前务必，否则上线的是旧代码） |
 | `dist/config` 缺非 TS 资产 | ✗ 报出缺哪个文件 → 跑一次 `npm run build`（会执行资产拷贝） |
+| 生产开了诊断路由但没写 `allowInProduction` | ✗ 「生产开关」一节报出来（`debugPlugin` 在生产默认拒绝启动） |
 
 ## 6. 两条路的行为必须一致（这是框架自己的门禁）
 
@@ -161,7 +166,14 @@ try {
 > 整条脚手架链路（`npm run build` → 起 `dist/main.js` → `/health` 200 → 直跑与产物行为一致 →
 > 产物无 `.ts` 残留）在仓库门禁 `test/unit-build-path.test.js` 里每次都会真跑一遍。
 
-## 8. 框架自己的包怎么发（`exports` 的两套形态）
+## 8. 框架自己的包怎么构建与发布
+
+- **构建入口**：`node tools/build-packages.mjs`（等价于 `tsc -b tsconfig.build.json` + 单独编译内核）。
+  根 `tsconfig.build.json` 用**项目引用**一次构建 9 个 `@actor/*` 包（约 0.2 秒，增量）；
+  内核单独编译，因为它的声明面是手写的 `src/index.d.ts`，不进引用图；
+- 各包 `prepublishOnly` 会在发布前自动重建；`--check` 可自检"产物齐备 / 未过期 / exports 目标存在"。
+
+## 9. 框架自己的包怎么发（`exports` 的两套形态）
 
 框架的 10 个公开包（内核 + 9 个 `@actor/*`）用的是"**仓库内看源码、发布出去看产物**"：
 
@@ -195,7 +207,7 @@ try {
   `dist/worker/` 里只有 `.js` → Worker 起不来。现在优先 `.js`、回退 `.ts`，门禁里有一条
   真起 worker 隔离 Actor 的用例。
 
-## 9. 选型速查
+## 10. 选型速查
 
 | 你的情况 | 选 |
 |---|---|
