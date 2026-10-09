@@ -1,11 +1,16 @@
 # 09. 应用层语法糖：短名、简写、工厂
 
-**你会得到**：短名、值即 schema、输入声明合一、CRUD/health 工厂 —— 每一条都与全量写法**等价**（有断言）
+**你会得到**：在 [推荐写法](./03-recommended-style.md)之上可以少写样板的几个简写（短名、输入声明合一、
+CRUD/health 工厂），以及"哪些简写不建议用"。
 
-**前置**：写过一两个控制器与模块　**耗时**：12 分钟
+**前置**：先看 [03 推荐写法](./03-recommended-style.md)（这一页只讲"在它之上还能省什么"）　**耗时**：8 分钟
+
+> **主线只推一种写法**：本页的简写都是**可选**的，逐条等价证明在
+> [internals/17 应用层语法糖](./internals/17-app-sugar.md)（那里有全量对照与 `deepStrictEqual` 断言）。
+> 下面每条只给**推荐的那一种**；想看"另一种怎么写"，去 internals。
 
 一组"少写样板但**不牺牲启动期检查**"的写法。纪律只有一条：
-**糖与全量写法产出同一份数据**（有"深比较相等"的门禁盯着），所以你可以逐处选择用哪种、也能混用。
+本页的简写与全量写法产出**同一份数据**（逐字段等价由 [internals/17](./internals/17-app-sugar.md) 的门禁盯着）。
 
 ## 1. 短名就是同一个对象
 
@@ -61,9 +66,9 @@ import { atAuth, atPost, atPre } from '@actor/web';
 middleware: [
   atPre(async (_ctx, next) => next(), 'timer'),
   atAuth(async (ctx, next) => { ctx.extend({ user: await verify(ctx) }); return next(); }),
-  { handler: async (_ctx, next) => next(), phase: 'post' },   // 全量写法，可混用
   atPost(async (_ctx, next) => { const result = await next(); return result; }),
 ]
+// 另有 `{ handler, phase }` 形态（等价，便于动态生成）——见 internals/17
 ```
 
 六个阶段：`atPre` `atAuth` `atParse` `atHandler` `atPost` `atError`（顺序即此）。
@@ -124,11 +129,12 @@ assert.strictEqual(appLayer.module, appLayer.defineModule);
 assert.strictEqual(webLayer.controller, webLayer.defineController);
 assert.strictEqual(webLayer.webPlugin, webLayer.defineWebPlugin);
 
-// ② 配置值即 schema：与全量写法逐字段相等
+// ② 配置值即 schema：简写按预期展开成字段（与显式声明的**逐字段等价**由
+//    internals/17-app-sugar.md 的 verify 块断言 —— 那里才是等价对照的地方）
 const sugared = appLayer.defineConfig({ port: 3000, nested: { retries: 3 } });
-const verbose = appLayer.defineConfig({ port: { type: 'number', default: 3000 }, nested: { retries: { type: 'number', default: 3 } } });
-assert.deepStrictEqual([...sugared.fields.entries()], [...verbose.fields.entries()]);
-assert.deepStrictEqual(sugared.schema, verbose.schema, 'schema 也要一致（简写原地展开）');
+assert.deepStrictEqual(sugared.fields.get('port'), { type: 'number', default: 3000 });
+// 嵌套对象会**展开成点号路径**（不是压成一个 json 字段）
+assert.deepStrictEqual(sugared.fields.get('nested.retries'), { type: 'number', default: 3 });
 
 // ③ 输入声明合一：字符串别名展开 + 自动补 body + from 保留
 const spec = webLayer.defineController({

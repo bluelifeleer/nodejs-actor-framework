@@ -12,7 +12,7 @@ import { defineConfig } from '@actor/app';
 
 export default defineConfig({
   dataDir: './data',                     // 简写：值即 schema（= { type: 'string', default: './data' }）
-  tickMs: { type: 'number', default: 200, min: 16 },   // 全量写法：要校验/必填/打码时用
+  tickMs: { type: 'number', default: 200, min: 16 },   // 显式声明：要校验/必填/打码时这样写
   gateway: {                             // 普通对象 = 分组（点号路径 gateway.url）
     url: 'tcp://127.0.0.1:9000',
     token: { type: 'string', secret: true, default: '' },   // secret：诊断/日志里打码
@@ -174,6 +174,9 @@ console.log('ok');
 - 控制器/插件的输入校验用的是**同一套**字段描述符 → [10 路由与请求](./10-http-routing.md)
 - 插件配置进 `plugins.<插件名>.*`，写法同上；设计背景 → [设计：配置/DI/插件](../design/02-config-di-plugins.md)
 - 诊断路由为什么拿不到你的密钥 → [18 可观测与上线](./18-observability-deploy.md)
+
+> 配置也支持"值即 schema"的简写（`dataDir: './data'`）。**推荐还是显式声明**（类型、必填、
+> 机密一眼可见）；简写的等价性由 [internals/17 应用层语法糖](./internals/17-app-sugar.md) 的门禁保证。
 
 ## 下一步
 

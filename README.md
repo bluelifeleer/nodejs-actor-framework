@@ -47,7 +47,7 @@ await system.stop();
 
 | 概念 | API | 说明 |
 | --- | --- | --- |
-| 定义 Actor | `class X extends Actor` / `createActor({ onMessage })` / 裸函数 / `{receive}` | 四种写法等价，同一套内核 |
+| 定义 Actor | `{ preStart, receive }`（handler bag，推荐） | 另有 `class X extends Actor` / `createActor()` / 裸函数三种等价形态，见 [internals/17](docs/guide/internals/17-app-sugar.md) |
 | 生命周期 | `preStart` → 恢复 → `postRecover` → `receive*` → `postStop`；失败时 `preRestart` | 重启 = 全新实例（状态重置，除非配置了持久化） |
 | 消息 | `ref.tell(msg)` / `ref.ask(msg, timeout)` | tell 零分配；ask 才分配 reply 与超时 |
 | 上下文 | `ctx.self` / `ctx.sender` / `ctx.spawn` / `ctx.tell` / `ctx.ask` / `ctx.stop` / `ctx.persist` / `ctx.log` | `ctx.sender` 在外部 ask 时为 `null`，Actor 之间互发时是对方的 ref |

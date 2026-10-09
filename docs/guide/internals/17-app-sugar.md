@@ -198,12 +198,22 @@ import assert from 'node:assert';
 // 这个块会被抽到临时目录里执行（cwd 是仓库根），所以源码导入用绝对 file URL。
 // 你写自己的项目时就直接 `from '@actor/app'` / `from '@actor/web'`。
 const repo = new URL('../', import.meta.url).href;
-const { createApp, defineApp, defineModule, RESERVED_SERVICE_NAMES } =
+const { createApp, defineApp, defineModule, defineConfig, RESERVED_SERVICE_NAMES } =
   await import(`${repo}packages/app/src/index.ts`);
 const { crudRoutes, healthRoutes, httpPlugin, RESERVED_ROUTE_PREFIXES } =
   await import(`${repo}packages/web/src/index.ts`);
 
-// ① 仓储只要最小形状（这里用内存实现；换成 @actor/db 的仓储也一样）
+// ① 配置：值即 schema 与**显式声明**逐字段等价（主线 [09 可选简写](../09-app-sugar.md)
+//    把这条等价性指到这里 —— 主线只写一种形态，等价证明留在这页）
+const sugaredConfig = defineConfig({ port: 3000, nested: { retries: 3 } });
+const verboseConfig = defineConfig({
+  port: { type: 'number', default: 3000 },
+  nested: { retries: { type: 'number', default: 3 } },
+});
+assert.deepStrictEqual([...sugaredConfig.fields.entries()], [...verboseConfig.fields.entries()]);
+assert.deepStrictEqual(sugaredConfig.schema, verboseConfig.schema, '简写必须原地展开成同一份 schema');
+
+// ② 仓储只要最小形状（这里用内存实现；换成 @actor/db 的仓储也一样）
 const rows = new Map();
 const notes = {
   list: (input) => ({ items: [...rows.values()].slice(Number(input.offset), Number(input.offset) + Number(input.limit)), total: rows.size }),

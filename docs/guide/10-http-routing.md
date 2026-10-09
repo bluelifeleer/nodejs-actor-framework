@@ -114,21 +114,24 @@ Koa 风格 `(ctx, next)`；`await next()` 之后的部分逆序展开。**阶段
 | `post` | 后置：统一包一层响应、耗时统计 |
 | `error` | 兜底错误处理 |
 
-三种写法等价，可混用：
+推荐写法就是**阶段即函数名**（`atPre` / `atAuth` / `atPost` …）；阶段顺序由框架保证，你不用排：
 
 ```ts
-import { atPre, atPost } from '@actor/web';
+import { atAuth, atPost, atPre } from '@actor/web';
 
 defineModule({
   name: 'notes',
   middleware: [
     atPre(async (ctx, next) => { ctx.state.startedAt = Date.now(); return next(); }, 'timer'),
-    { handler: async (_ctx, next) => next(), phase: 'pre' },                    // 全量写法
-    atPost(async (ctx, next) => { const result = await next(); void ctx; return result; }),
+    atAuth(async (ctx, next) => { ctx.extend({ user: await requireUser(ctx) }); return next(); }),
+    atPost(async (ctx, next) => { const result = await next(); record(result); return result; }),
   ],
   routes: defineRoutes([get('/notes?limit=', listNotes)]),
 });
 ```
+
+> 另有 `{ handler, phase }` 的全量形态（等价，便于动态生成中间件），见
+> [internals/17 应用层语法糖](./internals/17-app-sugar.md) §4。
 
 **中间件之间的通信**走 `ctx.state`（每请求可变袋）；**要挂到 `ctx.xxx` 上**用 `ctx.extend`：
 

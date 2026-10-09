@@ -122,6 +122,36 @@ test('docs guides: 导航四层由 docs/nav.json 定义，且**每个页面恰�
   assert.ok(result.navLayers >= 4, `导航应当至少有四层，实际 ${String(result.navLayers)}`);
 });
 
+test('docs guides: 主线只推一种写法 —— 提到"等价写法"的页面必须给出去 internals 的出口', async () => {
+  // 主线页 = nav.json 里「开始」「按任务」两层的页面（这就是"标签"的来源，不另设字段）
+  const nav = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs', 'nav.json'), 'utf8'));
+  const mainLayers = nav.layers.filter((layer) => ['开始', '按任务'].includes(layer.title));
+  const mainPages = mainLayers.flatMap((layer) => (layer.pages ?? []).map((page) => page.path));
+  assert.ok(mainPages.length >= 15, `主线页太少（${String(mainPages.length)}），标签机制可能失效了`);
+
+  /** 出现这些词就说明"页面在讲另一种写法"——它必须给出 internals 出口。 */
+  const EQUIVALENCE = /等价写法|全量写法|等价形态|另一种写法|可混用|四种写法/;
+  const offenders = [];
+  for (const relative of mainPages) {
+    const file = path.join(ROOT, relative);
+    if (!fs.existsSync(file)) continue;
+    const markdown = fs.readFileSync(file, 'utf8');
+    if (!EQUIVALENCE.test(markdown)) continue;
+    if (!/\]\(\.\/internals\//.test(markdown)) {
+      offenders.push(`${relative}（提到"${EQUIVALENCE.exec(markdown)[0]}"却没有链到 ./internals/）`);
+    }
+  }
+  assert.deepStrictEqual(offenders, [], `主线页不该并列多种写法；要提等价写法就给出 internals 出口：\n  ${offenders.join('\n  ')}`);
+
+  // 推荐写法页必须在「开始」层，且它自己就是"单一写法"的声明处
+  const startLayer = nav.layers.find((layer) => layer.title === '开始');
+  const stylePage = (startLayer.pages ?? []).find((page) => page.path.includes('recommended-style'));
+  assert.ok(stylePage !== undefined, '「开始」层要有推荐写法页（单一写法的声明处）');
+  const styleMarkdown = fs.readFileSync(path.join(ROOT, stylePage.path), 'utf8');
+  assert.match(styleMarkdown, /只写这一种|推荐写法/, '推荐写法页要明确"就写这个"');
+  assert.match(styleMarkdown, /\]\(\.\/internals\/17-app-sugar\.md\)/, '推荐写法页必须给出等价写法的出口');
+});
+
 test('docs guides: 每篇主线页都有统一的头（你会得到/前置/耗时）与尾（下一步）', () => {
   for (const file of guideFiles()) {
     const name = path.basename(file);
