@@ -31,6 +31,9 @@
 | 怎么测（含定时器不用真等） | [17 测试](./17-testing.md) | 用真内核测、虚拟时钟 |
 | 上线：日志、健康检查、优雅停 | [18 可观测与上线](./18-observability-deploy.md) | 日志/诊断路由/停机/上线检查清单 |
 | 想少写样板（可选） | [09 可选简写](./09-app-sugar.md) | 在推荐写法之上能省的几处；等价对照在 internals |
+| 我在用 Express，想搬过来 | [23 从 Express 过来](./23-from-express.md) | 概念映射表 + 增量迁移顺序（含并存示例） |
+| 我在用 NestJS，想搬过来 | [24 从 NestJS 过来](./24-from-nestjs.md) | 装饰器为什么没有（实测证据）+ 声明式替代 |
+| 不想推倒重来 | [25 增量迁移](./25-incremental-migration.md) | 老服务与新 Actor 并存、共享状态与持久化 |
 | **报错了，不知道为啥** | [19 排错手册](./19-troubleshooting.md) | 按报错原文查 → 原因 + 改法 |
 | 让失败看得见：错误钩子、统一日志 | [20 错误与日志](./20-errors-and-logging.md) | `errors` / `logging` 一处配好，崩溃与死信不再静默 |
 | 部署到服务器：直跑 `.ts` 还是编译成 JS | [22 部署与构建](./22-deploy-and-build.md) | 两条完整路线、Dockerfile、产物冒烟、选型速查 |
