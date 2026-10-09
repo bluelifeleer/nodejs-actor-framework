@@ -255,18 +255,55 @@ async function walk(dir, filter) {
 }
 
 /** 设计文档按"总览 → 里程碑"分组，组内按文件名编号排序。 */
-function groupOf(relative) {
-  if (relative === 'README.md') return '首页';
-  if (relative === 'docs/quickstart.md') return '快速开始';
-  if (relative.startsWith('docs/guide/')) return '指南';
-  if (relative.startsWith('docs/design/m0/')) return '规格（M0）';
-  if (relative.startsWith('docs/design/')) return '设计与决策';
-  if (relative.startsWith('docs/')) return '文档';
-  if (relative.startsWith('examples/')) return '示例';
-  return '其它';
+/**
+ * 导航分组：**只认 `docs/nav.json`**，不再从目录结构推断。
+ *
+ * 为什么改：目录结构反映的是"文件从哪来"（规格 M0 / 设计与决策 / internals / 参考），
+ * 而读者要的是"我现在该干什么"（开始 / 按任务 / 概念与设计 / 参考）。旧的分组把设计与规格
+ * 放在主线旁边，读者第一眼看到的是仓库的文件夹树。
+ *
+ * 契约：nav.json 的每一层按顺序列出页面；层里的 `match` 前缀用于批量收编（internals/、
+ * 设计史、示例）；**没被任何一层匹配到的页面会落到最后一层并在日志里点名** —— 新页面忘了登记
+ * 不会静默消失（`test/unit-docs-guides.test.js` 也断言"每个页面恰好出现一次"）。
+ */
+export function loadNav(root = ROOT) {
+  const file = path.join(root, 'docs', 'nav.json');
+  const config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const layers = config.layers.map((layer) => ({
+    title: layer.title,
+    blurb: layer.blurb ?? '',
+    pages: (layer.pages ?? []).map((page) => page.path),
+    match: layer.match ?? [],
+  }));
+  return { layers, fallback: layers[layers.length - 1].title };
 }
 
-const GROUP_ORDER = ['首页', '快速开始', '指南', '设计与决策', '规格（M0）', '文档', '示例', '参考', '其它'];
+/** 按 nav.json 把页面分组；返回 `Map<层名, 页面[]>` 与"未登记"清单。 */
+function groupPages(pages, nav) {
+  const groups = new Map(nav.layers.map((layer) => [layer.title, []]));
+  const placed = new Set();
+  const unregistered = [];
+  for (const layer of nav.layers) {
+    for (const relative of layer.pages) {
+      const page = pages.find((item) => item.relative === relative);
+      if (page === undefined) continue; // 找不到由门禁报错，这里不静默造条目
+      groups.get(layer.title).push(page);
+      placed.add(relative);
+    }
+  }
+  for (const page of pages) {
+    if (placed.has(page.relative)) continue;
+    const layer = nav.layers.find((item) => item.match.some((prefix) => page.relative.startsWith(prefix)));
+    if (layer !== undefined) {
+      groups.get(layer.title).push(page);
+      placed.add(page.relative);
+      continue;
+    }
+    groups.get(nav.fallback).push(page);
+    unregistered.push(page.relative);
+  }
+  return { groups, unregistered };
+}
 
 /* -------------------------------------------------------------------------- */
 /* API 参考：从源码提取导出与注释（不手抄）                                     */
@@ -438,7 +475,7 @@ input?.addEventListener('input', () => {
 `;
 
 function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
-  const navHtml = GROUP_ORDER.filter((group) => nav.has(group))
+  const navHtml = [...nav.keys()]
     .map((group) => {
       const items = nav
         .get(group)
@@ -605,7 +642,7 @@ export async function build({ log = console.log } = {}) {
   for (const fileAbs of markdownFiles) {
     const relative = path.relative(ROOT, fileAbs).split(path.sep).join('/');
     const markdown = await fsp.readFile(fileAbs, 'utf8');
-    pages.push({ relative, markdown, title: titleOf(markdown, relative), group: groupOf(relative) });
+    pages.push({ relative, markdown, title: titleOf(markdown, relative) });
   }
 
   // 断链检查：只查相对链接与图片，外部链接不管（离线也要能构建）
@@ -619,14 +656,26 @@ export async function build({ log = console.log } = {}) {
     (relative) => fs.existsSync(path.join(ROOT, relative)) || generated.has(path.posix.basename(relative)),
   );
 
-  const nav = new Map();
-  const listing = pages
-    .map((page) => ({ title: page.title, group: page.group, url: urlFor(page.relative) }))
-    .sort((a, b) => a.url.localeCompare(b.url));
-  for (const entry of listing) {
-    if (!nav.has(entry.group)) nav.set(entry.group, []);
-    nav.get(entry.group).push(entry);
+  // 导航：顺序与分组全部来自 docs/nav.json
+  const navConfig = loadNav();
+  const { groups, unregistered } = groupPages(pages, navConfig);
+  if (unregistered.length > 0) {
+    log(`doc site: 以下页面没有登记进 docs/nav.json，已落到「${navConfig.fallback}」末尾：${unregistered.join(', ')}`);
   }
+  const nav = new Map();
+  /** 每页在导航里的位置（供"上一篇/下一篇"与面包屑用）。 */
+  const order = [];
+  for (const layer of navConfig.layers) {
+    const entries = groups.get(layer.title).map((page) => ({
+      title: page.title,
+      group: layer.title,
+      url: urlFor(page.relative),
+    }));
+    if (entries.length === 0) continue;
+    nav.set(layer.title, entries);
+    order.push(...entries);
+  }
+  const navOrder = new Map(order.map((entry, index) => [entry.url, index]));
 
   await fsp.rm(OUT, { recursive: true, force: true });
   await fsp.mkdir(OUT, { recursive: true });
@@ -715,7 +764,14 @@ ${await buildApiPage()}`;
     error.broken = broken;
     throw error;
   }
-  return { pages: pages.length, broken, landing: { snippets: landing.snippets, broken: landingBroken } };
+  return {
+    pages: pages.length,
+    broken,
+    landing: { snippets: landing.snippets, broken: landingBroken },
+    // 导航自检（门禁用）：层数与"没登记进 nav.json"的页面
+    navLayers: nav.size,
+    unregistered,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

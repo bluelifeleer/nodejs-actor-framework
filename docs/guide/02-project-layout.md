@@ -1,5 +1,9 @@
 # 2. 项目结构：代码该写哪
 
+**你会得到**："我这段代码该写哪个文件"的答案；layered 与 flat 两种布局的取舍
+
+**前置**：读过 01 或已有一个脚手架项目　**耗时**：8 分钟
+
 一句话分工：**`main.ts` 只管进程，`server.ts` 只管装配，业务在 `src/` 里分层。**
 
 ```
@@ -127,6 +131,6 @@ export default defineModule({
 
 ## 下一步
 
-- 加接口、校验、错误码 → [10 路由与请求](./10-http-routing.md)
-- 建表 + 仓储 + CRUD → [11 数据与 CRUD](./11-crud-database.md)
-- 状态放哪 → [12 Actor 与状态](./12-actors-state.md)
+
+- [10 路由与请求](./10-http-routing.md)
+- [12 Actor 与状态](./12-actors-state.md)

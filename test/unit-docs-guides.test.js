@@ -94,6 +94,55 @@ test('docs guides: 指南目录结构完整，每篇都有标题与验证示例'
   }
 });
 
+test('docs guides: 导航四层由 docs/nav.json 定义，且**每个页面恰好出现一次**', async () => {
+  const navFile = path.join(ROOT, 'docs', 'nav.json');
+  assert.ok(fs.existsSync(navFile), '导航要多一个显式来源 docs/nav.json（不再按目录结构猜）');
+  const nav = JSON.parse(fs.readFileSync(navFile, 'utf8'));
+  assert.deepStrictEqual(
+    nav.layers.map((layer) => layer.title),
+    ['开始', '按任务', '概念与设计', '参考'],
+    '四层的名字与顺序是约定（开始/按任务/概念与设计/参考）',
+  );
+
+  // ① nav.json 里登记的每个路径都必须真实存在（写错路径不该静默消失）
+  const listed = nav.layers.flatMap((layer) => (layer.pages ?? []).map((page) => page.path));
+  for (const relative of listed) {
+    assert.ok(fs.existsSync(path.join(ROOT, relative)), `nav.json 登记的路径不存在：${relative}`);
+  }
+  assert.deepStrictEqual([...new Set(listed)].length, listed.length, 'nav.json 里不能有重复页面');
+
+  // ② 每个**渲染出来的页面**都必须落在某一层里（未登记会落到最后一层，这里直接禁止）
+  const { build } = await import('../tools/docs-site.mjs');
+  const result = await build({ log: () => {} });
+  assert.deepStrictEqual(
+    result.unregistered ?? [],
+    [],
+    '有页面没有登记进 docs/nav.json（新页面要显式登记，别依赖"落到最后一层"）',
+  );
+  assert.ok(result.navLayers >= 4, `导航应当至少有四层，实际 ${String(result.navLayers)}`);
+});
+
+test('docs guides: 每篇主线页都有统一的头（你会得到/前置/耗时）与尾（下一步）', () => {
+  for (const file of guideFiles()) {
+    const name = path.basename(file);
+    if (name === 'README.md') continue;
+    const markdown = fs.readFileSync(file, 'utf8');
+    const head = markdown.slice(0, 900);
+    assert.match(head, /\*\*你会得到\*\*：\S/, `${name} 开头缺少「你会得到」`);
+    assert.match(head, /\*\*前置\*\*：\S/, `${name} 开头缺少「前置」`);
+    assert.match(head, /\*\*耗时\*\*：\S/, `${name} 开头缺少「耗时」`);
+
+    const footer = /^## 下一步\s*$([\s\S]*)$/m.exec(markdown);
+    assert.ok(footer !== null, `${name} 末尾缺少「## 下一步」一节`);
+    const links = [...footer[1].matchAll(/\]\((\.\/[\w./-]+\.md)\)/g)].map((match) => match[1]);
+    assert.ok(links.length >= 2, `${name} 的「下一步」至少给两个去处（实际 ${String(links.length)} 个）`);
+    for (const link of links) {
+      const target = path.resolve(path.dirname(file), link);
+      assert.ok(fs.existsSync(target), `${name} 的「下一步」指向了不存在的文件：${link}`);
+    }
+  }
+});
+
 test('docs guides: 索引页把每一篇主线都链上了（不遗漏、不指向不存在的文件）', () => {
   const index = fs.readFileSync(path.join(GUIDE_DIR, 'README.md'), 'utf8');
   const linked = [...index.matchAll(/\]\(\.\/([\w.-]+\.md)\)/g)].map((match) => match[1]);

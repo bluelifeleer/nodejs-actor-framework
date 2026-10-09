@@ -1,5 +1,9 @@
 # 12. Actor 与状态：状态该放哪、怎么不丢
 
+**你会得到**："状态归 Actor"怎么落地：状态放哪、怎么调、两种持久化模式、依赖注入
+
+**前置**：读过 00（或已知 Actor 是什么）　**耗时**：15 分钟
+
 ## 1. 一句话判断法
 
 | 这个东西 | 放哪 | 为什么 |
@@ -226,3 +230,9 @@ console.log('ok');
 - 事件溯源聚合（`defineAggregate`）与投影 → [internals/04-data-layer](./internals/04-data-layer.md)
 - 集群下的位置透明（`ctx.actor` 触达别的节点）→ [internals/05-cluster](./internals/05-cluster.md)
 - Actor 起不来 / 超时 → [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [20 错误与日志](./20-errors-and-logging.md)
+- [17 测试](./17-testing.md)

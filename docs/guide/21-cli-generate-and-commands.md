@@ -1,5 +1,9 @@
 # 21. CLI：生成骨架与自定义命令
 
+**你会得到**：九种骨架的生成（非破坏、`--mount` 可选自动接线）与项目自定义命令
+
+**前置**：用过 `actor new app` 或已有项目　**耗时**：15 分钟
+
 `actor` 除了 `new app` / `add` / `migrate` / `doctor`，还有两件日常用得最多的能力：
 **生成骨架**（controller/actor/service/model/schema/middleware/test/command）与
 **把自己项目的命令挂进 `actor`**。
@@ -322,3 +326,9 @@ console.log('ok');
 - 脚手架本身（`new app` / `--layout` / `--with` / `--web-plugins`）→ [internals/00-scaffold](./internals/00-scaffold.md)
 - 生成的骨架怎么接进模块 → [02 项目结构](./02-project-layout.md)
 - `doctor` 会体检"自定义命令"这一节（重名/形状不对会如实报出）→ [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [12 Actor 与状态](./12-actors-state.md)
+- [22 部署与构建](./22-deploy-and-build.md)

@@ -1,5 +1,9 @@
 # 17. 测试：真内核、虚拟时钟、故障注入
 
+**你会得到**：用真内核写测试、虚拟时钟（把"等一小时"变成 0 毫秒）、故障注入
+
+**前置**：写过 `node --test` 或任何测试框架　**耗时**：15 分钟
+
 三条原则（与仓库里 1000+ 用例的做法一致）：
 
 1. **不 mock 框架**：起真内核、真 HTTP、真存储 —— 测的是"接线对不对"，mock 掉的正是你要验的东西；
@@ -163,3 +167,9 @@ console.log('ok');
 - 已有示例的测试怎么写的：`examples/*/test/`、脚手架生成项目的 `test/api.test.ts`
 - 测试用 http 客户端与探针 → [internals/06-testing](./internals/06-testing.md)
 - 契约套件（自己写插件/适配器时自证合规）→ [internals/11-custom-adapter](./internals/11-custom-adapter.md)
+
+## 下一步
+
+
+- [19 排错手册](./19-troubleshooting.md)
+- [18 可观测与上线](./18-observability-deploy.md)

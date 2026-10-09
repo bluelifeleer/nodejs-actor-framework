@@ -1,5 +1,9 @@
 # 13. 鉴权：登录、保护接口、角色
 
+**你会得到**：登录签发 token、两种粒度的接口保护、401/403 约定、上线前的安全清单
+
+**前置**：有可跑的 HTTP 项目　**耗时**：15 分钟
+
 鉴权分三件事，**分开理解**最省事：
 
 | 事 | 谁负责 |
@@ -177,3 +181,9 @@ console.log('ok');
 - JWT/JWE 细节（算法白名单、refresh store、`runRefreshStoreContract`）→ [internals/14-auth](./internals/14-auth.md)
 - 中间件阶段与 `ctx.extend` → [10 路由与请求](./10-http-routing.md)
 - 报错排查（401 一直不过、403 突然出现）→ [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [14 配置与密钥](./14-config-env.md)
+- [20 错误与日志](./20-errors-and-logging.md)

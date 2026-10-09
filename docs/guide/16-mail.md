@@ -1,5 +1,9 @@
 # 16. 邮件：发出去、离线能验
 
+**你会得到**：发信、自装 transport、离线用 `.eml` 真验（不需要 SMTP 服务器）
+
+**前置**：有可跑的项目　**耗时**：12 分钟
+
 ## 1. 装插件（两条路）
 
 ```ts
@@ -179,3 +183,9 @@ console.log('ok');
 - 自装传输的完整契约（幂等 `verify`/`close`、真实投递开关）→ [internals/16-mail](./internals/16-mail.md)
 - 邮件失败要有日志/重试：用 Actor 串行化 + 自己的重试策略 → [12 Actor 与状态](./12-actors-state.md)
 - 报错排查 → [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [17 测试](./17-testing.md)
+- [18 可观测与上线](./18-observability-deploy.md)

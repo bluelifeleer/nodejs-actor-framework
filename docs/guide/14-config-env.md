@@ -1,5 +1,9 @@
 # 14. 配置与密钥：分层、环境变量、校验
 
+**你会得到**：配置分层与覆盖顺序、环境变量命名、`secret: true` 到底做了什么、校验规则
+
+**前置**：项目里有 `config/default.ts`　**耗时**：12 分钟
+
 ## 1. 配置只有一个入口：`defineConfig`
 
 ```ts
@@ -170,3 +174,9 @@ console.log('ok');
 - 控制器/插件的输入校验用的是**同一套**字段描述符 → [10 路由与请求](./10-http-routing.md)
 - 插件配置进 `plugins.<插件名>.*`，写法同上；设计背景 → [设计：配置/DI/插件](../design/02-config-di-plugins.md)
 - 诊断路由为什么拿不到你的密钥 → [18 可观测与上线](./18-observability-deploy.md)
+
+## 下一步
+
+
+- [18 可观测与上线](./18-observability-deploy.md)
+- [22 部署与构建](./22-deploy-and-build.md)

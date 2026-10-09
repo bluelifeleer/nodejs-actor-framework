@@ -1,0 +1,130 @@
+{
+  "//": "文档导航的**唯一来源**：顺序、分组、标题、一句话说明都在这里；侧边栏不再从目录结构推断（目录结构反映的是文件从哪来，不是读者要干什么）。新增页面必须登记到某一层，门禁会核对'每个页面恰好出现一次'。",
+  "layers": [
+    {
+      "title": "开始",
+      "blurb": "第一次用，按顺序读这三篇",
+      "pages": [
+        {
+          "path": "docs/guide/00-what-is-an-actor.md",
+          "title": "00 什么是 Actor"
+        },
+        {
+          "path": "docs/guide/01-quickstart.md",
+          "title": "01 五分钟上手"
+        },
+        {
+          "path": "docs/guide/02-project-layout.md",
+          "title": "02 项目结构"
+        }
+      ]
+    },
+    {
+      "title": "按任务",
+      "blurb": "要加某个功能时，直接跳到对应的那篇",
+      "pages": [
+        {
+          "path": "docs/guide/10-http-routing.md",
+          "title": "10 路由与请求"
+        },
+        {
+          "path": "docs/guide/11-crud-database.md",
+          "title": "11 数据与 CRUD"
+        },
+        {
+          "path": "docs/guide/12-actors-state.md",
+          "title": "12 Actor 与状态"
+        },
+        {
+          "path": "docs/guide/13-auth.md",
+          "title": "13 鉴权"
+        },
+        {
+          "path": "docs/guide/14-config-env.md",
+          "title": "14 配置与密钥"
+        },
+        {
+          "path": "docs/guide/15-realtime-upload.md",
+          "title": "15 实时与上传"
+        },
+        {
+          "path": "docs/guide/16-mail.md",
+          "title": "16 邮件"
+        },
+        {
+          "path": "docs/guide/17-testing.md",
+          "title": "17 测试"
+        },
+        {
+          "path": "docs/guide/18-observability-deploy.md",
+          "title": "18 可观测与上线"
+        },
+        {
+          "path": "docs/guide/20-errors-and-logging.md",
+          "title": "20 错误与日志"
+        },
+        {
+          "path": "docs/guide/22-deploy-and-build.md",
+          "title": "22 部署与构建"
+        },
+        {
+          "path": "docs/guide/21-cli-generate-and-commands.md",
+          "title": "21 CLI 进阶"
+        },
+        {
+          "path": "docs/guide/09-app-sugar.md",
+          "title": "09 应用层语法糖"
+        },
+        {
+          "path": "docs/guide/19-troubleshooting.md",
+          "title": "19 排错手册"
+        },
+        {
+          "path": "docs/migration.md",
+          "title": "迁移：从 v0.x 旧运行时过来"
+        }
+      ]
+    },
+    {
+      "title": "概念与设计",
+      "blurb": "为什么这样设计（含实现说明与设计史）",
+      "pages": [
+        {
+          "path": "docs/guide/internals/README.md",
+          "title": "实现说明（internals）"
+        }
+      ],
+      "match": [
+        "docs/guide/internals/",
+        "docs/design/",
+        "docs/audit/"
+      ]
+    },
+    {
+      "title": "参考",
+      "blurb": "查符号、查示例、查仓库自身",
+      "pages": [
+        {
+          "path": "docs/guide/reference/api.md",
+          "title": "API 参考"
+        },
+        {
+          "path": "docs/guide/README.md",
+          "title": "文档首页（按任务查）"
+        },
+        {
+          "path": "README.md",
+          "title": "仓库 README"
+        },
+        {
+          "path": "docs/quickstart.md",
+          "title": "5 分钟上手（旧版，保留链接）"
+        }
+      ],
+      "match": [
+        "examples/"
+      ]
+    }
+  ],
+  "//unmatched": "没被上面任何一层匹配到的页面会落到最后一层（参考）的末尾，并在构建日志里点名 —— 新页面忘了登记不会静默消失。"
+}

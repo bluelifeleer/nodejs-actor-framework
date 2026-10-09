@@ -1,5 +1,9 @@
 # 18. 可观测与上线：日志、诊断、优雅停、检查清单
 
+**你会得到**：日志三条线怎么分、诊断路由怎么开才安全、优雅停机、上线检查清单
+
+**前置**：有可跑的项目　**耗时**：15 分钟
+
 ## 1. 日志：三条线，各管一段
 
 | 你想要 | 装什么 | 输出 |
@@ -189,3 +193,9 @@ console.log('ok');
 - 脱敏规则与日志字段全表 → [internals/15-observability](./internals/15-observability.md)
 - span/指标/OTLP 导出（内核级可观测性）→ [internals/07-observability](./internals/07-observability.md)
 - 停不下来 / 端口占用 / 诊断 401 → [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [22 部署与构建](./22-deploy-and-build.md)
+- [20 错误与日志](./20-errors-and-logging.md)

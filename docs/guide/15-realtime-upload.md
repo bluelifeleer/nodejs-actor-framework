@@ -1,5 +1,9 @@
 # 15. 实时（WebSocket）与文件上传
 
+**你会得到**：WebSocket 推送（含共享端口）与文件上传（含分片、大小限制、413 语义）
+
+**前置**：有可跑的 HTTP 项目　**耗时**：18 分钟
+
 两条独立的能力，按需装：`wsPlugin`（推送/双向）与 `uploadPlugin`（收文件）。
 
 ## 一、WebSocket
@@ -289,3 +293,9 @@ console.log('ok');
 - 上传的存储契约（自己实现 S3/OSS）→ [internals/13-upload](./internals/13-upload.md)
 - WS 的中间件与鉴权（`requireRole` 也能用在 WS 路由上）→ [10 路由与请求](./10-http-routing.md)、[13 鉴权](./13-auth.md)
 - 上传/WS 相关报错 → [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [13 鉴权](./13-auth.md)
+- [18 可观测与上线](./18-observability-deploy.md)

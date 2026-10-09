@@ -1,5 +1,9 @@
 # 20. 错误与日志：让失败看得见
 
+**你会得到**：错误出口（`errors` 钩子）与统一日志（`logging`）一处配好；后台失败不再静默
+
+**前置**：有可跑的项目　**耗时**：15 分钟
+
 框架里出事的地方分三类，**出口只有一个地方配**：`createApp(spec, { errors, logging })`。
 这一页讲清楚"什么会失败、怎么接住、日志往哪走"。
 
@@ -217,3 +221,9 @@ console.log('ok');
 - 访问日志的脱敏名单与字段全表 → [internals/15-observability](./internals/15-observability.md)
 - span / 指标 / OTLP 导出 → [internals/07-observability](./internals/07-observability.md)
 - 出错时的排查步骤 → [19 排错手册](./19-troubleshooting.md)
+
+## 下一步
+
+
+- [18 可观测与上线](./18-observability-deploy.md)
+- [19 排错手册](./19-troubleshooting.md)

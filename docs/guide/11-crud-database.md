@@ -1,5 +1,9 @@
 # 11. 数据与 CRUD：建表 → 迁移 → 仓储 → 接口
 
+**你会得到**：从"声明一张表"到"五条 CRUD 路由"的完整链路，含迁移与仓储
+
+**前置**：跑得起来一个项目；用过 SQL 或 ORM 更顺　**耗时**：20 分钟
+
 最常见的活就是这个：**一张表 + 一组 CRUD 接口**。这一页把它一次走完，每步都能单独替换。
 
 ## 0. 先选路线
@@ -304,3 +308,9 @@ console.log('ok');
 - 工厂的完整选项 → [09 应用层语法糖](./09-app-sugar.md) §5
 - 真实库的完整示例 → [`examples/app-db`](../../examples/app-db/README.md)、[`examples/app-multi-db`](../../examples/app-multi-db/README.md)
 - 事件溯源/投影/outbox → [internals/04-data-layer](./internals/04-data-layer.md)
+
+## 下一步
+
+
+- [12 Actor 与状态](./12-actors-state.md)
+- [17 测试](./17-testing.md)
