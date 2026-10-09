@@ -20,6 +20,10 @@
         {
           "path": "docs/guide/03-recommended-style.md",
           "title": "03 推荐写法与约定"
+        },
+        {
+          "path": "docs/guide/04-newcomer-path.md",
+          "title": "04 新手路线（前 3 小时）"
         }
       ]
     },
@@ -120,6 +124,10 @@
       "title": "参考",
       "blurb": "查符号、查示例、查仓库自身",
       "pages": [
+        {
+          "path": "docs/glossary.md",
+          "title": "术语表"
+        },
         {
           "path": "docs/guide/reference/api.md",
           "title": "API 参考"

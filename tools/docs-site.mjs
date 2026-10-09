@@ -69,6 +69,56 @@ const slugify = (text) =>
     .slice(0, 80) || 'section';
 
 /**
+ * 术语表自动链接：把**正文里首次出现**的术语链到 `docs/glossary.md` 的对应锚点。
+ *
+ * 为什么是后处理而不是塞进 `inline()`：`inline()` 在替换代码片段与链接时还处在 markdown 阶段，
+ * 术语可能落在"链接文字/代码"里，改起来容易把文档结构弄坏。这里在**渲染完成的 HTML** 上做，
+ * 并且**明确跳过**：`<pre>`、`<code>`、`<a>`、标题（`<h1>`–`<h6>`）与所有标签内部 —— 只动纯文本。
+ * 每个术语**每页只链第一次**（第二次出现保持纯文本，不打扰阅读）。
+ */
+export function linkGlossaryTerms(html, terms, options = {}) {
+  const rootPrefix = options.rootPrefix ?? './';
+  const target = `${rootPrefix}glossary.html`;
+  const pending = new Map(Object.entries(terms));
+  if (pending.size === 0) return html;
+
+  // 先把 HTML 切成"受保护块"与"可改写文本"：受保护块原样输出
+  const protectedPattern = /<(pre|code|a|h[1-6])\b[^>]*>[\s\S]*?<\/\1>|<[^>]+>/gi;
+  let out = '';
+  let last = 0;
+  const rewriteText = (text) => {
+    let result = text;
+    for (const [term, anchor] of pending) {
+      const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // ASCII 术语要求词边界（避免 link 掉 `asking` 这类）；中文按子串匹配
+      const pattern = /^[A-Za-z ]+$/.test(term) ? new RegExp(`\\b${escapedTerm}\\b`) : new RegExp(escapedTerm);
+      const match = pattern.exec(result);
+      if (match === null) continue;
+      const label = match[0];
+      result = result.slice(0, match.index) + `<a class="term" href="${target}#${anchor}">${label}</a>` + result.slice(match.index + label.length);
+      pending.delete(term);
+    }
+    return result;
+  };
+
+  for (const match of html.matchAll(protectedPattern)) {
+    const index = match.index ?? 0;
+    out += rewriteText(html.slice(last, index));
+    out += match[0];
+    last = index + match[0].length;
+  }
+  out += rewriteText(html.slice(last));
+  return out;
+}
+
+/** 读 `docs/glossary.json`（术语 → 锚点）；文件不存在就返回空表（不阻断构建）。 */
+function loadGlossaryTerms(root = ROOT) {
+  const file = path.join(root, 'docs', 'glossary.json');
+  if (!fs.existsSync(file)) return {};
+  return JSON.parse(fs.readFileSync(file, 'utf8')).terms ?? {};
+}
+
+/**
  * 把一个 md 文件渲染成 HTML。
  * 支持仓库里实际用到的子集：标题、段落、围栏代码、表格、列表（含嵌套）、引用、分隔线、行内样式。
  */
@@ -772,6 +822,7 @@ export async function build({ log = console.log } = {}) {
   if (unregistered.length > 0) {
     log(`doc site: 以下页面没有登记进 docs/nav.json，已落到「${navConfig.fallback}」末尾：${unregistered.join(', ')}`);
   }
+  const glossaryTerms = loadGlossaryTerms();
   const nav = new Map();
   /** 每页在导航里的位置（供"上一篇/下一篇"与面包屑用）。 */
   const order = [];
@@ -798,7 +849,12 @@ export async function build({ log = console.log } = {}) {
     const url = urlFor(page.relative);
     const depth = url.split('/').length - 1;
     const rootPrefix = depth === 0 ? './' : '../'.repeat(depth);
-    const { html, headings } = renderMarkdown(page.markdown, { linkFor: (href) => relativeLinkFor(page.relative, href) });
+    const { html: rawHtml, headings } = renderMarkdown(page.markdown, { linkFor: (href) => relativeLinkFor(page.relative, href) });
+    // 首现术语自动链到术语表（术语表自己不链，避免自指）
+    const html =
+      page.relative === 'docs/glossary.md'
+        ? rawHtml
+        : linkGlossaryTerms(rawHtml, { ...glossaryTerms }, { rootPrefix });
     const outFile = path.join(OUT, url);
     await fsp.mkdir(path.dirname(outFile), { recursive: true });
     await fsp.writeFile(

@@ -12,19 +12,22 @@
 
 | Express | 本文档 | 差异要点 |
 |---|---|---|
-| `app.get('/notes/:id', h)` | `defineRoutes([get('/notes/:id', c)])` | 路由**声明在模块上**，启动期统一校验（重复路由/非法模式/输入键无来源 → 拒绝启动） |
+| `expressApp.get('/notes/:id', h)` | `defineRoutes([get('/notes/:id', c)])` | 路由**声明在模块上**，启动期统一校验（重复路由/非法模式/输入键无来源 → 拒绝启动） |
 | `req.params.id` / `req.query.x` / `req.body` | 控制器 `input` 声明 + 自动按来源取值 | 读一次 `input`，来源由**路由模式或显式 `from`** 决定，不用手写 `req.` |
 | 手写 `if (!req.body.title) return res.status(400)…` | `input: { title: { type: 'string', min: 1 } }` | 校验失败自动 400，错误形状统一（[10 路由与请求](./10-http-routing.md) §2） |
 | `res.status(409).json({…})` | `throw new HttpError(409, '…')` 或 `reply.json(body, { status: 409 })` | **抛错即响应**：控制器只管抛，映射表见 [10](./10-http-routing.md) §3 |
-| `app.use((req,res,next) => …)` | `atPre/atAuth/atPost(…)` | **阶段即函数名**：顺序由框架保证（不用自己排 use 的顺序） |
-| `app.use('/api', router)` | `router` + `defineRouter`（前缀套整棵子树） | 同 [10](./10-http-routing.md) §1 |
-| `app.locals` / 模块级变量存状态 | **Actor**：`this.state` + 消息 | 这是最大的差别：进程内共享可变状态在本文档里归 Actor |
-| `app.set('x', v)` / `process.env` | `defineConfig({…})` + env 覆盖 | 配置有 schema 与校验，启动期就报错（[14 配置与密钥](./14-config-env.md)） |
+| `expressApp.use((req,res,next) => …)` | `atPre/atAuth/atPost(…)` | **阶段即函数名**：顺序由框架保证（不用自己排 use 的顺序） |
+| `expressApp.use('/api', router)` | `router` + `defineRouter`（前缀套整棵子树） | 同 [10](./10-http-routing.md) §1 |
+| `expressApp.locals` / 模块级变量存状态 | **Actor**：`this.state` + 消息 | 这是最大的差别：进程内共享可变状态在本文档里归 Actor |
+| `expressApp.set('x', v)` / `process.env` | `defineConfig({…})` + env 覆盖 | 配置有 schema 与校验，启动期就报错（[14 配置与密钥](./14-config-env.md)） |
 | 手写 `res.status(500)` 兜底 + `console.error` | 5xx 自动映射 + `errors.onHttpError` / `logging` | 内部细节不回客户端；服务端有显式出口（[20 错误与日志](./20-errors-and-logging.md)） |
-| `app.listen(3000, cb)` | `httpPlugin({ port: 3000 })` + `createApp(...).start()` | 启动是**装配**：模块/插件/provider 都在 `start()` 前声明好 |
+| `expressApp.listen(3000, cb)` | `httpPlugin({ port: 3000 })` + `createApp(...).start()` | 启动是**装配**：模块/插件/provider 都在 `start()` 前声明好 |
 | `supertest(app)` + `node --test` | `node --test` + 真 app（起、fetch、stop） | 见 [17 测试](./17-testing.md) |
 
 **没有变的东西**：路由模式（`:id`）、状态码语义、JSON 响应、中间件这个抽象本身。
+
+> 代码里的变量名刻意用 `expressApp`（而不是 `app`）：文档里的 `app` 专指**框架应用层**
+> （`app.defineApp`/`app.get(...)`），避免两种 `app` 混着读。
 
 ## 2. 一段真实对照
 
@@ -32,7 +35,7 @@ Express 写法（把"读-改-写"放在模块级变量里，两个请求同时�
 
 ```js
 let balance = 100;                                  // 模块级共享状态：问题在这里
-app.post('/debit', (req, res) => {
+expressApp.post('/debit', (req, res) => {
   const current = balance;
   db.update(...).then(() => { balance = current - 1; res.json({ balance }); });
 });
@@ -69,7 +72,7 @@ export const debit = defineController({
    （或者把本文档的 app 挂在现有网关后面）。两边共享同一个数据库即可 —— 状态在库里，风险最低。
 2. **再搬"内存态"**：找出模块级可变变量（计数、房间、连接映射、限流器），逐个搬进 Actor。
    搬一个就能删掉一处锁/一处竞态，收益立刻可见。
-3. **最后搬装配与配置**：把 `app.set` / `process.env` 读取收敛到 `defineConfig`，
+3. **最后搬装配与配置**：把 `expressApp.set` / `process.env` 读取收敛到 `defineConfig`，
    把中间件收敛到 `atPre/atAuth/atPost`，把 5xx 兜底换成 `errors`/`logging` 出口。
 4. **收尾**：`actor doctor` 体检（Node 版本、依赖、配置、数据目录、迁移、端口、生产构建），
    把健康检查与优雅停机对齐（[18 可观测与上线](./18-observability-deploy.md)）。

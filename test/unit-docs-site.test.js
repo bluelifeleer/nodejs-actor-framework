@@ -156,6 +156,39 @@ test('docs: 阅读体验 —— 面包屑/上下篇/复制按钮/深色模式/�
   assert.match(page, /<mark>|'<mark>'/, '搜索结果要标出命中位置');
 });
 
+test('docs: 术语表 —— JSON 与词汇页一致，且主线首现术语自动链过去（只在正文、每词一次）', async () => {
+  const glossaryDir = path.join(ROOT, 'docs');
+  const json = JSON.parse(fs.readFileSync(path.join(glossaryDir, 'glossary.json'), 'utf8'));
+  const page = fs.readFileSync(path.join(glossaryDir, 'glossary.md'), 'utf8');
+  const headings = new Set([...page.matchAll(/^### (.+)$/gm)].map((match) => match[1].trim()));
+
+  // ① JSON 里的每个词都必须在词汇页有对应小节（否则自动链接会指向不存在的锚点）
+  const missing = Object.keys(json.terms).filter((term) => !headings.has(term));
+  assert.deepStrictEqual(missing, [], `glossary.json 里的词在 glossary.md 里没有小节：${missing.join(', ')}`);
+  assert.ok(Object.keys(json.terms).length >= 15, `术语太少（${String(Object.keys(json.terms).length)}）`);
+
+  await build({ log: () => {} });
+  const site = path.join(ROOT, 'site');
+  const article = fs.readFileSync(path.join(site, 'docs', 'guide', '12-actors-state.html'), 'utf8');
+
+  // ② 正文里确实链过去了，且**每个词只链一次**
+  const links = [...article.matchAll(/<a class="term" href="([^"]+)">([^<]+)<\/a>/g)].map((match) => ({ href: match[1], label: match[2] }));
+  assert.ok(links.length >= 3, `正文里应当有若干术语链接（实际 ${String(links.length)}）`);
+  assert.match(links[0].href, /glossary\.html#/, '链接要指向术语表锚点');
+  const counts = new Map();
+  for (const link of links) counts.set(link.label, (counts.get(link.label) ?? 0) + 1);
+  assert.deepStrictEqual([...counts.entries()].filter(([, n]) => n > 1), [], '同一个词在一页里只能链一次');
+
+  // ③ **绝不能链进代码块**（代码是给复制粘贴的，多一点标记都会坏）
+  for (const block of article.matchAll(/<pre[\s\S]*?<\/pre>/g)) {
+    assert.ok(!block[0].includes('class="term"'), '代码块里不许出现术语链接');
+  }
+
+  // ④ 词汇页自身不自我链接
+  const glossaryHtml = fs.readFileSync(path.join(site, 'docs', 'glossary.html'), 'utf8');
+  assert.ok(!glossaryHtml.includes('class="term"'), '术语表页面不该自链');
+});
+
 test('docs: 页面里的导航与"本页"目录都指向真实锚点', () => {
   const site = path.join(ROOT, 'site');
   const page = fs.readFileSync(path.join(site, 'docs/design/m4-cluster-governance.html'), 'utf8');
