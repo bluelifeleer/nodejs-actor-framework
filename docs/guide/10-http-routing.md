@@ -88,6 +88,9 @@ const createNote = defineController({
 | `return undefined` / `reply.noContent()` | 204（空体） |
 | `throw new HttpError(409, '已存在')` | 409 + `{ error: { status, message, details } }`（`details` 是第 3 个参数） |
 | 抛其它异常 | **500**，响应里**不带**内部细节；服务端通过 `app.on('http:error')` 可见 |
+| 输入校验失败（类型/必填/min/max…） | **400**（框架统一处理，不用你写 `if`） |
+| 路径存在但方法不对 | **405**（不是 404 —— 路由表在启动期就固定了） |
+| 路径没声明 | **404** |
 | Actor 的 `AskTimeoutError` | 504 |
 | 找不到 Actor（`ActorNotResolvableError`） | 404 |
 
