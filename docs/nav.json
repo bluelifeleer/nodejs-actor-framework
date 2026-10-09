@@ -14,12 +14,12 @@
           "title": "01 五分钟上手"
         },
         {
-          "path": "docs/guide/03-recommended-style.md",
-          "title": "03 推荐写法与约定"
-        },
-        {
           "path": "docs/guide/02-project-layout.md",
           "title": "02 项目结构"
+        },
+        {
+          "path": "docs/guide/03-recommended-style.md",
+          "title": "03 推荐写法与约定"
         }
       ]
     },
@@ -68,12 +68,12 @@
           "title": "20 错误与日志"
         },
         {
-          "path": "docs/guide/22-deploy-and-build.md",
-          "title": "22 部署与构建"
-        },
-        {
           "path": "docs/guide/21-cli-generate-and-commands.md",
           "title": "21 CLI 进阶"
+        },
+        {
+          "path": "docs/guide/22-deploy-and-build.md",
+          "title": "22 部署与构建"
         },
         {
           "path": "docs/guide/09-app-sugar.md",
@@ -82,10 +82,6 @@
         {
           "path": "docs/guide/19-troubleshooting.md",
           "title": "19 排错手册"
-        },
-        {
-          "path": "docs/migration.md",
-          "title": "迁移：从 v0.x 旧运行时过来"
         },
         {
           "path": "docs/guide/23-from-express.md",
@@ -98,6 +94,10 @@
         {
           "path": "docs/guide/25-incremental-migration.md",
           "title": "25 增量迁移（不改现有服务）"
+        },
+        {
+          "path": "docs/migration.md",
+          "title": "迁移：从 v0.x 旧运行时过来"
         }
       ]
     },

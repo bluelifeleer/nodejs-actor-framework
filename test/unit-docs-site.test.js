@@ -126,6 +126,36 @@ test('docs: "```js verify" 这类带标记的围栏要渲染成代码块，并�
   assert.deepStrictEqual(leaked.map((file) => path.relative(site, file)), [], '不该有页面把围栏当文字渲染');
 });
 
+test('docs: 阅读体验 —— 面包屑/上下篇/复制按钮/深色模式/搜索快捷键/移动端导航', async () => {
+  await build({ log: () => {} });
+  const site = path.join(ROOT, 'site');
+  const page = fs.readFileSync(path.join(site, 'docs', 'guide', '12-actors-state.html'), 'utf8');
+
+  // 面包屑：官网首页 / 层名 / 页面标题（层名来自 docs/nav.json）
+  assert.match(page, /<div class="crumbs">[\s\S]*?官网首页[\s\S]*?按任务[\s\S]*?<\/div>/, '要有面包屑且带所在层');
+
+  // 上/下一篇：顺序 = 导航顺序（这里 12 的前后是 11 与 13）
+  const pager = /<div class="pager">([\s\S]*?)<\/div>/.exec(page);
+  assert.ok(pager !== null, '要有上/下一篇');
+  // 上下篇的标签用的是 nav.json 的短标题（不是页面 H1），所以这里按短标题断言
+  assert.match(pager[1], /← 上一篇[\s\S]*?11 数据与 CRUD/, '上一篇应当是 11');
+  assert.match(pager[1], /下一篇 →[\s\S]*?13 鉴权/, '下一篇应当是 13');
+
+  // 首尾页只给一个方向（不能出现指向不存在页面的链接）
+  const first = fs.readFileSync(path.join(site, 'docs', 'guide', '00-what-is-an-actor.html'), 'utf8');
+  assert.ok(!/← 上一篇/.test(first), '第一页不该有"上一篇"');
+  assert.match(first, /下一篇 →/, '第一页应当有"下一篇"');
+
+  // 代码复制按钮、深色模式、移动端导航、搜索快捷键与命中高亮
+  assert.match(page, /copy-code/, '每个代码块要有复制按钮（脚本注入）');
+  assert.match(page, /data-theme-toggle/, '要有深浅色开关');
+  assert.match(page, /\[data-theme="dark"\]/, '深色变量必须在样式里');
+  assert.match(page, /prefers-color-scheme|localStorage/, '主题选择要跟随系统并可记住');
+  assert.match(page, /data-nav-toggle/, '移动端要有导航开关');
+  assert.match(page, /event\.key === '\/'/, '按 / 要能聚焦搜索框');
+  assert.match(page, /<mark>|'<mark>'/, '搜索结果要标出命中位置');
+});
+
 test('docs: 页面里的导航与"本页"目录都指向真实锚点', () => {
   const site = path.join(ROOT, 'site');
   const page = fs.readFileSync(path.join(site, 'docs/design/m4-cluster-governance.html'), 'utf8');

@@ -164,13 +164,13 @@ export function renderMarkdown(source, options = {}) {
         index += 1;
       }
       html.push(
-        '<table><thead><tr>' +
+        '<div class="table-wrap"><table><thead><tr>' +
           header.map((cell) => `<th>${inline(cell, linkFor)}</th>`).join('') +
           '</tr></thead><tbody>' +
           rows
             .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell, linkFor)}</td>`).join('')}</tr>`)
             .join('') +
-          '</tbody></table>',
+          '</tbody></table></div>',
       );
       continue;
     }
@@ -275,7 +275,11 @@ export function loadNav(root = ROOT) {
     pages: (layer.pages ?? []).map((page) => page.path),
     match: layer.match ?? [],
   }));
-  return { layers, fallback: layers[layers.length - 1].title };
+  /** nav.json 里的**短标题**（侧边栏用）：页面 H1 往往很长，不适合当导航标签。 */
+  const titles = new Map(
+    config.layers.flatMap((layer) => (layer.pages ?? []).map((page) => [page.path, page.title])),
+  );
+  return { layers, fallback: layers[layers.length - 1].title, titles };
 }
 
 /** 按 nav.json 把页面分组；返回 `Map<层名, 页面[]>` 与"未登记"清单。 */
@@ -398,7 +402,7 @@ async function buildApiPage() {
 ${spec.note === undefined ? '' : `<p class="note">${inline(spec.note)}</p>`}
 <p class="note">导出 ${names.length} 项。签名按**声明文本**提取：本仓库的 typescript 7 是原生端口、
 不暴露编译器 API（实测只有 version/default 两个导出），所以不做类型推导；没写出标注的项显示"未标注"。</p>
-<table><thead><tr><th>导出</th><th>类别</th><th>签名 / 类型（含参数）</th><th>说明</th><th>源码</th></tr></thead><tbody>${rows.join('')}</tbody></table>`);
+<div class="table-wrap"><table><thead><tr><th>导出</th><th>类别</th><th>签名 / 类型（含参数）</th><th>说明</th><th>源码</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
   }
 
   const coverage = `<h2 id="typing-coverage">类型覆盖（M0.1 进度）</h2>
@@ -423,26 +427,45 @@ ${spec.note === undefined ? '' : `<p class="note">${inline(spec.note)}</p>`}
 /* -------------------------------------------------------------------------- */
 
 const STYLE = `
-:root { --fg:#1c2024; --muted:#5b6570; --line:#e3e7ea; --accent:#0b62d0; --bg:#fff; --code:#f6f8fa; }
-* { box-sizing: border-box; }
+:root { --fg:#1c2024; --muted:#5b6570; --line:#e3e7ea; --accent:#0b62d0; --bg:#fff; --code:#f6f8fa; --sidebar:#fbfcfd; --mark:#fff3bf; }
+/* 深色模式：跟随系统，或由右上角开关强制（localStorage 记住选择）。与官网首页同一套观感。 */
+:root[data-theme="dark"] { --fg:#e8eefc; --muted:#9aa8c7; --line:#23304d; --accent:#6aa6ff; --bg:#0a0f1e; --code:#0c1425; --sidebar:#0f1729; --mark:#4d3f00; }
+* { box-sizing:border-box; }
 body { margin:0; color:var(--fg); background:var(--bg); font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; }
 a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
 .layout { display:grid; grid-template-columns:280px minmax(0,1fr); min-height:100vh; }
-aside { border-right:1px solid var(--line); padding:20px 16px; position:sticky; top:0; height:100vh; overflow:auto; }
+aside { border-right:1px solid var(--line); background:var(--sidebar); padding:20px 16px; position:sticky; top:0; height:100vh; overflow:auto; }
 aside .brand { font-weight:700; font-size:15px; margin-bottom:4px; }
 aside .brand small { display:block; color:var(--muted); font-weight:400; margin-top:2px; }
 aside h4 { margin:18px 0 6px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
 aside ul { list-style:none; margin:0; padding:0; } aside li { margin:2px 0; }
 aside a { display:block; padding:4px 8px; border-radius:6px; color:var(--fg); font-size:14px; }
-aside a:hover { background:var(--code); text-decoration:none; } aside a.active { background:#e8f0fd; color:var(--accent); font-weight:600; }
-main { padding:32px 40px 80px; max-width:900px; }
+aside a:hover { background:var(--code); text-decoration:none; } aside a.active { background:color-mix(in srgb, var(--accent) 14%, transparent); color:var(--accent); font-weight:600; }
+main { padding:32px 40px 80px; max-width:900px; min-width:0; }
+aside { min-width:0; }
+.table-wrap { overflow-x:auto; }  /* 宽表在自身容器里滚动，不撑宽整页 */
 h1,h2,h3,h4 { line-height:1.3; } h1 { font-size:30px; margin-top:0; } h2 { font-size:23px; margin-top:34px; padding-top:6px; border-top:1px solid var(--line); }
 h3 { font-size:18px; margin-top:26px; } h4 { font-size:16px; }
 .anchor { opacity:0; margin-left:8px; font-weight:400; } h1:hover .anchor, h2:hover .anchor, h3:hover .anchor { opacity:.35; }
-pre.code { background:var(--code); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; font-size:13.5px; line-height:1.55; }
+pre.code { position:relative; background:var(--code); border:1px solid var(--line); border-radius:8px; padding:12px 14px; overflow:auto; font-size:13.5px; line-height:1.55; }
 pre.code[data-lang]::before { content:attr(data-lang); display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
 pre.code[data-verify] { border-left:3px solid #2f9e6f; }
 pre.code[data-verify]::after { content:"✓ 本块在 CI 里真执行（断言写在代码里）"; display:block; margin-top:8px; color:#2f9e6f; font-size:11.5px; letter-spacing:.02em; }
+/* 代码块复制按钮：默认半透明，hover 才明显（不打扰阅读） */
+.copy-code { position:absolute; top:8px; right:8px; opacity:0; transition:opacity .12s ease; background:var(--bg); color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:2px 8px; font-size:12px; cursor:pointer; }
+pre.code:hover .copy-code, .copy-code:focus-visible { opacity:1; }
+.copy-code.done { color:#2f9e6f; border-color:#2f9e6f; }
+/* 面包屑与上/下一篇：把"独立文章堆"变成一条路 */
+.crumbs { color:var(--muted); font-size:13px; margin-bottom:10px; }
+.pager { display:flex; gap:12px; justify-content:space-between; margin-top:44px; padding-top:16px; border-top:1px solid var(--line); }
+.pager a { display:block; max-width:48%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; }
+.pager a:hover { text-decoration:none; border-color:var(--accent); }
+.pager span { display:block; color:var(--muted); font-size:12px; }
+.pager .next { margin-left:auto; text-align:right; }
+.theme-toggle { position:absolute; top:16px; right:16px; background:var(--bg); color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:4px 9px; font-size:12px; cursor:pointer; }
+.theme-toggle:hover { color:var(--fg); border-color:var(--accent); }
+.nav-toggle { display:none; }
+mark { background:var(--mark); color:inherit; border-radius:3px; padding:0 2px; }
 code { background:var(--code); padding:1px 5px; border-radius:4px; font-size:13.5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 pre code { background:none; padding:0; }
 table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; }
@@ -451,30 +474,97 @@ th { background:var(--code); }
 blockquote { margin:14px 0; padding:8px 14px; border-left:3px solid var(--accent); background:var(--code); color:var(--muted); }
 hr { border:0; border-top:1px solid var(--line); margin:28px 0; }
 .note { color:var(--muted); font-size:14px; }
-.search { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
+.search { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:14px; background:var(--bg); color:var(--fg); }
+kbd { border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 4px; font-size:11.5px; color:var(--muted); }
 #results { margin-top:8px; font-size:14px; } #results a { display:block; padding:3px 6px; border-radius:5px; }
-@media (max-width:900px) { .layout { grid-template-columns:1fr; } aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); } main { padding:20px; } }
+@media (max-width:900px) {
+  .layout { grid-template-columns:1fr; }
+  aside { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line); }
+  /* 移动端：导航默认收起（否则一屏全是链接），用"导航"按钮展开 —— 零 JS 依赖的骨架 + 一点脚本 */
+  aside nav, aside .nav-body { display:none; }
+  body.nav-open aside nav, body.nav-open aside .nav-body { display:block; }
+  .nav-toggle { display:inline-block; margin:8px 0; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; font-size:14px; cursor:pointer; }
+  main { padding:20px; }
+  .pager { flex-direction:column; } .pager a { max-width:none; } .pager .next { margin-left:0; text-align:left; }
+}
 `;
 
 const SEARCH_SCRIPT = `
+// ---- 主题：system 默认 + 手动切换（记住选择）。与官网首页同一套做法 ----
+const root = document.documentElement;
+try {
+  const saved = localStorage.getItem('actor-docs-theme');
+  if (saved) root.dataset.theme = saved;
+} catch {}
+const themeButton = document.querySelector('[data-theme-toggle]');
+if (themeButton) {
+  const label = () => (root.dataset.theme === 'dark' ? '☀ 浅色' : '☾ 深色');
+  themeButton.textContent = label();
+  themeButton.addEventListener('click', () => {
+    root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    themeButton.textContent = label();
+    try { localStorage.setItem('actor-docs-theme', root.dataset.theme); } catch {}
+  });
+}
+
+// ---- 移动端：导航折叠 ----
+const navToggle = document.querySelector('[data-nav-toggle]');
+navToggle?.addEventListener('click', () => document.body.classList.toggle('nav-open'));
+
+// ---- 代码块复制按钮：每个 pre.code 一个（不改动代码文本） ----
+for (const block of document.querySelectorAll('pre.code')) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'copy-code';
+  button.textContent = '复制';
+  button.addEventListener('click', async () => {
+    const code = block.querySelector('code');
+    try {
+      await navigator.clipboard.writeText(code ? code.textContent : '');
+      button.textContent = '已复制'; button.classList.add('done');
+    } catch { button.textContent = '复制失败'; }
+    setTimeout(() => { button.textContent = '复制'; button.classList.remove('done'); }, 1600);
+  });
+  block.appendChild(button);
+}
+
+// ---- 搜索：输入过滤 + 命中高亮；按 "/" 或 Ctrl/Cmd+K 聚焦 ----
 const input = document.getElementById('search');
 const results = document.getElementById('results');
 let index = [];
 fetch(window.__ROOT__ + 'search.json').then((r) => r.json()).then((data) => { index = data; }).catch(() => {});
-input?.addEventListener('input', () => {
-  const query = input.value.trim().toLowerCase();
+const escapeHtml = (text) => text.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+const highlight = (text, query) => {
+  const at = text.toLowerCase().indexOf(query);
+  if (at === -1) return escapeHtml(text);
+  return escapeHtml(text.slice(0, at)) + '<mark>' + escapeHtml(text.slice(at, at + query.length)) + '</mark>' + escapeHtml(text.slice(at + query.length));
+};
+const render = () => {
+  const query = (input?.value ?? '').trim().toLowerCase();
   results.innerHTML = '';
   if (query.length < 2) return;
-  index.filter((page) => page.text.includes(query)).slice(0, 12).forEach((page) => {
+  for (const page of index.filter((page) => page.text.includes(query)).slice(0, 12)) {
     const link = document.createElement('a');
     link.href = window.__ROOT__ + page.url;
-    link.textContent = page.title + ' · ' + page.group;
+    // 命中处前后各留一点上下文，并把关键词标出来（不用点进去也知道为什么命中）
+    const at = page.text.indexOf(query);
+    const snippet = at === -1 ? '' : page.text.slice(Math.max(0, at - 24), at + query.length + 36).replace(/\s+/g, ' ');
+    link.innerHTML = highlight(page.title + ' · ' + page.group, query) + (snippet === '' ? '' : '<br><small>' + highlight(snippet, query) + '…</small>');
     results.appendChild(link);
-  });
+  }
+};
+input?.addEventListener('input', render);
+document.addEventListener('keydown', (event) => {
+  const typing = /^(input|textarea)$/i.test(document.activeElement?.tagName ?? '');
+  if ((event.key === '/' && !typing) || ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k')) {
+    event.preventDefault();
+    input?.focus();
+  }
+  if (event.key === 'Escape' && document.activeElement === input) { input.blur(); }
 });
 `;
 
-function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
+function layout({ title, body, nav, currentUrl, rootPrefix, toc, order = [], group = '' }) {
   const navHtml = [...nav.keys()]
     .map((group) => {
       const items = nav
@@ -494,6 +584,25 @@ function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
           .filter((heading) => heading.level >= 2 && heading.level <= 3)
           .map((heading) => `<li><a href="#${heading.id}">${escapeHtml(heading.text)}</a></li>`)
           .join('')}</ul>`;
+  // 上一篇 / 下一篇：顺序直接取自 docs/nav.json 的导航顺序
+  const position = order.findIndex((entry) => entry.url === currentUrl);
+  const previous = position > 0 ? order[position - 1] : null;
+  const next = position >= 0 && position < order.length - 1 ? order[position + 1] : null;
+  const pagerHtml =
+    previous === null && next === null
+      ? ''
+      : `<div class="pager">${
+          previous === null
+            ? '<span></span>'
+            : `<a class="prev" href="${rootPrefix}${previous.url}"><span>← 上一篇</span>${escapeHtml(previous.title)}</a>`
+        }${
+          next === null ? '' : `<a class="next" href="${rootPrefix}${next.url}"><span>下一篇 →</span>${escapeHtml(next.title)}</a>`
+        }</div>`;
+  const crumbsHtml =
+    group === ''
+      ? `<div class="crumbs"><a href="${rootPrefix}index.html">官网首页</a> / ${escapeHtml(title)}</div>`
+      : `<div class="crumbs"><a href="${rootPrefix}index.html">官网首页</a> / ${escapeHtml(group)} / ${escapeHtml(title)}</div>`;
+  const navBody = `<nav>${navHtml}${tocHtml}</nav>`;
   return `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -501,14 +610,15 @@ function layout({ title, body, nav, currentUrl, rootPrefix, toc }) {
 <style>${STYLE}</style></head>
 <body><div class="layout">
 <aside>
-  <div class="brand">Actor Framework<small>设计文档与 API 参考</small></div>
+  <button class="theme-toggle" data-theme-toggle type="button" aria-label="切换深浅色">☾ 深色</button>
+  <div class="brand">Actor Framework<small>文档与 API 参考</small></div>
   <ul><li><a href="${rootPrefix}index.html">← 官网首页</a></li></ul>
-  <input class="search" id="search" placeholder="搜索文档…" autocomplete="off">
+  <button class="nav-toggle" data-nav-toggle type="button" aria-label="展开导航">导航 ▾</button>
+  <input class="search" id="search" placeholder="搜索文档…（按 / 聚焦）" autocomplete="off">
   <div id="results"></div>
-  ${navHtml}
-  ${tocHtml}
+  ${navBody}
 </aside>
-<main>${body}</main>
+<main>${crumbsHtml}${body}${pagerHtml}</main>
 </div>
 <script>window.__ROOT__=${JSON.stringify(rootPrefix)};${SEARCH_SCRIPT}</script>
 </body></html>`;
@@ -667,7 +777,8 @@ export async function build({ log = console.log } = {}) {
   const order = [];
   for (const layer of navConfig.layers) {
     const entries = groups.get(layer.title).map((page) => ({
-      title: page.title,
+      // 侧边栏标签优先用 nav.json 的短标题（页面 H1 往往很长，侧边栏扫不动）
+      title: navConfig.titles.get(page.relative) ?? page.title,
       group: layer.title,
       url: urlFor(page.relative),
     }));
@@ -676,6 +787,8 @@ export async function build({ log = console.log } = {}) {
     order.push(...entries);
   }
   const navOrder = new Map(order.map((entry, index) => [entry.url, index]));
+  /** 由 url 反查所属层名（面包屑用）。 */
+  const navGroupOf = (url) => order.find((entry) => entry.url === url)?.group ?? '';
 
   await fsp.rm(OUT, { recursive: true, force: true });
   await fsp.mkdir(OUT, { recursive: true });
@@ -690,7 +803,16 @@ export async function build({ log = console.log } = {}) {
     await fsp.mkdir(path.dirname(outFile), { recursive: true });
     await fsp.writeFile(
       outFile,
-      layout({ title: page.title, body: html, nav, currentUrl: url, rootPrefix, toc: headings }),
+      layout({
+        title: page.title,
+        body: html,
+        nav,
+        currentUrl: url,
+        rootPrefix,
+        toc: headings,
+        order,
+        group: navGroupOf(url),
+      }),
       'utf8',
     );
     searchIndex.push({
@@ -707,7 +829,7 @@ export async function build({ log = console.log } = {}) {
       const indexUrl = dir === '.' ? 'index.html' : `${dir}/index.html`;
       await fsp.writeFile(
         path.join(OUT, indexUrl),
-        layout({ title: page.title, body: html, nav, currentUrl: indexUrl, rootPrefix, toc: headings }),
+        layout({ title: page.title, body: html, nav, currentUrl: indexUrl, rootPrefix, toc: headings, order, group: navGroupOf(indexUrl) }),
         'utf8',
       );
     }
@@ -741,6 +863,8 @@ ${await buildApiPage()}`;
       currentUrl: 'api.html',
       rootPrefix: './',
       toc: [],
+      order: [...order, { title: 'API 参考', group: '参考', url: 'api.html' }],
+      group: '参考',
     }),
     'utf8',
   );
