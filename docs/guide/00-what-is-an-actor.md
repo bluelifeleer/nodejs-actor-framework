@@ -364,3 +364,5 @@ console.log(`before=${broken} after=${fixed} after-restart=${restored}`);
 - 想知道状态放哪、怎么持久化：[12 Actor 与状态](./12-actors-state.md)
 - 想知道内部怎么做到串行、崩溃、恢复：[实现说明](./internals/README.md)
 - 想选型（优缺点、边界、替代方案）：[官网首页的「为什么选它 / 什么时候别选」](../../index.html#why)
+- 要让生成的骨架自动接线：`actor generate <kind> <name> --mount`（往 `// @actor:mount <槽位>` 标记里插，
+  没有标记就只提示不改文件）→ [21 CLI 进阶](./21-cli-generate-and-commands.md)

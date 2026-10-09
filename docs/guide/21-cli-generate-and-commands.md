@@ -33,6 +33,7 @@ actor generate migration  create-notes # src/migrations/<时间戳>-create-notes
 | `--migration-version <n>` | `migration` 显式指定版本号（不给就扫 `src/migrations/**` 里已有的 `version:` 自动 +1） |
 | `--no-test` | 不生成配套测试 |
 | `--dry-run` / `--force` | 只算不写 / 覆盖已存在文件 |
+| `--mount` | 把接线插进模块文件的 `// @actor:mount <槽位>` 标记后（无标记则只提示，不改文件） |
 | `--dir <项目>` | 指定项目目录（默认当前目录） |
 
 生成后会打印**要粘贴的片段**，例如：
@@ -46,8 +47,51 @@ actor generate migration  create-notes # src/migrations/<时间戳>-create-notes
   get('/note?name=', note),
 ```
 
-> 为什么**不自动插入**：`module.ts` 是你的文件（你很可能已经改过它），
+> 为什么默认**不自动插入**：`module.ts` 是你的文件（你很可能已经改过它），
 > 正则/AST 改写在这种文件上迟早会改坏别人的代码。打印片段 + 明确下一步，是这套 CLI 一贯的取舍。
+
+### 想让它自动接线：`--mount`
+
+`--mount` 会往模块文件里的**显式标记**后面插入整行 —— 没有标记就**一个字节都不改**，并告诉你加哪一行：
+
+```bash
+actor generate controller notes --mount
+# 已把这些行插进 src/module.ts：
+#   + import { notes } from './controller/notes.controller.ts';
+#   + get('/notes?name=', notes),
+```
+
+标记长这样（脚手架生成的项目**开箱就带**，两种布局都在 `src/module.ts`）：
+
+```ts
+// @actor:mount imports          ← 顶层 import 区（必须顶格）
+
+export default defineModule({
+  name: 'app',
+  providers: {
+    // @actor:mount providers
+  },
+  actors: {
+    // @actor:mount actors
+  },
+  middleware: [
+    // @actor:mount middleware
+  ],
+  routes: defineRoutes([
+    // @actor:mount routes
+  ]),
+});
+```
+
+- **槽位**：`imports` / `providers` / `actors` / `routes` / `middleware`；迁移用 `src/migrations.ts` 里的
+  `imports` + `migrations`（该文件不存在时会按模板**新建**）。
+- **幂等**：要插的行已经存在就跳过，重复跑不会产生重复 import。
+- **原子**：先写临时文件再 `rename`，中途失败不会留下半截文件；不留 `.tmp` 残留。
+- **`--dry-run`**：连临时文件都不建，只打印"会插什么"。
+- **不需要接线的 kind**（`model` / `schema` / `test` / `command`）会明确说明原因，而不是假装挂上了。
+- 生成 `service` 时插入的 provider 是**能跑的单行**（`dsn: ''` + `// TODO: 把 dsn 接到 config 上`）——
+  不替用户猜配置键名。
+- 标识符会去掉重复后缀：`actor generate actor demo-actor` → 导出 `demoActor`（不是 `demoActorActor`）。
 
 ## 二、自定义命令
 

@@ -121,6 +121,21 @@ M9（脚手架与 CLI + 应用层语法糖）的收尾：**保留名的单一来
   版本号扫已有 `version:` 自动 +1（可用 `--migration-version` 指定），片段里给出要加进
   `src/migrations.ts` 的 import；模板按真实的 `MigrationContext`（只有 `store`/`log`）出签名。
 
+### Added
+
+**`actor generate ... --mount`：可选的自动接线**（默认仍然只打印片段）
+
+- 只往**显式标记** `// @actor:mount <槽位>` 后面插入整行；文件里没有标记 → **一个字节都不改**，
+  并打印"在哪一行加什么标记"（槽位：`imports` / `providers` / `actors` / `routes` / `middleware`；
+  迁移用 `src/migrations.ts` 的 `imports` + `migrations`，该文件不存在时按模板新建）；
+- **幂等**（已存在的行不重复插）、**原子**（写临时文件后 `rename`，不留半截文件与 `.tmp` 残留）、
+  **`--dry-run` 零写入**、不需要接线的 kind（`model` / `schema` / `test` / `command`）明确说明原因；
+- 脚手架两个布局的模板**都带上了这五个标记**（都在 `src/module.ts`：flat 的 `src/app.ts` 只是 `defineApp` 入口，
+  这一点我第一版猜错了，用例把这个错误固定下来了），所以新项目开箱即可 `--mount`；
+- 顺带修掉生成器的重复后缀：`actor generate actor demo-actor` 现在导出 `demoActor`（之前是 `demoActorActor`）；
+- 门禁 9 条：纯函数计划（含缺标记/幂等）、槽位映射、后缀去重、真插+幂等+dry-run+无残留、
+  无标记零改动并给指引、迁移新建、**挂载后项目 typecheck 与自带测试仍然全过**、flat 布局、目标文件不存在。
+
 ### Fixed
 
 - **命令发现用 `import()` 会被模块缓存命中**：同一进程里改过 `.actor/commands.ts` 后仍读旧内容

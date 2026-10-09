@@ -12,6 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { UsageError } from '../args.ts';
+import { mountWiring, type MountResult } from './mount.ts';
 import { loadProject, ProjectError, type ProjectInfo } from '../project/load.ts';
 
 /** 支持的骨架种类。 */
@@ -79,8 +80,10 @@ export interface GenerateResult {
   readonly migrationVersion?: number;
   /** 已存在、因此**跳过**的文件（升序）。 */
   readonly skipped: readonly string[];
-  /** 需要人工粘贴到 `src/module.ts` 的片段（我们不自动改写用户代码）。 */
+  /** 需要人工粘贴到 `src/module.ts` 的片段（`--mount` 未命中标记时会用到它）。 */
   readonly snippet: string;
+  /** `--mount` 的结果（没给 `--mount` 就是 undefined）。 */
+  readonly mount?: MountResult;
 }
 
 const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9]*([-_][a-zA-Z0-9]+)*$/;
@@ -103,6 +106,29 @@ export function kebabOf(name: string): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
     .replace(/_/g, '-')
     .toLowerCase();
+}
+
+/**
+ * 名字里已经带了"这一层"的后缀时，去掉它再拼标识符：`demo-actor` → `demoActor`（不是 `demoActorActor`）。
+ *
+ * 文件名仍按用户给的名字（`demo-actor.actor.ts`），只有**标识符**去重后缀 ——
+ * 早先 `actor generate actor cart` 得到 `cartActor`（对），但 `actor generate actor demo-actor`
+ * 会得到 `demoActorActor`（读起来像打错了）。文件名不动，避免生成两套命名规则。
+ */
+const KIND_SUFFIXES: Partial<Record<GenerateKind, string>> = {
+  actor: 'actor',
+  controller: 'controller',
+  service: 'service',
+  middleware: 'middleware',
+  schema: 'schema',
+  model: 'model',
+};
+
+export function baseNameFor(name: string, kind: GenerateKind): string {
+  const suffix = KIND_SUFFIXES[kind];
+  if (suffix === undefined) return name;
+  const pattern = new RegExp(`(^|[-_])${suffix}$`, 'i');
+  return pattern.test(name) ? name.replace(pattern, '') || name : name;
 }
 
 /** 解析 `--field title:string` → `{ name, type }`。 */
@@ -204,9 +230,10 @@ export function generatedFiles(options: {
   /** `kind: 'migration'` 时：版本号（不给就用调用方算好的接续值）。 */
   migrationVersion?: number;
 }): GeneratedFile[] {
-  const camel = camelOf(options.name);
-  const pascal = pascalOf(options.name);
   const kebab = kebabOf(options.name);
+  // 标识符用去重后缀的基名（`demo-actor` → `demoActor`），文件名仍用用户给的名字
+  const camel = camelOf(baseNameFor(options.name, options.kind));
+  const pascal = pascalOf(baseNameFor(options.name, options.kind));
   const files: GeneratedFile[] = [];
   const layered = options.layout === 'layered';
 
@@ -706,6 +733,8 @@ export async function generate(
     test?: boolean;
     /** `kind: 'migration'`：显式指定版本号（不指定就自动接续现有迁移）。 */
     migrationVersion?: number;
+    /** `--mount`：把接线插进模块文件的 `// @actor:mount <槽位>` 标记后面（没有标记就只给提示）。 */
+    mount?: boolean;
   } = {},
 ): Promise<GenerateResult> {
   if (name === undefined || String(name).trim() === '') {
@@ -757,6 +786,27 @@ export async function generate(
     written.push(file.relative);
   }
 
+  // `--mount`：只往显式标记里插；没有标记 → 一个字节都不写（结果里带 missingMarkers 供 CLI 提示）
+  const mount =
+    options.mount === true
+      ? await mountWiring({
+          project,
+          kind,
+          name,
+          layout,
+          ...(migration === undefined
+            ? {}
+            : {
+                migrationFile:
+                  generated
+                    .find((file) => file.relative.startsWith('src/migrations/'))
+                    ?.relative.replace(/^src\/migrations\//, '')
+                    .replace(/\.ts$/, '') ?? kebabOf(name),
+              }),
+          ...(options.dryRun === true ? { dryRun: true } : {}),
+        })
+      : undefined;
+
   return {
     dir: project.dir,
     kind,
@@ -773,5 +823,6 @@ export async function generate(
       ...(migration === undefined ? {} : { migrationFile: generated.find((file) => file.relative.startsWith('src/migrations/'))?.relative.replace(/^src\/migrations\//, '').replace(/\.ts$/, '') ?? kebabOf(name), migrationVersion: migration.version }),
     }),
     ...(migration === undefined ? {} : { migrationVersion: migration.version }),
+    ...(mount === undefined ? {} : { mount }),
   };
 }

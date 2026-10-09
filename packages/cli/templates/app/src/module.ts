@@ -7,6 +7,9 @@ import { health } from './controller/health.controller.ts';
 import { notes } from './controller/notes.controller.ts';
 import { createNotesRepository } from './service/notes.repository.ts';
 
+// `actor generate <kind> --mount` 会往下面这些标记后面**只插整行**（没有标记就只打印片段，不改文件）
+// @actor:mount imports
+
 /**
  * 模块声明：把各层的声明**挂进**应用。这里只做"接线"，不放业务逻辑。
  *
@@ -22,6 +25,7 @@ export default defineModule({
 
   // provider：按需构造、按依赖图解析（这里只有一个仓储）
   providers: {
+    // @actor:mount providers
     // deps 的类型是 Record<string, unknown>（框架有意不把 provider 依赖做成泛型），
     // 所以这里显式收窄一次：拿到 config 再读配置。
     notes: (deps) => {
@@ -32,10 +36,17 @@ export default defineModule({
 
   // Actor：写路径在这里（有状态、串行、可持久化）
   actors: {
+    // @actor:mount actors
     Counter: { definition: Counter, options: { persistence: { mode: 'snapshot' } } },
   },
 
+  // 模块级中间件：作用于本模块声明的所有路由
+  middleware: [
+    // @actor:mount middleware
+  ],
+
   routes: defineRoutes([
+    // @actor:mount routes
     get('/health', health),
 
     post('/notes', notes.create),

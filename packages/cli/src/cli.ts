@@ -13,6 +13,7 @@ import type { Capability, WebPlugin } from './capabilities.ts';
 import type { Layout } from './templates/app.ts';
 import { doctor } from './commands/doctor.ts';
 import { GENERATE_KINDS, generate, parseField, type GenerateKind } from './commands/generate.ts';
+import { missingMarkerHelp, MOUNT_MARKER } from './commands/mount.ts';
 import { BUILTIN_COMMANDS, commandUsage, discoverCommands, renderCommands } from './commands/custom.ts';
 import { migrate } from './commands/migrate.ts';
 import { addCapability } from './commands/add.ts';
@@ -35,9 +36,10 @@ function usage(): string {
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
     '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
     '  actor generate <kind> <name> [--field k:type]… [--optimistic-lock] [--migration-version <n>]',
-    '                                [--no-test] [--dry-run] [--force]',
+    '                                [--no-test] [--dry-run] [--force] [--mount]',
     '                                              生成常用骨架（controller/actor/service/model/schema/middleware/test）',
-    '                                              不覆盖已有文件；module.ts 的接线片段只打印，不自动改写',
+    '                                              不覆盖已有文件；默认只打印 module.ts 的接线片段，',
+    '                                              --mount 才自动插到 `// @actor:mount <槽位>` 标记后面（没有标记就提示你加）',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
     '  actor doctor                                 体检：Node/依赖/配置/数据目录/迁移/端口',
     '  actor commands [--json]                      列出内置与**项目自定义**命令（.actor/commands/）',
@@ -237,6 +239,7 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(projectDirFlag === undefined ? {} : { dir: projectDirFlag }),
       fields,
       ...(parsed.flags['optimistic-lock'] !== undefined ? { version: true } : {}),
+      ...(parsed.flags.mount !== undefined ? { mount: true } : {}),
       ...(typeof parsed.flags['migration-version'] === 'string'
         ? { migrationVersion: Number(parsed.flags['migration-version']) }
         : {}),
@@ -249,8 +252,41 @@ async function main(argv: readonly string[]): Promise<number> {
     );
     for (const file of result.files) process.stdout.write(`  + ${file}\n`);
     for (const file of result.skipped) process.stdout.write(`  = ${file}（已存在，跳过；要覆盖加 --force）\n`);
-    if (result.snippet !== '') {
-      process.stdout.write(`\n下一步：把下面这段合并进 src/module.ts（本命令不改你的代码）\n`);
+    // `--mount` 的结果：插了什么要说清（用户能在 git diff 里逐行核对）
+    const mount = result.mount;
+    if (mount !== undefined) {
+      if (mount.note === 'no-wiring') {
+        process.stdout.write(`\n${result.kind} 不需要接线：模型/表声明是用到的地方自己 import；测试与自定义命令各有自己的发现机制。\n`);
+      } else if (mount.note === 'created') {
+        process.stdout.write(`\n已新建 ${String(mount.file)}（含 \`${MOUNT_MARKER}\` 标记），并把接线插了进去。\n`);
+      }
+      if (mount.inserted.length > 0) {
+        process.stdout.write(
+          `\n${mount.dryRun ? '[dry-run] 会把' : '已把'}这些行插进 ${String(mount.file)}：\n` +
+            `${mount.inserted.map((line) => `  + ${line.trim()}`).join('\n')}\n`,
+        );
+        if (mount.dryRun) process.stdout.write('（--dry-run：没有真的写盘）\n');
+      }
+      if (mount.alreadyPresent.length > 0 && mount.inserted.length === 0) {
+        process.stdout.write(`\n接线已经在 ${String(mount.file)} 里了（幂等，没有重复插入）。\n`);
+      }
+      if (mount.note === 'missing-file') {
+        process.stdout.write(
+          `\n找不到 ${String(mount.file)}：这个项目的模块声明不在约定位置。\n` +
+            '  请在模块声明文件里加上标记（`// @actor:mount imports` 等），或用 `--dir` 指定正确的项目目录；\n' +
+            '  也可以按上面打印的片段手工合并。\n',
+        );
+      }
+      if (mount.missingMarkers.length > 0) {
+        process.stdout.write(`\n${missingMarkerHelp(String(mount.file), mount.missingMarkers)}\n`);
+      }
+    }
+
+    // 没给 --mount（或没挂上）时，仍然把片段打出来 —— 手工合并永远可用
+    const shouldPrintSnippet =
+      result.snippet !== '' && (mount === undefined || mount.missingMarkers.length > 0 || mount.note === 'missing-file');
+    if (shouldPrintSnippet) {
+      process.stdout.write(`\n下一步：把下面这段合并进 src/module.ts${mount === undefined ? '（本命令不改你的代码；加 --mount 可自动插入标记处）' : ''}\n`);
       process.stdout.write(`${result.snippet.split('\n').map((line) => `  ${line}`).join('\n')}\n`);
     }
     if (result.skipped.length > 0) {

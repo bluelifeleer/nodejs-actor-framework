@@ -51,6 +51,7 @@ const REPEATABLE_FLAGS = new Set(['field']);
 const KNOWN_FLAGS = new Set([
   'force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout', 'web-plugins',
   'with', 'dry-run', 'web-plugin', 'kind', 'repo', 'field', 'no-test', 'optimistic-lock', 'migration-version',
+  'mount',
 ]);
 
 /**
