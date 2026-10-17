@@ -142,9 +142,12 @@ function checkPackage(pkg) {
   return problems;
 }
 
-const selected = only === undefined
+// `--package` 的三种写法都要认：绝对路径、相对仓库根的路径（`packages/mail`）、
+// 以及**当前目录**（各包 `prepublishOnly` 就是站在包目录里跑 `--package .` 的）。
+const target = only === undefined ? undefined : path.resolve(only);
+const selected = target === undefined
   ? PACKAGES
-  : PACKAGES.filter((pkg) => path.resolve(pkg.dir) === path.resolve(only) || pkg.dir === only);
+  : PACKAGES.filter((pkg) => path.resolve(ROOT, pkg.dir) === target);
 if (selected.length === 0) {
   console.error(`[build] 找不到包：${String(only)}`);
   process.exit(2);

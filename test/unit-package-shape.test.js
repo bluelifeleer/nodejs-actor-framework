@@ -281,6 +281,43 @@ test('打包形态: `npm pack` 出来的 tarball 里确实带 dist（files 配�
   }
 });
 
+test('打包形态: 发布路径可用（`publish --dry-run` 会跑 prepublishOnly —— pack 不会）', async () => {
+  // 这条曾经是**断的**：各包 prepublishOnly 传 `--package .`，构建脚本只认包名，
+  // 于是 `npm publish` 在预处理阶段就失败 —— 而 `npm pack` 一路绿灯（pack 不跑 prepublishOnly）。
+  const script = path.join(ROOT, 'tools', 'publish-dry-run.mjs');
+  assert.ok(fs.existsSync(script), '要有发布自检脚本 tools/publish-dry-run.mjs');
+
+  const { stdout } = await run(process.execPath, [script], { cwd: ROOT, timeout: 600_000 }).catch((error) => {
+    assert.fail(`发布自检失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
+  });
+  // 每个公开包都要被覆盖（10 个：内核 + 9 个 @actor/*）
+  const covered = [...stdout.matchAll(/✓ (\S+?)@/g)].map((match) => match[1]);
+  assert.strictEqual(covered.length, 10, `应当覆盖 10 个公开包，实际 ${String(covered.length)}：${covered.join(', ')}`);
+  assert.ok(covered.includes('nodejs-actor-framework'), '内核也要覆盖');
+  assert.match(stdout, /全部 10 个包的发布路径可用/);
+});
+
+test('打包形态: 各包的 prepublishOnly 都指向构建脚本，且 `--package .` 在包目录里可用', async () => {
+  // 上一条是端到端；这条把"约定"钉死，出问题时定位更快
+  const dirs = fs.readdirSync(path.join(ROOT, 'packages'));
+  const offenders = [];
+  for (const dir of dirs) {
+    const file = path.join(ROOT, 'packages', dir, 'package.json');
+    if (!fs.existsSync(file)) continue;
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (manifest.private === true) continue;
+    if (manifest.scripts?.prepublishOnly === undefined) offenders.push(`${manifest.name} 没有 prepublishOnly`);
+  }
+  assert.deepStrictEqual(offenders, [], offenders.join('; '));
+
+  // 真的站在包目录里跑一次（npm 就是这么调用的）
+  const out = await run(process.execPath, ['../../tools/build-packages.mjs', '--package', '.'], {
+    cwd: path.join(ROOT, 'packages', 'mail'),
+    timeout: 240_000,
+  });
+  assert.match(out.stdout, /@actor\/mail/);
+});
+
 test('打包形态: 脚手架项目里 `npx actor ...` 仍然可用（CLI 保持 TS-only）', async () => {
   const project = path.join(ROOT, '.tmp-cli', `pkgshape-cli-${String(process.pid)}`);
   fs.rmSync(project, { recursive: true, force: true });

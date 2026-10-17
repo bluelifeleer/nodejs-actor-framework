@@ -13,6 +13,8 @@ import { pathToFileURL } from 'node:url';
 import { createFileMigrationStore, createMigrationRunner } from '@actor/data';
 
 import { UsageError } from '../args.ts';
+import { appTemplates, type Layout } from '../templates/app.ts';
+
 import { discoverCommands } from './custom.ts';
 import { ProjectError, loadMigrations, loadProject } from '../project/load.ts';
 
@@ -104,6 +106,65 @@ async function productionEnvCheck(dir: string, projectName: string): Promise<Che
       ? 'NODE_ENV=production 且显式 allowInProduction: true（诊断路由会暴露路由表/配置形状，用完请关）'
       : `启用了诊断路由${allowsProduction ? '（allowInProduction: true）' : ''}；记得生产环境默认拒绝启动`,
     ...(mentionsDebug || projectName !== '' ? {} : {}),
+  };
+}
+
+/**
+ * 「模板漂移」检查：项目里的入口文件（`main.ts` / `server.ts`）与**当前 CLI 的模板**不一致时，
+ * 给一句提示（"模板可能已更新，可参考"）。
+ *
+ * 三条刻意的取舍：
+ * 1. **只提示，不报错**：入口文件本来就该被用户改（加插件、加启动钩子），不一致是常态，不是问题；
+ *    所以 `ok: true`，只在 detail 里标"提示："，不影响 doctor 的退出码。
+ * 2. **不自动改**：自动改会把用户的接线覆盖掉（最坏情况静默丢代码），所以只给对比命令。
+ * 3. **范围小**：只比入口文件，不比 `src/**`（业务代码必然不同）。
+ */
+async function templateDriftCheck(dir: string): Promise<Check> {
+  const ENTRY_FILES = ['main.ts', 'server.ts'] as const;
+
+  // 布局靠目录形状判断（脚手架没有在 package.json 里写布局标记）
+  const layered = await exists(path.join(dir, 'src', 'controller'));
+  const layout: Layout = layered ? 'layered' : 'flat';
+
+  let templates: { relative: string; content: string }[];
+  try {
+    const projectName = path.basename(dir).replace(/[^\w.-]/g, '-') || 'actor-app';
+    templates = await appTemplates(projectName, layout);
+  } catch (error) {
+    return {
+      name: '模板漂移',
+      ok: true,
+      detail: `读不到当前 CLI 的模板（${error instanceof Error ? error.message : String(error)}），跳过`,
+    };
+  }
+
+  const drifted: string[] = [];
+  const missing: string[] = [];
+  for (const relative of ENTRY_FILES) {
+    const target = path.join(dir, relative);
+    const template = templates.find((file) => file.relative === relative);
+    if (template === undefined) continue;                  // 该布局没有这个文件
+    if (!(await exists(target))) {
+      missing.push(relative);
+      continue;
+    }
+    const actual = await fs.readFile(target, 'utf8');
+    if (actual !== template.content) drifted.push(relative);
+  }
+
+  if (drifted.length === 0 && missing.length === 0) {
+    return { name: '模板漂移', ok: true, detail: `${ENTRY_FILES.join(' / ')} 与当前模板一致` };
+  }
+  const parts: string[] = [];
+  if (drifted.length > 0) parts.push(`${drifted.join(' / ')} 与当前模板不一致（本地改动或模板已更新）`);
+  if (missing.length > 0) parts.push(`缺 ${missing.join(' / ')}（当前模板里有）`);
+  return {
+    name: '模板漂移',
+    ok: true,                                             // 提示，不是问题
+    detail: `提示：${parts.join('；')}`,
+    fix: drifted.length > 0
+      ? `对比：diff packages/cli/templates/${layout === 'layered' ? 'app' : 'app-flat'}/<文件> <文件>；要跟新就手动合并（doctor 不自动改）`
+      : `想补回模板里的入口文件：参考 packages/cli/templates/${layout === 'layered' ? 'app' : 'app-flat'}`,
   };
 }
 
@@ -411,6 +472,9 @@ export async function doctor(dir: string, options: { data?: string; port?: numbe
 
   // 6c) 生产构建（`npm run build` → dist/）：没有不加分，**陈旧**与**缺资产**要报出来
   checks.push(await productionBuildCheck(project.dir));
+
+  // 6d) 模板漂移：项目里的入口文件与本版本模板不一致时**提示**（不自动改）
+  checks.push(await templateDriftCheck(project.dir));
 
   // 7) 端口能不能绑（默认 3000；被占用是最常见的"起不来"）
   const port = options.port ?? Number(process.env.APP_PLUGINS__HTTP__PORT ?? 3000);

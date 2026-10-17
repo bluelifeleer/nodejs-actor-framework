@@ -21,7 +21,8 @@
     "docs:serve": "node tools/docs-site.mjs serve",
     "release:check": "node tools/release-check.mjs",
     "capabilities:freeze": "node packages/cli/src/freeze-capabilities.ts",
-    "example": "node --conditions=development"
+    "example": "node --conditions=development",
+    "release:publish-dry-run": "node tools/publish-dry-run.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

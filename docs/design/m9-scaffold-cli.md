@@ -29,7 +29,7 @@
 
 ### 未完成（按建议顺序）
 
-（本轮已把 1–4 全部做完；只剩第 5 条这个**次要项**。）
+（1–5 **全部做完**；本页现在没有未完成项。）
 
 1. ✅ **M9e 剩余：保留名常量 + 启动期校验** —— `@actor/web` 导出 `RESERVED_ROUTE_PREFIXES` /
    `RESERVED_PREFIX_OWNERS`，`@actor/app` 导出 `RESERVED_SERVICE_NAMES`；装配期撞名**明确报错**。
@@ -41,7 +41,9 @@
    + debug **四层可见性作用域**（`packages/web/test/debug-scope.test.ts`：六个用例，含"隐藏不等于下线"）。
 4. ✅ **`actor new plugin` 补 `app` / `mail` 两种 kind**（`PLUGIN_KINDS` 现在是 `app|web|resource|mail`，
    四种骨架的 `npm test` 都真的跑得起来 —— 指南里那段 verify 块就是逐种生成 + 逐种跑）。
-5. ⏳ 次要：`doctor` 的"模板漂移"提示（原计划在 M9c，优先级最低）。
+5. ✅ **`doctor` 的「模板漂移」提示**：项目入口文件（`main.ts` / `server.ts`）与本版本模板不一致时
+   给一句提示（含对比命令），**只提示、不自动改**、不影响退出码（入口文件本来就该被用户改）。
+   门禁：`packages/cli/test/doctor.test.ts` 的「模板漂移」用例（一致 / 不一致 / 不改文件 / 退出码 0）。
 
 ### 本轮踩到的坑（都值得写进纪律）
 

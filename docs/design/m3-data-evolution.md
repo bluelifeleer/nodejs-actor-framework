@@ -1,5 +1,10 @@
 # M3 实施：数据层与 schema 演进
 
+> **进度标记**：本页的 ✅ 反映**当前实现**（已按代码路径与测试逐条核对），不是"当时计划"。
+> 本页不允许再有"未完成"标记；确需新增时，必须同时登记到 `docs/design/progress.json` 的 `openItems`，
+> 否则文档门禁会红 —— 这是为了不再出现"文档说没做、代码里其实做了"。最新整体状态见 [m9 交接记录](./m9-scaffold-cli.md)。
+
+
 > 设计草案见 `04-data-and-evolution.md`（不变），本文是**实施计划与逐步进展**。
 >
 > **已确认的三个前置决策**（本轮开工前拍板）：
@@ -219,8 +224,8 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 | **第 2b-① 步：`seq` + 批量读取 hook** | ✅ | 信封加**每聚合单调 `seq`**（聚合写入时发号、重放时把计数器推到同一位置）；注册表新增 `readLog(raws, {fromSeq})` —— 旧日志**按位置补号**、**断号当场报错**；内核 `_restore` 优先走批量 hook |
 | **第 2c-① 步：条件写 + 后端能力** | ✅ | `appendEvent(id, event, { expectedVersion })`（不匹配抛 `PersistenceConflictError` 且不写入）；`capabilities().conditionalAppend` = `'atomic' \| 'in-process' \| false`，`file`/`memory` 如实报**仅同进程**；内核自动带上日志版本，聚合因此开箱就有乐观并发 |
 | **第 2b-② 步：快照缓存 + 增量重放 + 从事件重建** | ✅ | `mode:'events'` + 可选 `snapshot:{every:N}`；快照带 `atSeq`，恢复时只重放增量；结构对不上时**有日志就丢弃快照重建**（doc 04 §4.2 规则 2）、**没日志才拒绝启动**（规则 3）；未配置时行为与以前逐字节一致 |
-| 第 2c 步：`expectedVersion` 乐观并发 | ⏳ | 需要事件日志加**每聚合单调序号** + 条件追加；动手前先把格式决策摆出来 |
-| 第 3–6 步 | ⏳ | Repository / 迁移框架 / Outbox / 投影 |
+| **第 2c 步：`expectedVersion` 乐观并发** | ✅ | 前置的"每聚合单调序号"（2b-①）与"条件追加"（2c-①）都已落地：仓储层 `packages/data/src/repository/{memory,file,sql}.ts` 都实现了 `expectedVersion` 检查（不匹配抛 `RepositoryConflictError` 且不写入），聚合层由内核 `persistEvent` 自动带上日志版本 |
+| **第 3–6 步** | ✅ | 四个模块都在 `packages/data/src/`：`repository/`（memory/file/sql 三适配器 + 游标分页 + `expectedVersion`）、`migration/`（版本表、幂等、回滚、中断可重入）、`outbox/`（至少一次投递 + 死信）、`projection/`（读模型 + 重建）；各自有独立测试 |
 
 > **一处守卫**：应用层对 class 形态 Actor 的持久化现在会**启动期拒绝**（见 §5.3），
 > 因为它此前是"写盘成功但状态恢复不出来"的静默数据错误。
@@ -329,8 +334,8 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 
 ### 6.5 实施顺序（已定，按此执行）
 
-> 进度：① ✅ ② ✅ ③ ⏳ ④ ⏳（④ 与 ② 是同一件事的两半：② 提供条件写，④ 让聚合把整批事件
-> 作为原子批次使用它）
+> 进度：① ✅ ② ✅ ③ ✅ ④ ✅（④ 与 ② 是同一件事的两半：② 提供条件写，④ 让聚合把整批事件
+> 作为原子批次使用它 —— 内核 `ctx.persistAll` 已提供，见下面第 4 条）
 
 1. ✅ **已完成**：事件信封加 `seq` + 批量读取 hook（`readLog`，读取期给旧日志补号、检查序号连续、
    断号当场报错）；内核 `_restore` 优先用批量 hook；
@@ -339,8 +344,10 @@ await system.spawn(Order, { id: 'order-1', persistence: { mode: 'events', evolut
 3. ✅ **已完成**：`mode: 'events'` 支持可选快照（`snapshot: { every }`）——恢复时"快照 + 增量重放"
    （用 `readLog({ fromSeq })`），快照不可用时**丢弃并从事件重建**（doc 04 §4.2 规则 2）；
    没有日志可重建时仍然拒绝启动（规则 3）；
-4. ⏳ 聚合层把命令产出的整批事件作为一个**原子批次**写入（当前是逐条条件写：一条命令的第二条若冲突，
-   第一条已经落盘——日志仍自洽，但不是"命令级原子"）；
+4. ✅ **已完成**：聚合层把命令产出的整批事件作为一个**原子批次**写入 ——
+   `packages/data/src/aggregate.ts` 优先用内核的 `ctx.persistAll(events)`
+   （内核实现在 `packages/core/src/actor/actor-context.ts`：版本检查覆盖整批）；
+   **降级路径已写明**：内核没提供 `persistAll` 时退回逐个 `persist`（日志仍自洽，但不是命令级原子）；
 
 ### 6.7 可选快照缓存的实现说明（第 2b-② 步）
 
@@ -436,7 +443,7 @@ interface Repository<T, Id> {
 | ② | `file` 适配器（一实体一文件 + 追加式索引 + tombstone + 索引重建/压缩） | ✅ |
 | ③ | SQL 薄适配器（用户提供 runner）+ 外部 ORM 示例 | ✅ |
 | ④ | 示例应用：**CRUD（仓储 + 游标分页）+ 事件溯源聚合 + 投影读模型 + 迁移门**，真子进程端到端 | ✅ `examples/app-data/` |
-| ④ | 示例应用（CRUD + Actor 组合） | ⏳ |
+| ④ | 示例应用（CRUD + Actor 组合） | ✅ `examples/app-data/`（`defineAggregate` 聚合 + `ctx.repository` 仓储 CRUD 在同一个应用里） |
 
 **① 定下的语义（后面两个适配器必须对齐这 7 条）**：
 

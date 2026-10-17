@@ -1,5 +1,10 @@
 # M4 实施：集群治理（分片所有权 · 交接 · fencing · singleton）
 
+> **进度标记**：本页的 ✅ 反映**当前实现**（已按代码路径与测试逐条核对），不是"当时计划"。
+> 本页不允许再有"未完成"标记；确需新增时，必须同时登记到 `docs/design/progress.json` 的 `openItems`，
+> 否则文档门禁会红 —— 这是为了不再出现"文档说没做、代码里其实做了"。最新整体状态见 [m9 交接记录](./m9-scaffold-cli.md)。
+
+
 > 设计草案见 `05-cluster-ops-testkit.md §1`（不变），本文是**实施计划与决策记录**。
 > 前置：M3 的数据层（事件日志 + 快照 + 条件写）已经到位——交接要用的"状态导出/恢复"就建立在它上面。
 
@@ -19,7 +24,7 @@
 
 | 步 | 内容 | 验收（可跑） | 状态 |
 |---|---|---|---|
-| **1** | **一致性哈希环 + 所有权计算**：纯函数、确定性、虚拟节点；`ownerOf(actorPath)`；成员变更只影响变更点区间 | 同一成员视图下**所有节点算出同一 owner**；增删一个成员只迁移 ≈1/N 的 shard（迁移量可测） | ⏳ |
+| **1** | **一致性哈希环 + 所有权计算**：纯函数、确定性、虚拟节点；`ownerOf(actorPath)`；成员变更只影响变更点区间 | 同一成员视图下**所有节点算出同一 owner**；增删一个成员只迁移 ≈1/N 的 shard（迁移量可测） | ✅ `packages/core/src/cluster/ring.ts` + `ownership.ts`；测试 `unit-cluster-ring.test.js` / `unit-cluster-ownership.test.js`（含"增删成员只迁移 ≈1/N"的量化断言） |
 | 2 | **所有权守卫 + fencing token**：`shardEpoch`；跨节点消息带 epoch；接收端拒绝旧 epoch（"旧 owner 说的话不算数"） | 旧 epoch 的消息**必被拒**（fencing 测试） | ✅ 完成（§3.3 + §3.4.5；网关侧也有 `unit-gateway-fencing` 端到端用例） |
 | 3 | **优雅交接**：冻结 → 排空 → 导出（快照 + 事件 offset）→ 在新 owner 上恢复 → epoch+1 → 释放；幂等可重试 | 3 节点：下线一个节点，它的 shard 全部交接**且无消息丢失**（有测试） | ✅ 完成（`integration-cluster-governance` / `integration-cluster-fencing`；**仅优雅 drain**，崩溃路径不交接，见指南 05） |
 | 4 | **Singleton**：`shardCount = 1` 的特例 + 接管延迟语义（尽力而为的单例，不是分布式锁） | 全集群唯一 owner；owner 下线后新 owner 接管（有测试） | ✅ §5.5 |

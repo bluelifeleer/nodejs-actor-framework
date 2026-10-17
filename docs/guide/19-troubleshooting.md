@@ -112,7 +112,7 @@
 ## 七、诊断与工具
 
 ```bash
-actor doctor                 # Node 版本/依赖/配置/数据目录/迁移/能力接线/布局/自定义命令 一致性
+actor doctor                 # Node 版本/依赖/配置/数据目录/迁移/能力接线/布局/自定义命令/生产开关/生产构建/模板漂移
 actor commands [--json]      # 内置 + 项目自定义命令（带来源）
 actor generate <kind> <名字>  # 生成骨架（controller/actor/service/model/schema/middleware/test/command）
 actor doctor --json          # CI 里可用

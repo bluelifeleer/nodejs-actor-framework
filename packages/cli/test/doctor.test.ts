@@ -3,7 +3,51 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { MIGRATIONS_SOURCE, cli, makeProject, removeProject } from './helpers.ts';
+import { MIGRATIONS_SOURCE, ROOT, cli, makeProject, removeProject } from './helpers.ts';
+
+test('doctor: 模板漂移 —— 只提示、不报错、不自动改', async () => {
+  // 用**真脚手架**（makeProject 造的迷你项目没有 main.ts 模板），这样才能比对模板
+  const dir = path.join(ROOT, '.tmp-cli', `doctor-drift-${String(process.pid)}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    const created = await cli(['new', 'app', dir]);
+    assert.strictEqual(created.code, 0, `${created.stdout}${created.stderr}`);
+
+    // ① 刚生成：与当前模板一致
+    const clean = JSON.parse((await cli(['doctor', '--dir', dir, '--port', '0', '--json'])).stdout) as {
+      checks: { name: string; ok: boolean; detail: string; fix?: string }[];
+    };
+    const cleanCheck = clean.checks.find((check) => check.name === '模板漂移');
+    assert.ok(cleanCheck !== undefined, `doctor 要有「模板漂移」一节：${clean.checks.map((c) => c.name).join(', ')}`);
+    assert.strictEqual(cleanCheck.ok, true);
+    assert.match(cleanCheck.detail, /与当前模板一致/);
+
+    // ② 改一个入口文件：给提示，但**仍然是 ok**（入口文件本来就该被用户改），退出码不受影响
+    const mainFile = path.join(dir, 'main.ts');
+    const edited = `${fs.readFileSync(mainFile, 'utf8')}\n// 用户自己的改动\n`;
+    fs.writeFileSync(mainFile, edited, 'utf8');
+
+    const drifted = JSON.parse((await cli(['doctor', '--dir', dir, '--port', '0', '--json'])).stdout) as {
+      problems: number;
+      checks: { name: string; ok: boolean; detail: string; fix?: string }[];
+    };
+    const driftCheck = drifted.checks.find((check) => check.name === '模板漂移');
+    assert.ok(driftCheck !== undefined);
+    assert.strictEqual(driftCheck.ok, true, '模板漂移是提示，不是问题（ok 必须为 true）');
+    assert.match(driftCheck.detail, /提示：main\.ts 与当前模板不一致/);
+    assert.match(driftCheck.fix ?? '', /不自动改/);
+
+    // ③ 明确不做自动改：文件内容必须原样保留
+    assert.strictEqual(fs.readFileSync(mainFile, 'utf8'), edited);
+
+    // ④ 提示不影响退出码（只有 problems 才会 → 2）
+    const human = await cli(['doctor', '--dir', dir, '--port', '0']);
+    assert.strictEqual(human.code, 0, '模板漂移不该让 doctor 失败');
+    assert.match(human.stdout, /模板漂移/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('doctor: 结构完整、迁移已应用的项目全绿（退出码 0）', async () => {
   const dir = makeProject('doctor-ok', { 'src/migrations.ts': MIGRATIONS_SOURCE });

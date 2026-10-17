@@ -1,0 +1,31 @@
+{
+  "//": "设计文档里的 ⏳ 表示还没做。这类标记会过时（实测 7 处 ⏳ 标的是已实现的东西），所以：任何文档里出现 ⏳ 都必须在这里登记；status=implemented 的文档不许再有 ⏳；status=live 的文档里每个 ⏳ 都要有 openItems 条目（双向核对）。只含 ✅ 的文档不在管辖范围（✅ 是做完的记录，不会让人误判还没做）。",
+  "documents": [
+    {
+      "path": "docs/design/m3-data-evolution.md",
+      "status": "implemented",
+      "authoritative": "docs/design/m9-scaffold-cli.md"
+    },
+    {
+      "path": "docs/design/m4-cluster-governance.md",
+      "status": "implemented",
+      "authoritative": "docs/design/m9-scaffold-cli.md"
+    },
+    {
+      "path": "docs/design/m5-cli-and-testkit.md",
+      "status": "implemented",
+      "authoritative": "docs/design/m9-scaffold-cli.md"
+    },
+    {
+      "path": "docs/design/next-steps.md",
+      "status": "frozen",
+      "frozenAt": "M2.5",
+      "authoritative": "docs/design/m9-scaffold-cli.md"
+    },
+    {
+      "path": "docs/design/m9-scaffold-cli.md",
+      "status": "live",
+      "openItems": []
+    }
+  ]
+}

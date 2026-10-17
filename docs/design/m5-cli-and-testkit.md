@@ -1,5 +1,10 @@
 # M5 实施：产品化（CLI · TestKit · 发布纪律）
 
+> **进度标记**：本页的 ✅ 反映**当前实现**（已按代码路径与测试逐条核对），不是"当时计划"。
+> 本页不允许再有"未完成"标记；确需新增时，必须同时登记到 `docs/design/progress.json` 的 `openItems`，
+> 否则文档门禁会红 —— 这是为了不再出现"文档说没做、代码里其实做了"。最新整体状态见 [m9 交接记录](./m9-scaffold-cli.md)。
+
+
 > 目标与验收见 `06-roadmap-and-nongoals.md` 的 M5 行。本文是**实施计划与决策记录**。
 > 已经完成的：文档站与 API 参考（`tools/docs-site.mjs`）、CI 门禁与 Pages 部署、6 篇面向使用者的指南。
 
@@ -82,8 +87,8 @@ actor --help | --version
 ```
 actor new app <dir> [--force]   ✅ 已实现
 actor --help / --version        ✅ 已实现
-actor migrate status|up|down    ⏳ 第 2 步
-actor doctor                    ⏳ 第 2 步
+actor migrate status|up|down    ✅ 已实现（`packages/cli/src/commands/migrate.ts`）
+actor doctor                    ✅ 已实现（`packages/cli/src/commands/doctor.ts`，9 节体检）
 ```
 
 **验收是 M5 里写死的那条**："新人按文档在 30 分钟内跑通 CRUD + Actor + 持久化 + 测试"。

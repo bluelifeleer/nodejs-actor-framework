@@ -173,6 +173,19 @@ try {
   内核单独编译，因为它的声明面是手写的 `src/index.d.ts`，不进引用图；
 - 各包 `prepublishOnly` 会在发布前自动重建；`--check` 可自检"产物齐备 / 未过期 / exports 目标存在"。
 
+**发布前请跑一次 `npm run release:publish-dry-run`**（10 个公开包逐个 `npm publish --dry-run`）：
+
+```bash
+npm run release:publish-dry-run
+#   ✓ @actor/mail@0.1.0（25 个文件，含 package.json / dist/index.js / src/index.ts）
+#   …
+# [release] 全部 10 个包的发布路径可用（dry-run，未真的上传）
+```
+
+为什么不能只靠 `npm pack`：**`pack` 不执行 `prepublishOnly`，`publish` 执行** ——
+实测就靠这条差异抓到一个真 bug（各包 `prepublishOnly` 传 `--package .` 而构建脚本不认，
+发布在预处理阶段就失败，`npm pack` 却一路绿灯）。这条差异现在有门禁盯着。
+
 ## 9. 框架自己的包怎么发（`exports` 的两套形态）
 
 框架的 10 个公开包（内核 + 9 个 `@actor/*`）用的是"**仓库内看源码、发布出去看产物**"：

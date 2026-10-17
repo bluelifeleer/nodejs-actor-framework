@@ -74,7 +74,7 @@ export const debit = defineController({
    搬一个就能删掉一处锁/一处竞态，收益立刻可见。
 3. **最后搬装配与配置**：把 `expressApp.set` / `process.env` 读取收敛到 `defineConfig`，
    把中间件收敛到 `atPre/atAuth/atPost`，把 5xx 兜底换成 `errors`/`logging` 出口。
-4. **收尾**：`actor doctor` 体检（Node 版本、依赖、配置、数据目录、迁移、端口、生产构建），
+4. **收尾**：`actor doctor` 体检（Node 版本、依赖、配置、数据目录、迁移、能力接线、生产开关、生产构建、模板漂移、端口），
    把健康检查与优雅停机对齐（[18 可观测与上线](./18-observability-deploy.md)）。
 
 **不要做的事**：不要一次性重写整个路由树。本文档的模块可以只挂**一棵子树**，
