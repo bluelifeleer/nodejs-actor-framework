@@ -35,3 +35,6 @@ packages/core/test/fixtures/tls/*-db/
 .tmp-npm/
 # Node 崩溃报告（收到未处理信号时会生成）
 report.*.json
+
+# TS 构建缓存（每次构建都变，纯噪音）
+*.tsbuildinfo

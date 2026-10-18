@@ -7,6 +7,9 @@ on:
     branches: [main]
   pull_request:
 
+# 超时 40 分钟：全量测试是 `--test-concurrency=1` 串行（本地 M 系列 Mac 约 18 分钟），
+# 共享 runner 更慢，20 分钟会顶到线 —— 宁可给足，也不要让"超时"伪装成"测试失败"。
+#
 # 同一分支上新的推送取消旧的运行（省额度，也避免排队等很久）
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,7 +21,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

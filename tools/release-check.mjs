@@ -56,9 +56,13 @@ export async function workspaceDirs(root = ROOT) {
 }
 
 /** 检查 1：每个有 test/ 的包都在根 test 脚本里。 */
-export async function checkTestMatrix({ root = ROOT, packages } = {}) {
+export async function checkTestMatrix({ root = ROOT, packages, testScript } = {}) {
+  // 测试 glob 的真正来源是 `tools/test.mjs`（它会给整棵进程树加 development 条件）；
+  // 根 `scripts.test` 只是 `node tools/test.mjs`。两者都读，谁有 glob 用谁。
   const manifest = JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
-  const script = String(manifest.scripts?.test ?? '');
+  const wrapper = path.join(root, 'tools', 'test.mjs');
+  const wrapperSource = fs.existsSync(wrapper) ? await fsp.readFile(wrapper, 'utf8') : '';
+  const script = String(testScript ?? (wrapperSource !== '' ? wrapperSource : (manifest.scripts?.test ?? '')));
   const dirs = packages ?? (await workspaceDirs(root));
   const missing = [];
   for (const dir of dirs) {
@@ -73,7 +77,7 @@ export async function checkTestMatrix({ root = ROOT, packages } = {}) {
       missing.length === 0
         ? `根 npm test 覆盖了所有带测试的包（${dirs.length} 个包）`
         : `这些包有测试但不在根 npm test 的 glob 里：${missing.join(', ')}`,
-    fix: missing.length === 0 ? undefined : '把它们加进 package.json 的 test 脚本（否则 CI 不会跑）',
+    fix: missing.length === 0 ? undefined : '把它们加进 tools/test.mjs 的 glob（或根 scripts.test；否则 CI 不会跑）',
     missing,
   };
 }
@@ -87,6 +91,34 @@ const FORBIDDEN_PATTERN = /(^|\/)(test|tests|fixtures|data|msg_store|node_module
  */
 const TEMPLATE_EXCEPTION = /^@actor\/cli\/templates\//;
 const FORBIDDEN_EXT = /\.(pem|key|crt|p12)$/;
+
+/**
+ * 检查 2b：**发布路径**（`npm publish --dry-run`）。
+ *
+ * 与"pack 内容"那条的分工：`npm pack` **不执行** `prepublishOnly`，而 `publish` 会。
+ * 这条差异曾经让发布在预处理阶段直接失败而 pack 一路绿灯 —— 所以发布前必须跑真的那条路。
+ * 实现复用 `tools/publish-dry-run.mjs`（同一份逻辑，避免两处漂移）。
+ */
+export async function checkPublishPath({ root = ROOT } = {}) {
+  try {
+    const { stdout } = await run(process.execPath, [path.join(root, 'tools', 'publish-dry-run.mjs')], {
+      cwd: root,
+      timeout: 600_000,
+    });
+    const covered = [...stdout.matchAll(/✓ (\S+?)@/g)].map((match) => match[1]);
+    return {
+      name: '发布路径',
+      ok: covered.length > 0,
+      detail: `${String(covered.length)} 个包的 publish --dry-run 通过（${covered.length > 0 ? '含 prepublishOnly' : '没有包'}）`,
+    };
+  } catch (error) {
+    return {
+      name: '发布路径',
+      ok: false,
+      detail: `publish --dry-run 失败：${String(error.stdout ?? '').slice(0, 400)}${String(error.stderr ?? '').slice(0, 400)}`,
+    };
+  }
+}
 
 /** 检查 2：可发布包的 `npm pack` 内容。 */
 export async function checkPackContents({ root = ROOT, packages, packFiles } = {}) {
@@ -263,6 +295,7 @@ export async function runReleaseCheck(options = {}) {
 
   results.push(await checkTestMatrix({ root }));
   results.push(await checkPackContents({ root }));
+  results.push(await checkPublishPath({ root }));
   results.push(await checkChangelog({ root }));
   results.push(await checkEngines({ root }));
   results.push(await checkKernelSurface({ root }));

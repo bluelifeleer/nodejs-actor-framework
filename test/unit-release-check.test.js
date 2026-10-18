@@ -49,7 +49,8 @@ test('release check: 工作区测试矩阵 —— 有测试的包必须进根 np
     assert.strictEqual(result.ok, false, 'gamma 有测试却不在 glob 里 → 必须拦');
     assert.deepStrictEqual(result.missing, ['gamma']);
     assert.match(result.detail, /gamma/);
-    assert.match(result.fix, /package\.json/);
+    // fix 现在指向 glob 的真正来源（tools/test.mjs），同时保留根 scripts.test 这条退路
+    assert.match(result.fix, /tools\/test\.mjs|scripts\.test/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -119,7 +120,7 @@ test('release check: 端到端 —— 五项结果形状稳定（--skip-ci --all
     .then((result) => result.stdout)
     .catch((err) => err.stdout);
   const parsed = JSON.parse(stdout);
-  assert.strictEqual(parsed.results.length, 6);
+  assert.strictEqual(parsed.results.length, 7, '六项 + 新增的「发布路径」');
   for (const result of parsed.results) {
     assert.strictEqual(typeof result.name, 'string');
     assert.strictEqual(typeof result.ok, 'boolean');
