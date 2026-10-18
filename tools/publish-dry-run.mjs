@@ -1,5 +1,15 @@
 /**
- * 发布链路自检：对每个**公开包**真的跑一遍 `npm publish --dry-run`。
+ * 发布链路自检。**默认离线**（不碰 registry），`--online` 才真的跑 `npm publish --dry-run`。
+ *
+ * 为什么要分两种模式：`npm publish --dry-run` 也会连 registry（解析 access/tag），
+ * 网络一抖它就退化成"重试 15 分钟然后失败" —— 那样这条检查**不是门禁，是运气**。
+ * 所以：
+ *   - **默认（离线）**：逐包跑 `prepublishOnly`（真构建）+ `npm pack --dry-run` 核对 tarball 内容。
+ *     这两个都不联网，能覆盖"发布时会执行什么、包里有什么"，可以进 CI 与默认测试；
+ *   - **`--online`**：真发前手动跑一次，验证 registry 侧也算得通（access/tag/权限）。
+ *
+ * 最初（联网版）的用途仍然成立：捕获"`npm pack` 不执行 `prepublishOnly`"这类差异 ——
+ * 离线模式改为**显式执行 prepublishOnly**，同样能抓到那条 bug。
  *
  * 为什么不用 `npm pack --dry-run` 就够了：`pack` **不会**执行 `prepublishOnly`，
  * 而发布时会。实测正是这条差异抓到过一个真 bug：各包的
@@ -21,6 +31,7 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const ROOT = path.join(import.meta.dirname, '..');
+const online = process.argv.includes('--online');
 const CACHE = path.join(ROOT, '.tmp-publish', 'cache');
 const LOGS = path.join(ROOT, '.tmp-publish', 'logs');
 
@@ -38,10 +49,17 @@ function publicPackages() {
   return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** 从一个混合了构建日志的 stdout 里取出 JSON 对象（按括号配对找结尾）。 */
+/**
+ * 从一个混合了构建日志的 stdout 里取出 JSON（按括号配对找结尾）。
+ * 注意要同时支持**数组**（`npm pack --json`）与对象（`npm publish --json`）——
+ * 只看 `{` 会把数组的第一个元素当成整个结果（实测踩过）。
+ */
 function extractJson(text) {
-  const start = text.indexOf('{');
-  if (start === -1) return null;
+  const objectAt = text.indexOf('{');
+  const arrayAt = text.indexOf('[');
+  const candidates = [objectAt, arrayAt].filter((index) => index !== -1);
+  if (candidates.length === 0) return null;
+  const start = Math.min(...candidates);
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -54,8 +72,8 @@ function extractJson(text) {
       continue;
     }
     if (ch === '"') inString = true;
-    else if (ch === '{') depth += 1;
-    else if (ch === '}') {
+    else if (ch === '{' || ch === '[') depth += 1;
+    else if (ch === '}' || ch === ']') {
       depth -= 1;
       if (depth === 0) return JSON.parse(text.slice(start, index + 1));
     }
@@ -97,22 +115,34 @@ const env = {
 };
 
 const packages = publicPackages();
-console.log(`[release] 对 ${String(packages.length)} 个公开包跑 publish --dry-run`);
+console.log(`[release] 对 ${String(packages.length)} 个公开包检查发布路径（${online ? '在线：真的 publish --dry-run' : '离线：prepublishOnly + pack'}）`);
 
 const failures = [];
 for (const pkg of packages) {
+  const packageDir = path.join(ROOT, pkg.dir);
+  const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
   let stdout = '';
   let stderr = '';
+
+  // 离线模式：先真的执行 prepublishOnly（`npm pack` 不会执行它，这正是那次真 bug 的藏身处）
+  if (!online) {
+    if (typeof manifest.scripts?.prepublishOnly === 'string') {
+      try {
+        await run('npm', ['run', '--silent', 'prepublishOnly'], { cwd: packageDir, env, timeout: 300_000 });
+      } catch (error) {
+        failures.push({ pkg, reason: 'prepublishOnly 失败（发布时会第一步就挂）', output: `${String(error.stdout ?? '')}${String(error.stderr ?? '')}` });
+        continue;
+      }
+    }
+  }
+
   try {
-    const result = await run('npm', ['publish', '--dry-run', '--json'], {
-      cwd: path.join(ROOT, pkg.dir),
-      env,
-      timeout: 300_000,
-    });
+    const args = online ? ['publish', '--dry-run', '--json'] : ['pack', '--dry-run', '--json'];
+    const result = await run('npm', args, { cwd: packageDir, env, timeout: 300_000 });
     stdout = result.stdout;
     stderr = result.stderr;
   } catch (error) {
-    failures.push({ pkg, reason: 'npm publish --dry-run 失败', output: `${String(error.stdout ?? '')}${String(error.stderr ?? '')}` });
+    failures.push({ pkg, reason: online ? 'npm publish --dry-run 失败' : 'npm pack --dry-run 失败', output: `${String(error.stdout ?? '')}${String(error.stderr ?? '')}` });
     continue;
   }
 
@@ -121,21 +151,22 @@ for (const pkg of packages) {
     failures.push({ pkg, reason: '输出里找不到 JSON 结果', output: `${stdout}${stderr}` });
     continue;
   }
-  // 注意：`npm publish --json` 的形状是 **按包名分组**的 `{ "@actor/mail": {...} }`，
-  // 与 `npm pack --json` 的数组形状不同（这是实测出来的，别按 pack 的形状写）。
-  const manifest = parsed[pkg.name] ?? Object.values(parsed)[0];
-  if (manifest === undefined || typeof manifest !== 'object') {
+  // 注意：`npm publish --json` 是**按包名分组**的 `{ "@actor/mail": {...} }`，
+  // `npm pack --json` 是**数组**（这是实测出来的，别按同一种形状写）。
+  const result = Array.isArray(parsed) ? parsed[0] : parsed[pkg.name] ?? Object.values(parsed)[0];
+  const entry = result;
+  if (entry === undefined || typeof entry !== 'object') {
     failures.push({ pkg, reason: 'JSON 结果里没有该包的信息', output: stdout });
     continue;
   }
-  const paths = new Set((manifest.files ?? []).map((file) => file.path));
-  const required = requiredPaths(pkg.name, JSON.parse(fs.readFileSync(path.join(ROOT, pkg.dir, 'package.json'), 'utf8')));
+  const paths = new Set((entry.files ?? []).map((file) => file.path));
+  const required = requiredPaths(pkg.name, manifest);
   const missing = required.filter((file) => !paths.has(file));
   if (missing.length > 0) {
     failures.push({ pkg, reason: `tarball 缺少：${missing.join(', ')}`, output: '' });
     continue;
   }
-  console.log(`  ✓ ${pkg.name}@${String(manifest.version)}（${String(manifest.entryCount)} 个文件，含 ${required.join(' / ')}）`);
+  console.log(`  ✓ ${pkg.name}@${String(entry.version ?? manifest.version)}（${String(entry.entryCount)} 个文件，含 ${required.join(' / ')}）`);
 }
 
 fs.rmSync(path.join(ROOT, '.tmp-publish'), { recursive: true, force: true });
@@ -148,4 +179,8 @@ if (failures.length > 0) {
   console.error(`\n[release] ${String(failures.length)}/${String(packages.length)} 个包没通过发布自检`);
   process.exit(1);
 }
-console.log(`[release] 全部 ${String(packages.length)} 个包的发布路径可用（dry-run，未真的上传）`);
+console.log(
+  online
+    ? `[release] 全部 ${String(packages.length)} 个包的 publish --dry-run 通过（未真的上传）`
+    : `[release] 全部 ${String(packages.length)} 个包的发布路径可用（离线：prepublishOnly + pack；真发前再跑 --online）`,
+);

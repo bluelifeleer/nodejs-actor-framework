@@ -314,9 +314,10 @@ test('打包形态: `npm pack` 出来的 tarball 里确实带 dist（files 配�
   }
 });
 
-test('打包形态: 发布路径可用（`publish --dry-run` 会跑 prepublishOnly —— pack 不会）', async () => {
+test('打包形态: 发布路径可用（离线：显式跑 prepublishOnly + pack 核对内容）', async () => {
   // 这条曾经是**断的**：各包 prepublishOnly 传 `--package .`，构建脚本只认包名，
   // 于是 `npm publish` 在预处理阶段就失败 —— 而 `npm pack` 一路绿灯（pack 不跑 prepublishOnly）。
+  // 默认离线：不连 registry（联网模式见 `--online`），门禁不能依赖网络。
   const script = path.join(ROOT, 'tools', 'publish-dry-run.mjs');
   assert.ok(fs.existsSync(script), '要有发布自检脚本 tools/publish-dry-run.mjs');
 
@@ -382,6 +383,34 @@ test('打包形态: CLI 与 testkit 都是**可发布**的（框架该自带脚�
     assert.ok(fs.existsSync(path.join(project, 'main.ts')), '脚手架仍然生成可直接直跑的项目');
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('打包形态: 删掉 dist 再构建能**真的重建**（tsbuildinfo 还在时 tsc -b 会跳过）', async () => {
+  const pkgDir = path.join(ROOT, 'packages', 'data');
+  const dist = path.join(pkgDir, 'dist');
+  const info = path.join(pkgDir, 'tsconfig.build.tsbuildinfo');
+  const backup = path.join(ROOT, '.tmp-cli', `pkgshape-dist-backup-${String(process.pid)}`);
+  fs.rmSync(backup, { recursive: true, force: true });
+  try {
+    // 先确保产物存在（可能被同一文件里更早的用例动过）
+    await run(process.execPath, [path.join(ROOT, 'tools', 'build-packages.mjs'), '--package', 'packages/data'], { cwd: ROOT, timeout: 300_000 });
+    // 备份产物（不备份 tsbuildinfo：这条用例就是要验"产物没了但缓存还在"）
+    fs.cpSync(dist, backup, { recursive: true });
+    fs.rmSync(dist, { recursive: true, force: true });
+    // tsbuildinfo 留着（真实场景：有人只删了 dist/）
+
+    const build = await run(process.execPath, [path.join(ROOT, 'tools', 'build-packages.mjs'), '--package', 'packages/data'], {
+      cwd: ROOT,
+      timeout: 300_000,
+    });
+    assert.match(build.stdout, /@actor\/data/, `构建应当真的跑了：${build.stdout}`);
+    assert.ok(fs.existsSync(path.join(dist, 'index.js')), '删掉 dist 后构建必须重新产出 index.js（不能因 tsbuildinfo 跳过）');
+    assert.ok(fs.existsSync(path.join(dist, 'index.d.ts')), '声明文件也要重新产出');
+  } finally {
+    // 无论断言成败，都把产物恢复出来（后续用例还依赖它）；备份只保留一份副本
+    await run(process.execPath, [path.join(ROOT, 'tools', 'build-packages.mjs'), '--package', 'packages/data'], { cwd: ROOT, timeout: 300_000 }).catch(() => {});
+    fs.rmSync(backup, { recursive: true, force: true });
   }
 });
 

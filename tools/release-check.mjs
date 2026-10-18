@@ -93,10 +93,14 @@ const TEMPLATE_EXCEPTION = /^@actor\/cli\/templates\//;
 const FORBIDDEN_EXT = /\.(pem|key|crt|p12)$/;
 
 /**
- * 检查 2b：**发布路径**（`npm publish --dry-run`）。
+ * 检查 2b：**发布路径**（默认离线：逐包执行 `prepublishOnly` + `npm pack --dry-run` 核对内容）。
  *
- * 与"pack 内容"那条的分工：`npm pack` **不执行** `prepublishOnly`，而 `publish` 会。
- * 这条差异曾经让发布在预处理阶段直接失败而 pack 一路绿灯 —— 所以发布前必须跑真的那条路。
+ * 与"pack 内容"那条的分工：`npm pack` **不执行** `prepublishOnly`，而 `publish` 会 ——
+ * 这条差异曾经让发布在预处理阶段直接失败而 pack 一路绿灯。所以这里**显式执行** prepublishOnly。
+ *
+ * 为什么不直接 `npm publish --dry-run`：它也会连 registry（解析 access/tag），
+ * 网络一抖就变成"重试十几分钟后失败"，那不叫门禁叫运气。真发前手动跑
+ * `npm run release:publish-dry-run -- --online` 再验一次 registry 侧。
  * 实现复用 `tools/publish-dry-run.mjs`（同一份逻辑，避免两处漂移）。
  */
 export async function checkPublishPath({ root = ROOT } = {}) {
@@ -109,7 +113,7 @@ export async function checkPublishPath({ root = ROOT } = {}) {
     return {
       name: '发布路径',
       ok: covered.length > 0,
-      detail: `${String(covered.length)} 个包的 publish --dry-run 通过（${covered.length > 0 ? '含 prepublishOnly' : '没有包'}）`,
+      detail: `${String(covered.length)} 个包的发布路径通过（prepublishOnly + pack，离线）`,
     };
   } catch (error) {
     return {

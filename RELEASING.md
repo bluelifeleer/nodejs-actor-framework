@@ -10,8 +10,14 @@
 
 ```bash
 npm run release:check          # typecheck + 全量测试 + 文档站 + 打包内容 + 发布路径
-npm run release:check -- --skip-ci   # 只跑打包与一致性检查（跳过测试，约 20 秒）
+npm run release:check -- --skip-ci   # 只跑打包与一致性检查（跳过测试，约 10 秒）
+
+# 真发前最后一步：**联网**验一次 registry 侧（access/tag/权限）
+npm run release:publish-dry-run -- --online
 ```
+
+> 为什么默认离线：`npm publish --dry-run` 也会连 registry，网络一抖就退化成"重试十几分钟后失败" ——
+> 门禁不能依赖网络。离线模式仍会**显式执行 `prepublishOnly`**，所以"发布时第一步就挂"这类问题照样抓得住。
 
 `release:check` 会依次做：
 
@@ -19,7 +25,7 @@ npm run release:check -- --skip-ci   # 只跑打包与一致性检查（跳过�
 |---|---|
 | 工作区测试矩阵 | 有 `test/` 的包没进根 `npm test` 的 glob（漏跑） |
 | `npm pack` 内容 | 凭据 / 数据目录 / 包自己的测试混进 tarball（**例外**：`@actor/cli/templates/**` 里的测试是脚手架模板，故意随包发布） |
-| **发布路径** | 12 个包逐个 `npm publish --dry-run`（会执行 `prepublishOnly`，而 `npm pack` **不执行** —— 这条差异抓到过真 bug） |
+| **发布路径** | 12 个包逐个执行 `prepublishOnly` + `npm pack --dry-run`（`pack` 本身**不执行** `prepublishOnly` —— 这条差异抓到过真 bug）。**默认离线**，不连 registry |
 | CHANGELOG 与版本一致 | 发了但没写变更记录 |
 | 各包 engines 一致 | Node 下限有多个来源 |
 | 工作区干净 | 从脏树发布 |

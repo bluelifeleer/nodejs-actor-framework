@@ -202,6 +202,15 @@ if (selected.length === 0) {
   process.exit(2);
 }
 
+/**
+ * 缺产物但 tsbuildinfo 还在时，`tsc -b` 会**跳过**（它以为产物是最新的）→ dist 一直是空的。
+ * 真实场景：有人删了 `dist/`（或只删了某个包），构建脚本却报"完成"，然后运行时找不到模块。
+ * 所以只要发现有包的入口产物缺失，就退化成 `--force`（12 个包全量构建也就 0.2~0.3 秒）。
+ */
+function needsForceBuild(list) {
+  return list.some((pkg) => !fs.existsSync(path.join(ROOT, pkg.dir, entryOf(pkg))));
+}
+
 if (checkOnly) {
   const problems = selected.flatMap((pkg) => checkPackage(pkg));
   if (problems.length > 0) {
@@ -221,7 +230,8 @@ if (only === undefined) {
   if (esm.length > 0) {
     const at = Date.now();
     try {
-      await run(process.execPath, [TSC, '-b', path.join(ROOT, 'tsconfig.build.json')], { cwd: ROOT });
+      const force = needsForceBuild(esm) ? ['--force'] : [];
+      await run(process.execPath, [TSC, '-b', path.join(ROOT, 'tsconfig.build.json'), ...force], { cwd: ROOT });
     } catch (error) {
       console.error(`[build] 项目引用构建失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
       process.exit(1);
@@ -231,7 +241,9 @@ if (only === undefined) {
   for (const pkg of kernel) {
     const at = Date.now();
     try {
-      await run(process.execPath, [TSC, '-p', path.join(ROOT, pkg.dir, 'tsconfig.build.json')], { cwd: ROOT });
+      // 单包也走 `-b` + 按需 `--force`：`-p` 遇到"产物被删但 tsbuildinfo 还在"同样会跳过
+      const force = needsForceBuild([pkg]) ? ['--force'] : [];
+      await run(process.execPath, [TSC, '-b', path.join(ROOT, pkg.dir, 'tsconfig.build.json'), ...force], { cwd: ROOT });
     } catch (error) {
       console.error(`[build] ${pkg.name} 构建失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
       process.exit(1);
@@ -253,7 +265,9 @@ for (const pkg of selected) {
   }
   const at = Date.now();
   try {
-    await run(process.execPath, [TSC, '-p', config], { cwd: ROOT });
+    // 与全量路径一致：产物缺失时必须 `--force`（否则 tsc 以为 tsbuildinfo 里的产物还在，直接跳过）
+    const force = needsForceBuild([pkg]) ? ['--force'] : [];
+    await run(process.execPath, [TSC, '-b', config, ...force], { cwd: ROOT });
   } catch (error) {
     console.error(`[build] ${pkg.name} 构建失败：\n${String(error.stdout ?? '')}${String(error.stderr ?? '')}`);
     process.exit(1);
