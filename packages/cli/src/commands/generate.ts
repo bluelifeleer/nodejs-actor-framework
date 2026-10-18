@@ -572,7 +572,7 @@ export default migration;
     files.push({
       relative: `.actor/commands/${kebab}.ts`,
       content: `// 直接从 CLI 包导入（CLI 随项目发布；子进程执行时也能解析到）
-import { defineCommand } from '@actor/cli/src/commands/custom.ts';
+import { defineCommand } from '@actor/cli/commands';
 
 /**
  * \`actor ${kebab}\` —— 项目自己的命令。

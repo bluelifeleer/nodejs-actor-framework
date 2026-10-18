@@ -11,8 +11,12 @@ import { createRequire } from 'node:module';
 import type { Application, ConfigSchema, PluginSpec } from '@actor/app';
 import { validateValues } from '@actor/app';
 
-// 内核是 CJS 包，ops/index 用 module.exports 导出：ESM 具名导入在**类型层面**看不到这些名字。
+// 内核是 CJS 包，`ops` 用 module.exports 导出：ESM 具名导入在**类型层面**看不到这些名字。
 // 用 createRequire 保持与内核一致的 CJS 取值语义（运行时复用其零依赖 ws-server）。
+//
+// 用**公开子路径** `nodejs-actor-framework/ops`（不是 `.../src/ops/index.ts`）：
+// 后者在消费者机器上会命中 Node 的 "不允许对 node_modules 里的 .ts 做类型剥离" ——
+// 仓库内一切正常、装成包就崩（这条是"打包 → 真装 → 真跑"的门禁抓出来的）。
 const require = createRequire(import.meta.url);
 interface KernelWebSocketServer {
   port: number;
@@ -20,7 +24,7 @@ interface KernelWebSocketServer {
   listen(): Promise<unknown>;
   close?(): void;
 }
-const { WebSocketServer } = require('nodejs-actor-framework/src/ops/index.ts') as {
+const { WebSocketServer } = require('nodejs-actor-framework/ops') as {
   WebSocketServer: new (options: Record<string, unknown>) => KernelWebSocketServer;
 };
 

@@ -34,6 +34,7 @@ const PUBLIC_PACKAGES = [
   { name: '@actor/redis', probe: 'redisAdapter' },
   { name: '@actor/mongodb', probe: 'defineCollection' },
   { name: '@actor/mail', probe: 'renderMail' },
+  { name: '@actor/testkit', probe: 'createVirtualClock' },
 ];
 
 /** 消费者的环境：**没有** development 条件（这正是"发布形态"）。 */
@@ -41,6 +42,14 @@ function consumerEnv() {
   const env = { ...process.env };
   delete env.NODE_OPTIONS;
   delete env.NODE_TEST_CONTEXT;
+  // `npm test` 会把自己读到的 npm 配置**导出成 npm_config_* 环境变量**传给脚本
+  // （本机 ~/.npmrc 里的 `allow-scripts` 就是这样漏进子进程的，导致 `npm install` 报 EALLOWSCRIPTS）。
+  // 这里要模拟的是"消费者机器"，不是"仓库 npm 脚本环境"，所以一律清掉，需要什么再显式给。
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase().startsWith('npm_config_') || key.startsWith('npm_lifecycle_') || key.startsWith('npm_package_')) {
+      delete env[key];
+    }
+  }
   return env;
 }
 
@@ -159,6 +168,8 @@ test('打包形态: dist 里不残留 .ts 说明符（TS 不管 require()，我�
       if (!entry.name.endsWith('.js')) continue;
       const text = fs.readFileSync(full, 'utf8');
       for (const match of text.matchAll(/(?:from\s+|require\(\s*)['"](\.[^'"]+\.ts)['"]/g)) {
+        // 生成器里会有 `\`./${name}.ts\`` 这类**动态**片段（拼给用户项目用的），不是静态导入，跳过。
+        if (match[1].includes('${')) continue;
         offenders.push(`${path.relative(ROOT, full)} → ${match[1]}`);
       }
     }
@@ -241,15 +252,37 @@ test('打包形态: 构建自检（--check）能发现"缺产物/陈旧/缺文�
   // ② 故意把某个包的 dist 弄陈旧 → 必须报出来（门禁要能证伪）
   const victim = path.join(ROOT, 'packages', 'data', 'dist', 'index.js');
   const backup = fs.readFileSync(victim);
-  // 要比该包**最新的源码**还旧才算陈旧，所以直接推到一年前（而不是固定的 24 小时）
+  // 要比该包**最新的源码**还旧才算陈旧，所以直接推到一年前（而不是固定的 24 小时）。
+  // 注意：`--check` 现在按"dist 里最新的产物"判断（tsc 只重写内容变化的文件），
+  // 所以证伪时要把整个 dist 都弄旧，否则最新产物仍是新的、看起来并不陈旧。
   const older = new Date(Date.now() - 365 * 24 * 3600 * 1000);
+  const touched = [];
+  const ageAll = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) ageAll(full);
+      else {
+        touched.push({ full, mtime: fs.statSync(full).mtime });
+        fs.utimesSync(full, older, older);
+      }
+    }
+  };
   try {
+    ageAll(path.join(ROOT, 'packages', 'data', 'dist'));
+    for (const entry of fs.readdirSync(path.join(ROOT, 'packages', 'data'))) {
+      if (entry.endsWith('.tsbuildinfo')) {
+        const full = path.join(ROOT, 'packages', 'data', entry);
+        touched.push({ full, mtime: fs.statSync(full).mtime });
+        fs.utimesSync(full, older, older);
+      }
+    }
     fs.utimesSync(victim, older, older);
     const stale = await run(process.execPath, [buildScript, '--check'], { cwd: ROOT, timeout: 120_000 }).catch((error) => error);
     assert.notStrictEqual(stale.code ?? 0, 0, '陈旧产物必须被 --check 报出来');
     assert.match(String(stale.stderr ?? ''), /比 src 旧/);
   } finally {
     fs.writeFileSync(victim, backup);
+    for (const { full, mtime } of touched) fs.utimesSync(full, mtime, mtime);
     const now = new Date();
     fs.utimesSync(victim, now, now);
   }
@@ -292,9 +325,17 @@ test('打包形态: 发布路径可用（`publish --dry-run` 会跑 prepublishOn
   });
   // 每个公开包都要被覆盖（10 个：内核 + 9 个 @actor/*）
   const covered = [...stdout.matchAll(/✓ (\S+?)@/g)].map((match) => match[1]);
-  assert.strictEqual(covered.length, 10, `应当覆盖 10 个公开包，实际 ${String(covered.length)}：${covered.join(', ')}`);
-  assert.ok(covered.includes('nodejs-actor-framework'), '内核也要覆盖');
-  assert.match(stdout, /全部 10 个包的发布路径可用/);
+  const expected = fs
+    .readdirSync(path.join(ROOT, 'packages'))
+    .filter((name) => {
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', name, 'package.json'), 'utf8'));
+      return manifest.private !== true;
+    });
+  assert.strictEqual(covered.length, expected.length, `应当覆盖全部 ${String(expected.length)} 个公开包，实际 ${String(covered.length)}：${covered.join(', ')}`);
+  for (const name of ['nodejs-actor-framework', '@actor/cli', '@actor/testkit']) {
+    assert.ok(covered.includes(name), `要覆盖 ${name}`);
+  }
+  assert.match(stdout, new RegExp(`全部 ${String(expected.length)} 个包的发布路径可用`));
 });
 
 test('打包形态: 各包的 prepublishOnly 都指向构建脚本，且 `--package .` 在包目录里可用', async () => {
@@ -318,16 +359,115 @@ test('打包形态: 各包的 prepublishOnly 都指向构建脚本，且 `--pack
   assert.match(out.stdout, /@actor\/mail/);
 });
 
-test('打包形态: 脚手架项目里 `npx actor ...` 仍然可用（CLI 保持 TS-only）', async () => {
+test('打包形态: CLI 与 testkit 都是**可发布**的（框架该自带脚手架与测试工具）', async () => {
   const project = path.join(ROOT, '.tmp-cli', `pkgshape-cli-${String(process.pid)}`);
   fs.rmSync(project, { recursive: true, force: true });
   fs.mkdirSync(project, { recursive: true });
   try {
     await run(process.execPath, [CLI, 'new', 'app', project], { cwd: ROOT, env: devEnv() });
-    const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', 'cli', 'package.json'), 'utf8'));
-    assert.strictEqual(manifest.private, true, 'CLI 是私有包（不发布），因此不需要 dist 入口');
+    for (const name of ['cli', 'testkit']) {
+      const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', name, 'package.json'), 'utf8'));
+      assert.notStrictEqual(manifest.private, true, `@actor/${name} 必须可发布（不该 private: true）`);
+      assert.ok((manifest.files ?? []).includes('dist'), `@actor/${name} 的 files 要带 dist`);
+      assert.strictEqual(manifest.scripts?.prepublishOnly !== undefined, true, `@actor/${name} 要有 prepublishOnly`);
+    }
+    // CLI 是 bin 包：bin 必须指向编译产物，且模板必须随包发布（否则装完 new 不出项目）
+    const cli = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', 'cli', 'package.json'), 'utf8'));
+    assert.strictEqual(cli.bin.actor, './dist/cli.js', 'CLI 的 bin 要指向编译产物');
+    assert.ok(fs.existsSync(path.join(ROOT, 'packages', 'cli', 'dist', 'cli.js')), 'bin 指向的文件必须真的构建出来');
+    assert.ok((cli.files ?? []).includes('templates'), 'CLI 的模板必须随包发布');
+    for (const asset of ['templates/capabilities.json', 'templates/app/main.ts', 'templates/app-flat/main.ts']) {
+      assert.ok(fs.existsSync(path.join(ROOT, 'packages', 'cli', asset)), `CLI 要带 ${asset}`);
+    }
     assert.ok(fs.existsSync(path.join(project, 'main.ts')), '脚手架仍然生成可直接直跑的项目');
   } finally {
     fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test('打包形态: 装成包之后**真的能用**（pack 全部 → 装进空工程 → CLI 生成 → 项目跑测试）', async () => {
+  const tgzDir = path.join(ROOT, '.tmp-cli', `pkgshape-tgz-${String(process.pid)}`);
+  const project = path.join(ROOT, '.tmp-cli', `pkgshape-install-${String(process.pid)}`);
+  fs.rmSync(tgzDir, { recursive: true, force: true });
+  fs.rmSync(project, { recursive: true, force: true });
+  fs.mkdirSync(tgzDir, { recursive: true });
+  fs.mkdirSync(project, { recursive: true });
+  const cache = path.join(ROOT, '.tmp-cli', `pkgshape-npm-${String(process.pid)}`);
+  // 隔离 npm 配置：本机 ~/.npmrc 里的 `allow-scripts` 会让 project-scoped install 直接报错
+  // （EALLOWSCRIPTS），而这条门禁要验的是**包**，不是机器的 npm 配置。
+  // 两个**不同**的空配置文件：npm 不允许同一个文件既当 user 又当 global（会报 double-loading）
+  const ncDir = path.join(ROOT, '.tmp-cli', `pkgshape-npmrc-${String(process.pid)}`);
+  fs.mkdirSync(ncDir, { recursive: true });
+  const userconfig = path.join(ncDir, 'user.npmrc');
+  const globalconfig = path.join(ncDir, 'global.npmrc');
+  fs.writeFileSync(userconfig, '', 'utf8');
+  fs.writeFileSync(globalconfig, '', 'utf8');
+  const npmEnv = {
+    ...consumerEnv(),
+    npm_config_cache: cache,
+    npm_config_logs_dir: cache,
+    npm_config_update_notifier: 'false',
+    npm_config_userconfig: userconfig,
+    npm_config_globalconfig: globalconfig,
+  };
+  try {
+    // ① 全部公开包打成 tarball
+    const dirs = fs
+      .readdirSync(path.join(ROOT, 'packages'))
+      .filter((name) => JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', name, 'package.json'), 'utf8')).private !== true);
+    for (const dir of dirs) {
+      await run('npm', ['pack', '--pack-destination', tgzDir], { cwd: path.join(ROOT, 'packages', dir), env: npmEnv, timeout: 180_000 });
+    }
+    const tarballs = fs.readdirSync(tgzDir).filter((name) => name.endsWith('.tgz'));
+    assert.strictEqual(tarballs.length, dirs.length, `tarball 数量要等于公开包数量（${String(tarballs.length)} vs ${String(dirs.length)}）`);
+
+    // ② 装进一个干净工程（全部来自 tarball，不碰 workspace）
+    fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'consumer', private: true, type: 'module' }), 'utf8');
+    await run('npm', ['install', '--no-audit', '--no-fund', ...tarballs.map((name) => path.join(tgzDir, name))], {
+      cwd: project,
+      env: npmEnv,
+      timeout: 600_000,
+    });
+
+    // ③ CLI 的 bin 真的能跑
+    const version = await run(path.join(project, 'node_modules', '.bin', 'actor'), ['--version'], { cwd: project, env: npmEnv, timeout: 60_000 });
+    assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+$/, `actor --version 要输出版本号：${version.stdout}`);
+
+    // ④ 用装好的 CLI 生成项目，并跑它自带的测试（依赖解析到 dist，不依赖仓库）
+    await run(path.join(project, 'node_modules', '.bin', 'actor'), ['new', 'app', 'demo'], { cwd: project, env: npmEnv, timeout: 120_000 });
+    const demo = path.join(project, 'demo');
+    const tests = await run(process.execPath, ['--test', '--test-timeout=60000', 'test/*.test.ts'], {
+      cwd: demo,
+      env: npmEnv,   // 注意：这里**不能**带 NODE_TEST_CONTEXT（哪怕是空串），否则子进程的 node:test 会拒跑
+      timeout: 300_000,
+    });
+    const output = `${tests.stdout}${tests.stderr}`;
+    assert.match(output, /^ℹ pass [1-9]/m, `装出来的项目测试应当通过：\n${output}`);
+    assert.ok(!/fail [1-9]/.test(output), `装出来的项目不该有失败用例：\n${output}`);
+
+    // ⑤ 解析必须落在包的 dist（发布形态），不能落进 src（.ts 在 node_modules 里会被 Node 拒绝）
+    const probe = path.join(project, 'probe.mjs');
+    fs.writeFileSync(
+      probe,
+      [
+        "import { createRequire } from 'node:module';",
+        "const require = createRequire(import.meta.url);",
+        "for (const name of ['nodejs-actor-framework', 'nodejs-actor-framework/ops', '@actor/app', '@actor/testkit', '@actor/cli/commands']) {",
+        "  console.log(name + ' → ' + require.resolve(name));",
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const resolved = await run(process.execPath, [probe], { cwd: project, env: npmEnv, timeout: 60_000 });
+    for (const line of resolved.stdout.trim().split('\n')) {
+      assert.match(line, /\/dist\//, `解析必须落在 dist：${line}`);
+      assert.ok(!line.includes('/src/'), `不能解析到 src（node_modules 里的 .ts 跑不了）：${line}`);
+    }
+  } finally {
+    fs.rmSync(tgzDir, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(cache, { recursive: true, force: true });
+    fs.rmSync(ncDir, { recursive: true, force: true });
   }
 });

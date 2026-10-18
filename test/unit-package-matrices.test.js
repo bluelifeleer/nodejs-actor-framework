@@ -39,7 +39,10 @@ export function findWiringGaps(input) {
     if (pkg.hasSrc && inTypecheck && excused) {
       gaps.push(`${pkg.name}（packages/${pkg.dir}）已经在 typecheck 里了 —— 请把它从 TYPECHECK_EXCEPTIONS 里删掉`);
     }
-    if (!pkg.private && !input.docsSite.includes(`packages/${pkg.dir}/src/index.ts`)) {
+    // 公开包必须被 API 文档收录 —— 按"这个包的入口"判断，而不是硬编码 src/index.ts
+    // （`@actor/cli` 的公开面是 `src/commands/custom.ts`：它没有 index.ts，是 bin 包）
+    const documented = new RegExp(`packages/${pkg.dir}/src/`).test(input.docsSite);
+    if (!pkg.private && !documented) {
       gaps.push(`${pkg.name}（packages/${pkg.dir}）是公开包，但 tools/docs-site.mjs 的 PACKAGES 里没有它`);
     }
     if (pkg.hasDeclarations && !input.surfaceBaseline.includes(`@actor/${pkg.dir}`) && !input.kernelCovered.includes(pkg.name)) {

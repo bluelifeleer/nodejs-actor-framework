@@ -108,7 +108,8 @@ actor seed --count 3            # 直接当子命令跑（--help 自动可用）
 命令契约（`defineCommand`）：**声明选项 → 框架解析并生成 `--help` → 你的 `run` 被子进程执行**。
 
 ```ts
-import { defineCommand } from '@actor/cli/src/commands/custom.ts';
+// `@actor/cli/commands` 是公开子路径（发布形态解析到编译产物；别写 .../src/commands/custom.ts）
+import { defineCommand } from '@actor/cli/commands';
 
 export default defineCommand({
   name: 'seed',
@@ -271,7 +272,7 @@ try {
   fs.writeFileSync(
     path.join(project, '.actor', 'commands', 'boom.ts'),
     [
-      "import { defineCommand } from '@actor/cli/src/commands/custom.ts';",
+      "import { defineCommand } from '@actor/cli/commands';",
       'export default defineCommand({',
       "  name: 'boom',",
       "  run() { throw new Error('自定义命令炸了'); },",

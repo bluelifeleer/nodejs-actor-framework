@@ -63,10 +63,24 @@ function extractJson(text) {
   return null;
 }
 
-/** 每个包必要的入口（发布出去必须带上）。 */
-function requiredPaths(name) {
+/** 每个包必要的入口（发布出去必须带上）。CLI 是 bin 包：靠 `dist/cli.js` + 模板，不含 index.js。 */
+function requiredPaths(name, manifest) {
+  if (name === '@actor/cli') {
+    return [
+      'package.json',
+      'dist/cli.js',
+      'templates/capabilities.json',
+      'templates/app/main.ts',
+      'templates/app-flat/main.ts',
+    ];
+  }
   const required = ['package.json', 'dist/index.js', 'src/index.ts'];
   if (name === 'nodejs-actor-framework') required.push('index.mjs', 'index.dev.mjs');
+  // bin 的指向必须真的在包里（否则 `npx actor` 会在装完后报找不到文件）
+  const bin = manifest?.bin;
+  if (typeof bin === 'object' && bin !== null) {
+    for (const target of Object.values(bin)) required.push(String(target).replace(/^\.\//, ''));
+  }
   return required;
 }
 
@@ -115,12 +129,13 @@ for (const pkg of packages) {
     continue;
   }
   const paths = new Set((manifest.files ?? []).map((file) => file.path));
-  const missing = requiredPaths(pkg.name).filter((file) => !paths.has(file));
+  const required = requiredPaths(pkg.name, JSON.parse(fs.readFileSync(path.join(ROOT, pkg.dir, 'package.json'), 'utf8')));
+  const missing = required.filter((file) => !paths.has(file));
   if (missing.length > 0) {
     failures.push({ pkg, reason: `tarball 缺少：${missing.join(', ')}`, output: '' });
     continue;
   }
-  console.log(`  ✓ ${pkg.name}@${String(manifest.version)}（${String(manifest.entryCount)} 个文件，含 ${requiredPaths(pkg.name).join(' / ')}）`);
+  console.log(`  ✓ ${pkg.name}@${String(manifest.version)}（${String(manifest.entryCount)} 个文件，含 ${required.join(' / ')}）`);
 }
 
 fs.rmSync(path.join(ROOT, '.tmp-publish'), { recursive: true, force: true });

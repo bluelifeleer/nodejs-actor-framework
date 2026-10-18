@@ -1,20 +1,34 @@
 {
   "name": "@actor/cli",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "actor 命令行：脚手架、迁移、诊断（零依赖，Node 直接跑 TS）",
   "bin": {
-    "actor": "./src/cli.ts"
+    "actor": "./dist/cli.js"
   },
   "engines": {
     "node": ">=24"
   },
   "files": [
+    "dist",
     "src",
     "templates"
   ],
   "dependencies": {
-    "@actor/data": "*"
+    "@actor/app": "*",
+    "@actor/data": "*",
+    "@actor/db": "*",
+    "@actor/web": "*"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
+  },
+  "exports": {
+    "./commands": {
+      "types": "./dist/commands/custom.d.ts",
+      "development": "./src/commands/custom.ts",
+      "default": "./dist/commands/custom.js"
+    },
+    "./package.json": "./package.json"
   }
 }

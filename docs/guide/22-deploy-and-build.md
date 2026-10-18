@@ -188,7 +188,7 @@ npm run release:publish-dry-run
 
 ## 9. 框架自己的包怎么发（`exports` 的两套形态）
 
-框架的 10 个公开包（内核 + 9 个 `@actor/*`）用的是"**仓库内看源码、发布出去看产物**"：
+框架的 **12 个公开包**（内核 + 11 个 `@actor/*`，含 CLI 与 testkit）用的是"**仓库内看源码、发布出去看产物**"：
 
 ```jsonc
 // packages/<pkg>/package.json
@@ -216,6 +216,11 @@ npm run release:publish-dry-run
 - 内核还有两个 ESM 包装：`index.mjs`（发布，从 `dist` 重导出）与 `index.dev.mjs`
   （仓库内，从 `src` 重导出）。为什么要两个：CJS 的具名导出探测认不全本包的公共名，
   ESM 用户必须走手写重导出列表；而仓库内要零构建。**两个包装的导出列表由门禁断言必须一致**；
+- **工具包也发布**：`@actor/cli`（`bin: dist/cli.js`，`templates/` 随包发布）与 `@actor/testkit`
+  都是正式公开包 —— 脚手架与测试工具是框架的一部分，不能只在仓库里可用；
+- 包之间**只走公开子路径**，不许深引对方 `src/`：`@actor/web` 用 `nodejs-actor-framework/ops`、
+  用户的自定义命令用 `@actor/cli/commands`。深引 `.../src/*.ts` 在仓库内一切正常，
+  **装成包就崩**（Node 不允许对 `node_modules` 里的 `.ts` 做类型剥离）—— 这条是"打包→真装→真跑"门禁抓的；
 - 内核里的 worker 宿主路径也踩过同一个坑：早先硬编码 `worker-host.ts`，编译后
   `dist/worker/` 里只有 `.js` → Worker 起不来。现在优先 `.js`、回退 `.ts`，门禁里有一条
   真起 worker 隔离 Actor 的用例。

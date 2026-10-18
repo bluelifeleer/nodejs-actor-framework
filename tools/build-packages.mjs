@@ -37,6 +37,9 @@ const PACKAGES = [
   { dir: 'packages/redis', name: '@actor/redis' },
   { dir: 'packages/mongodb', name: '@actor/mongodb' },
   { dir: 'packages/mail', name: '@actor/mail' },
+  // 工具包也发布：CLI（bin 指向 dist/cli.js）与 testkit。放在最后 —— CLI 依赖 app/web/db/data。
+  { dir: 'packages/testkit', name: '@actor/testkit' },
+  { dir: 'packages/cli', name: '@actor/cli' },
 ];
 
 const args = process.argv.slice(2);
@@ -103,19 +106,57 @@ function newestSourceTime(dir) {
   return newest;
 }
 
+/**
+ * 每个包的**入口产物**：库包是 `dist/index.js`；CLI 是 bin 包，入口是 `dist/cli.js`。
+ * （`--check` 与发布自检都要按这个来判"构建齐了没有"，不能一律找 index.js。）
+ */
+function entryOf(pkg) {
+  return pkg.name === '@actor/cli' ? 'dist/cli.js' : 'dist/index.js';
+}
+
+/**
+ * dist 里**最新**产物的 mtime（判断"要不要重新构建"的正确基准）。
+ *
+ * 不能只看入口文件（`dist/index.js`）：tsc 只重写**内容变化**的产物，
+ * 改的是 `src/ws.ts` 时 `dist/index.js` 的 mtime 会保持很旧 —— 拿它比就会误报"陈旧"。
+ * `.tsbuildinfo` 也算在内（它随每次构建刷新，且不带它时会漏掉"只有 tsbuildinfo 更新"的情况）。
+ */
+function newestOutputTime(packageDir) {
+  let newest = 0;
+  const stack = [path.join(packageDir, 'dist')];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else newest = Math.max(newest, fs.statSync(full).mtimeMs);
+    }
+  }
+  for (const entry of fs.readdirSync(packageDir)) {
+    if (entry.endsWith('.tsbuildinfo')) newest = Math.max(newest, fs.statSync(path.join(packageDir, entry)).mtimeMs);
+  }
+  return newest;
+}
+
 /** 检查一个包：dist 存在、不过期、exports 指向的文件都在。 */
 function checkPackage(pkg) {
   const problems = [];
   const packageDir = path.join(ROOT, pkg.dir);
   const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
   const dist = path.join(packageDir, 'dist');
+  const entry = entryOf(pkg);
 
-  if (!fs.existsSync(path.join(dist, 'index.js'))) {
-    problems.push(`${pkg.name}: 缺少 dist/index.js（还没构建）`);
+  if (!fs.existsSync(path.join(packageDir, entry))) {
+    problems.push(`${pkg.name}: 缺少 ${entry}（还没构建）`);
     return problems;
   }
-  const distTime = fs.statSync(path.join(dist, 'index.js')).mtimeMs;
-  if (newestSourceTime(packageDir) > distTime) {
+  if (newestSourceTime(packageDir) > newestOutputTime(packageDir)) {
     problems.push(`${pkg.name}: dist 比 src 旧（改了源码没重新构建）`);
   }
 
@@ -139,6 +180,14 @@ function checkPackage(pkg) {
   }
   if (!(manifest.files ?? []).includes('dist')) problems.push(`${pkg.name}: files 里缺 "dist"`);
   if (!(manifest.files ?? []).includes('src')) problems.push(`${pkg.name}: files 里缺 "src"（保留源码供直跑/读源码）`);
+  // CLI 的模板必须随包发布（否则装完 `npx actor new` 找不到模板）
+  if (pkg.name === '@actor/cli' && !(manifest.files ?? []).includes('templates')) {
+    problems.push(`${pkg.name}: files 里缺 "templates"（脚手架模板要随包发布）`);
+  }
+  // bin 指向的文件必须存在
+  for (const [name, target] of Object.entries(manifest.bin ?? {})) {
+    if (!fs.existsSync(path.join(packageDir, target))) problems.push(`${pkg.name}: bin "${name}" 指向的 ${target} 不存在`);
+  }
   return problems;
 }
 

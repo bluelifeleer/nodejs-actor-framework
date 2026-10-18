@@ -80,6 +80,12 @@ export async function checkTestMatrix({ root = ROOT, packages } = {}) {
 
 /** tarball 里不该出现的路径（测试/凭据/数据/依赖）。 */
 const FORBIDDEN_PATTERN = /(^|\/)(test|tests|fixtures|data|msg_store|node_modules)\//;
+/**
+ * 例外：`@actor/cli/templates/**` 里的 `test/` 是**脚手架模板的一部分** ——
+ * 生成出来的项目就该自带测试（那是"从零到跑通"的验收物）。把它判成"包里混进了测试"是误报。
+ * 除此之外没有例外：包自己的 `test/` 绝不能进 tarball。
+ */
+const TEMPLATE_EXCEPTION = /^@actor\/cli\/templates\//;
 const FORBIDDEN_EXT = /\.(pem|key|crt|p12)$/;
 
 /** 检查 2：可发布包的 `npm pack` 内容。 */
@@ -96,7 +102,9 @@ export async function checkPackContents({ root = ROOT, packages, packFiles } = {
       const paths = await packFiles(pkg);
       files.push(...paths.map((file) => `${pkg.name}/${file}`));
       for (const file of paths) {
-        if (FORBIDDEN_PATTERN.test(file)) forbidden.push(`${pkg.name}/${file}`);
+        if (FORBIDDEN_PATTERN.test(file) && !TEMPLATE_EXCEPTION.test(`${pkg.name}/${file}`)) {
+          forbidden.push(`${pkg.name}/${file}`);
+        }
       }
       continue;
     }
@@ -119,8 +127,9 @@ export async function checkPackContents({ root = ROOT, packages, packFiles } = {
     files.push(...paths.map((file) => `${pkg.name}/${file}`));
     for (const file of paths) {
       // 凭据、测试、数据目录、源码映射都不该进 tarball
-      if (FORBIDDEN_PATTERN.test(file) || FORBIDDEN_EXT.test(file)) {
-        forbidden.push(`${pkg.name}/${file}`);
+      const full = `${pkg.name}/${file}`;
+      if ((FORBIDDEN_PATTERN.test(file) && !TEMPLATE_EXCEPTION.test(full)) || FORBIDDEN_EXT.test(file)) {
+        forbidden.push(full);
       }
     }
   }

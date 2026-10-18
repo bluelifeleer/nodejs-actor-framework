@@ -379,6 +379,9 @@ const PACKAGES = [
   { name: '@actor/redis', entry: 'packages/redis/src/index.ts', src: 'packages/redis/src' },
   { name: '@actor/mongodb', entry: 'packages/mongodb/src/index.ts', src: 'packages/mongodb/src' },
   { name: '@actor/mail', entry: 'packages/mail/src/index.ts', src: 'packages/mail/src' },
+  { name: '@actor/testkit', entry: 'packages/testkit/src/index.ts', src: 'packages/testkit/src' },
+  // CLI 没有 src/index.ts：它的公开面是 `@actor/cli/commands`（用户自定义命令用的 defineCommand）
+  { name: '@actor/cli', entry: 'packages/cli/src/commands/custom.ts', src: 'packages/cli/src/commands' },
 ];
 
 /** 内核公开面来自手写的 .d.ts（内部实现文件仍有 @ts-nocheck，见"类型覆盖"一节）。 */

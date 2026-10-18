@@ -1,13 +1,27 @@
 {
   "name": "@actor/testkit",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "测试工具：虚拟时钟（把\"等一小时\"变成 0 真实毫秒）、探针与故障注入",
+  "description": "测试工具：虚拟时钟（把\"等一小时\"变成 0 真实毫秒）、探针与故障注入（零依赖）",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
   },
   "engines": {
     "node": ">=24"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
   }
 }

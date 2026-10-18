@@ -72,7 +72,7 @@ test('cli: new app 生成后打印下一步；未知目录非空时退出码 1 �
 
 test('cli: 打包清单包含模板（npm pack 漏带 templates/ 是这类脚手架的经典事故）', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'packages', 'cli', 'package.json'), 'utf8'));
-  assert.deepStrictEqual(pkg.files, ['src', 'templates'], 'files 必须同时包含 src 与 templates');
+  assert.deepStrictEqual(pkg.files, ['dist', 'src', 'templates'], 'files 必须同时包含 dist、src 与 templates');
   assert.ok(fs.existsSync(path.join(ROOT, 'packages', 'cli', 'templates', 'app', 'main.ts')));
-  assert.strictEqual(pkg.bin.actor, './src/cli.ts', 'bin 指向 CLI 入口');
+  assert.strictEqual(pkg.bin.actor, './dist/cli.js', 'bin 指向 CLI 入口（发布形态是编译产物）');
 });

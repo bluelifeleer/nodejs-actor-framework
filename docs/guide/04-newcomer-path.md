@@ -10,7 +10,7 @@
 ## 第 0 步（5 分钟）：先让东西跑起来
 
 ```bash
-npx @actor/cli new app my-app       # 仓库内开发：node packages/cli/src/cli.ts new app my-app
+npx @actor/cli new app my-app       # 发布后可直接用；仓库内开发用 node packages/cli/src/cli.ts new app my-app
 cd my-app
 npm install
 npm test                            # 4 条端到端测试

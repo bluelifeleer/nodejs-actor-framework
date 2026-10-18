@@ -15,7 +15,12 @@
       "default": "./dist/index.js"
     },
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./ops": {
+      "development": "./src/ops/index.ts",
+      "require": "./dist/ops/index.js",
+      "default": "./dist/ops/index.js"
+    }
   },
   "engines": {
     "node": ">=24"
