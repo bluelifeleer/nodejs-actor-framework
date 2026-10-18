@@ -437,7 +437,21 @@ async function buildApiPage() {
 
   for (const spec of PACKAGES) {
     const entryAbs = path.join(ROOT, spec.entry);
-    const module = await import(pathToFileURL(entryAbs).href);
+    // 需要 development 导出条件：包的默认入口是编译产物 `dist/`，而文档站要能在**干净 checkout**
+    // （没有 dist）上构建。`npm run docs:build` 已带上该条件；直接跑本文件时请加 `--conditions=development`。
+    let module;
+    try {
+      module = await import(pathToFileURL(entryAbs).href);
+    } catch (error) {
+      if (error?.code === 'ERR_MODULE_NOT_FOUND') {
+        throw new Error(
+          `文档站构建需要 development 导出条件（默认入口是 dist，干净 checkout 里没有）。\n` +
+            `用 \`npm run docs:build\`，或 \`node --conditions=development tools/docs-site.mjs build\`。\n` +
+            `原始错误：${error.message}`,
+        );
+      }
+      throw error;
+    }
     const exported = module.default && typeof module.default === 'object' ? module.default : module;
     const names = Object.keys(exported)
       .filter((key) => key !== 'default' && key !== '__esModule')
