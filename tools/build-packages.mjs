@@ -38,6 +38,7 @@ const PACKAGES = [
   { dir: 'packages/mongodb', name: '@actor/mongodb' },
   { dir: 'packages/mail', name: '@actor/mail' },
   // 工具包也发布：CLI（bin 指向 dist/cli.js）与 testkit。放在最后 —— CLI 依赖 app/web/db/data。
+  { dir: 'packages/ops-agent', name: '@actor/ops-agent' },
   { dir: 'packages/testkit', name: '@actor/testkit' },
   { dir: 'packages/cli', name: '@actor/cli' },
 ];

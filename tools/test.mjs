@@ -33,6 +33,7 @@ const GLOBS = [
   'packages/redis/test/*.test.ts',
   'packages/mongodb/test/*.test.ts',
   'packages/mail/test/*.test.ts',
+  'packages/ops-agent/test/*.test.ts',
   'test/*.test.js',
 ];
 

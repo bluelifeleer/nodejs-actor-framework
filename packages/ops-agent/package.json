@@ -1,0 +1,27 @@
+{
+  "name": "@actor/ops-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "In-process observability agent for nodejs-actor-framework: process metrics, actor snapshots, connections and error logs.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "development": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "prepublishOnly": "node ../../tools/build-packages.mjs --package ."
+  }
+}
