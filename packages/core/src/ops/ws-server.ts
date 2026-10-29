@@ -132,7 +132,15 @@ class WebSocketConnection extends EventEmitter {
     if (this.closed) return;
     this.readyState = 'closing';
     if (!this._closeSent) {
-      const reasonBuf = Buffer.from(String(reason), 'utf8');
+      // RFC 6455：控制帧 payload ≤125；reason 最多 123 字节（不把非法控制帧发给对端）
+      let reasonBuf = Buffer.from(String(reason), 'utf8');
+      if (reasonBuf.length > 123) {
+        reasonBuf = reasonBuf.subarray(0, 123);
+        // 避免切在 UTF-8 续字节中间
+        while (reasonBuf.length > 0 && ((reasonBuf[reasonBuf.length - 1] ?? 0) & 0xc0) === 0x80) {
+          reasonBuf = reasonBuf.subarray(0, reasonBuf.length - 1);
+        }
+      }
       const payload = Buffer.alloc(2 + reasonBuf.length);
       payload.writeUInt16BE(code, 0);
       reasonBuf.copy(payload, 2);
@@ -173,7 +181,9 @@ class WebSocketConnection extends EventEmitter {
       this.emit('sent', { opcode, length });
       return true;
     } catch (err) {
-      this.emit('error', err);
+      // 与 socket error 同一纪律：没有 error 监听者时 emit 会抛；写失败不能反过来打崩进程
+      if (this.listenerCount('error') > 0) this.emit('error', err);
+      else this.emit('connection_error', err);
       return false;
     }
   }
@@ -453,7 +463,8 @@ class WebSocketServer extends EventEmitter {
     if (this.verifyClient) {
       let verdict;
       try {
-        verdict = await this.verifyClient(req);
+        // 第二个参数是 socket：自定义鉴权可能需要 TLS 对端证书/连接信息
+        verdict = await (this.verifyClient as (req: unknown, socket: unknown) => boolean | Promise<boolean>)(req, socket);
       } catch (err) {
         this.emit('clientRejected', { req, error: err });
         return fail(401, 'Unauthorized');

@@ -35,6 +35,11 @@ export interface JwtVerifyOptions {
   readonly now?: number;
   /** 额外校验（黑名单/撤销/自定义 claim）—— 抛错即拒绝。 */
   readonly verifyExtra?: (payload: Record<string, unknown>) => void | Promise<void>;
+  /**
+   * 是否要求 token 带 `exp`（默认 false：兼容既有调用方）。
+   * `authPlugin` 默认把它设为 true —— 登录 token 不应永久有效。
+   */
+  readonly requireExp?: boolean;
 }
 
 export interface JwtPayload extends Record<string, unknown> {
@@ -53,6 +58,7 @@ export type JwtFailureReason =
   | 'unsupported_algorithm'
   | 'key_not_found'
   | 'signature_invalid'
+  | 'missing_exp'
   | 'expired'
   | 'not_yet_valid'
   | 'issued_in_the_future'
@@ -191,6 +197,9 @@ export async function verifyJwt(token: string, options: JwtVerifyOptions): Promi
   const payload = decoded.payload;
   const now = options.now ?? Math.floor(Date.now() / 1000);
   const tolerance = options.clockToleranceSec ?? 0;
+  if (options.requireExp === true && typeof payload.exp !== 'number') {
+    throw new JwtError('missing_exp', 'token 缺少 exp（拒绝永久有效的 token）');
+  }
   if (typeof payload.exp === 'number' && now > payload.exp + tolerance) throw new JwtError('expired', `token 已过期（exp=${payload.exp}）`);
   if (typeof payload.nbf === 'number' && now + tolerance < payload.nbf) throw new JwtError('not_yet_valid', `token 还没生效（nbf=${payload.nbf}）`);
   if (typeof payload.iat === 'number' && now + tolerance < payload.iat) throw new JwtError('issued_in_the_future', `iat 在未来（iat=${payload.iat}）`);

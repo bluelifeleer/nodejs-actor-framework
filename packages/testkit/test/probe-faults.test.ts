@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { createSystem } from 'nodejs-actor-framework';
+import { Actor, createSystem } from 'nodejs-actor-framework';
 
 import { createFaultInjector, createProbe, createVirtualClock } from '../src/index.ts';
 
@@ -139,6 +139,32 @@ test('faults: drop 忽略这条消息（不执行 handler、不产生回复）�
     await vc.advance(10_000); // 让 Actor 把那条慢消息做完，系统才能干净停止
   } finally {
     await vc.advance(60_000);
+    await system.stop();
+  }
+});
+
+test('probe/faults.wrap: 必须保留 class 原型上的生命周期钩子（回归：preStart 被丢掉）', async () => {
+  class Counter extends Actor {
+    preStart() {
+      this.state = { n: 0 };
+    }
+    async receive() {
+      this.state.n += 1;
+      return this.state.n;
+    }
+  }
+  const vc = createVirtualClock();
+  const system = createSystem({ logger: false, clock: vc.clock });
+  try {
+    const wrappers = [
+      ['probe', createProbe().wrap],
+      ['faults', createFaultInjector().wrap],
+    ] as const;
+    for (const [name, wrap] of wrappers) {
+      const ref = await system.spawn(wrap(new Counter()), { id: `wrap-${name}` });
+      assert.strictEqual(await ref.ask('inc'), 1, 'preStart 必须执行（否则 state.n 是 NaN）');
+    }
+  } finally {
     await system.stop();
   }
 });

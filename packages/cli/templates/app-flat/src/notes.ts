@@ -80,13 +80,15 @@ export const counter = {
     body: ['by'],
     input: { by: { type: 'number', default: 1 } },
     async handle(input, ctx) {
-      return { count: await ctx.actor('Counter').ask({ type: 'add', by: Number(input.by) }) };
+      const counterActor = ctx.actor('Counter') as { ask(message: unknown): Promise<number> };
+      return { count: await counterActor.ask({ type: 'add', by: Number(input.by) }) };
     },
   }),
 
   read: defineController({
     async handle(_input, ctx) {
-      return { count: await ctx.actor('Counter').ask({ type: 'get' }) };
+      const counterActor = ctx.actor('Counter') as { ask(message: unknown): Promise<number> };
+      return { count: await counterActor.ask({ type: 'get' }) };
     },
   }),
 };

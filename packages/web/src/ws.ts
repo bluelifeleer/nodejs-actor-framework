@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 
 import type { Application, ConfigSchema, PluginSpec } from '@actor/app';
 import { validateValues } from '@actor/app';
+import { orderMiddleware, WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
 
 // 内核是 CJS 包，`ops` 用 module.exports 导出：ESM 具名导入在**类型层面**看不到这些名字。
 // 用 createRequire 保持与内核一致的 CJS 取值语义（运行时复用其零依赖 ws-server）。
@@ -39,6 +40,16 @@ export interface WsPluginOptions {
   host?: string;
   maxPayloadBytes?: number;
   shutdownTimeoutMs?: number;
+  /**
+   * 共享 HTTP 端口时，实际的绑定地址来自 HTTP server，而不是这里的 `host`。
+   * 若 HTTP 绑在非回环地址且 WS 没有 TLS/verifyClient，内核会拒绝启动；
+   * 仅在明确接受"无认证入口"时才设 `allowInsecureBinding: true`。
+   */
+  allowInsecureBinding?: boolean;
+  /** 升级前鉴权（token/Origin 白名单等）。共享端口时同样生效。 */
+  verifyClient?: (req: unknown) => boolean | Promise<boolean>;
+  /** 连接建立后解析玩家标识（用于 wsConnections.byPlayer 与连接 id）。 */
+  identify?: (request: { url?: string; headers?: Record<string, unknown> } | undefined) => string | null;
 }
 
 export interface WsPlugin extends PluginSpec {
@@ -70,7 +81,18 @@ async function handleMessage(
 ): Promise<void> {
   const url = typeof request?.url === 'string' ? request.url : '/';
   const [rawPath = '/', rawQuery = ''] = url.split('?', 2);
-  const match = matchRoute(wsRoutes, { method: 'WS' satisfies RouteMethod, url });
+  /**
+   * `matchRoute` 会对路径段做 `decodeURIComponent`；畸形百分号编码（例如 `/%E0%A4%A`）
+   * 会抛 `URIError`。这里是远程输入，必须当作 400 处理，而不是让异常逃出消息回调
+   * （Node 会把未处理 rejection 当致命错误，一条消息就能打崩进程）。
+   */
+  let match: ReturnType<typeof matchRoute>;
+  try {
+    match = matchRoute(wsRoutes, { method: 'WS' satisfies RouteMethod, url });
+  } catch {
+    socket.sendJson({ error: { status: 400, message: `invalid websocket url: ${rawPath}` } });
+    return;
+  }
   if (match.kind !== 'matched') {
     socket.sendJson({ error: { status: 404, message: `no ws route for ${rawPath}` } });
     return;
@@ -114,12 +136,24 @@ async function handleMessage(
   });
 
   try {
-    // 与 HTTP 同一条链：全局 → 路由 → 控制器；输入校验紧贴 handle
-    const chain: Middleware[] = [
+    // 与 HTTP 同一条链：全局 → 路由 → 控制器；阶段排序与 HTTP 一致
+    const chain: Middleware[] = orderMiddleware([
       ...appMiddleware,
       ...((route.middleware ?? []) as readonly Middleware[]),
       ...((spec.middleware ?? []) as readonly Middleware[]),
-    ];
+    ]);
+    // 插件贡献的上下文钩子（与 HTTP 的 dispatch 同语义）
+    const hooks = (() => {
+      try {
+        return app.get<readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[]>(WEB_CONTEXT_HOOKS_SERVICE) ?? [];
+      } catch {
+        return [];
+      }
+    })();
+    for (const hook of hooks) {
+      const values = hook(ctx as unknown as Record<string, unknown>);
+      if (values !== undefined && values !== null) ctx.extend(values);
+    }
     const result = await composeMiddleware(chain)(ctx, async () => {
       let input: Record<string, unknown> = declared;
       if (spec.input) {
@@ -186,6 +220,13 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
       const share =
         sharedServer !== null && (configuredPort == null || configuredPort === httpPort);
       const port = share ? 0 : (configuredPort ?? 9001);
+      // 共享模式下真正对外的是 HTTP server 的绑定地址；用配置里的 host 做安全判断
+      // 会让 `httpPlugin({host:'0.0.0.0'}) + wsPlugin()` 静默绕过非回环守卫。
+      const sharedAddress = share ? sharedServer?.address() : null;
+      const effectiveHost =
+        sharedAddress !== null && typeof sharedAddress === 'object' && 'address' in sharedAddress
+          ? String((sharedAddress as { address?: unknown }).address)
+          : host;
       const maxPayloadBytes = options.maxPayloadBytes ?? app.config.get<number>('plugins.ws.maxPayloadBytes');
 
       const flattened = flattenRoutes(app.routes);
@@ -215,16 +256,20 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
 
       const wsServer = new WebSocketServer({
         port,
-        host,
+        host: effectiveHost,
         maxPayloadBytes,
         path: '*',
+        ...(options.allowInsecureBinding === true ? { allowInsecureBinding: true } : {}),
+        ...(options.verifyClient === undefined ? {} : { verifyClient: options.verifyClient }),
         ...(share && sharedServer ? { server: sharedServer } : {}),
       });
       server = wsServer;
-      wsServer.on('connection', ((socket: WsSocket, request: { url?: string }) => {
+      wsServer.on('connection', ((socket: WsSocket, request: { url?: string; headers?: Record<string, unknown> }) => {
         sockets.add(socket);
         sequence += 1;
-        const playerId = (socket as { playerId?: unknown }).playerId;
+        const identified = options.identify?.(request) ?? null;
+        if (identified !== null) (socket as { playerId?: string | null }).playerId = identified;
+        const playerId = identified ?? ((socket as { playerId?: unknown }).playerId as string | null | undefined);
         const connection: WsConnection = {
           id: typeof playerId === 'string' && playerId.length > 0 ? playerId : `ws-${String(sequence)}`,
           ...(typeof playerId === 'string' && playerId.length > 0 ? { playerId } : {}),
@@ -248,8 +293,26 @@ export function wsPlugin(options: WsPluginOptions = {}): WsPlugin {
           sockets.delete(socket);
           if (sockets.size === 0) drained?.();
         }) as never);
+        /**
+         * 每条连接串行处理消息：既保证同一连接内的顺序（聊天/命令协议的基本预期），
+         * 也避免单连接堆无限在途 handler。错误逐个兜底，不再用 `void`。
+         */
+        let messageQueue: Promise<void> = Promise.resolve();
         socket.on('message', ((data: unknown, isBinary: boolean) => {
-          void handleMessage(app, wsRoutes, app.middleware as readonly Middleware[], socket, request, data, isBinary);
+          messageQueue = messageQueue
+            .then(() =>
+              handleMessage(app, wsRoutes, app.middleware as readonly Middleware[], socket, request as never, data, isBinary),
+            )
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              app.emit('ws:message:error', { message });
+              try {
+                socket.sendJson({ error: { status: 500, message: 'internal error' } });
+                socket.close(1011, 'internal error');
+              } catch {
+                /* socket 已关闭 */
+              }
+            });
         }) as never);
       }) as never);
 

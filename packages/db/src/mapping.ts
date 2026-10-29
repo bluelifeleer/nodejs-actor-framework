@@ -37,17 +37,32 @@ export function defaultParseValue(dialect: Dialect, field: Field, value: unknown
       return Number.isNaN(parsed.getTime()) ? value : parsed;
     }
     case 'date':
-      // 只有日期：统一成 'YYYY-MM-DD'（不引入时间/时区，避免"日期漂移一天"这种经典坑）
-      if (value instanceof Date) return value.toISOString().slice(0, 10);
+      // 只有日期：统一成 'YYYY-MM-DD'。pg 会把 DATE 解析成**本地午夜**的 Date，
+      // 用 toISOString()（UTC）在东八区会退到前一天 —— 必须取本地日期分量。
+      if (value instanceof Date) {
+        const year = value.getFullYear();
+        const month = String(value.getMonth() + 1).padStart(2, '0');
+        const day = String(value.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
       return String(value).slice(0, 10);
     case 'time':
-      // 只有时间：统一成 'HH:MM:SS'（UTC；Date 输入按 UTC 取时分秒）
+      // 只有时间：统一成 'HH:MM:SS'（Date 输入按 UTC；与既有契约一致）
       if (value instanceof Date) return value.toISOString().slice(11, 19);
       return String(value).slice(0, 8);
+    case 'bigint': {
+      // bigint 不能用 Number()：超过 2^53 会静默变成另一个数。超出安全范围就返回 BigInt。
+      if (typeof value === 'bigint') return value;
+      if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+        const big = BigInt(value);
+        return big <= BigInt(Number.MAX_SAFE_INTEGER) && big >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(big) : big;
+      }
+      if (typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value)) return BigInt(value);
+      return Number(value);
+    }
     case 'tinyint':
     case 'smallint':
     case 'integer':
-    case 'bigint':
     case 'float':
     case 'real':
       return typeof value === 'number' ? value : Number(value);

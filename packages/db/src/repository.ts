@@ -126,7 +126,9 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
       }
 
       await runner.run(sql, values);
-      return rowToEntity(dialect, model, row);
+      const insertedId = row[primary.column] ?? draft[model.primaryKey];
+      const stored = insertedId === undefined || insertedId === null ? null : await selectById(insertedId);
+      return stored ?? rowToEntity(dialect, model, row);
     },
 
     findById(id: unknown): Promise<Entity | null> {
@@ -139,11 +141,16 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
       for (const [name, value] of Object.entries(findOptions.where ?? {})) {
         const field = model.fields.find((f) => f.name === name);
         if (field === undefined) throw new DbConfigError(`findMany where: model "${model.name}" has no field "${name}"`);
+        if (value === null) {
+          clauses.push(`${column(field)} IS NULL`);
+          continue;
+        }
         values.push(value);
         clauses.push(`${column(field)} = ${ph(values.length)}`);
       }
       let sql = `SELECT * FROM ${table}`;
       if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
+      let hasOrder = false;
       if (findOptions.orderBy !== undefined && findOptions.orderBy.length > 0) {
         const order = findOptions.orderBy.map((entry) => {
           const field = model.fields.find((f) => f.name === entry.field);
@@ -151,14 +158,26 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
           return `${column(field)} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
         });
         sql += ` ORDER BY ${order.join(', ')}`;
+        hasOrder = true;
       }
-      if (findOptions.limit !== undefined) {
-        values.push(findOptions.limit);
-        sql += ` LIMIT ${ph(values.length)}`;
-      }
-      if (findOptions.offset !== undefined) {
-        values.push(findOptions.offset);
-        sql += ` OFFSET ${ph(values.length)}`;
+      const wantsPage = findOptions.limit !== undefined || findOptions.offset !== undefined;
+      if (wantsPage) {
+        if (dialect === 'mssql') {
+          if (!hasOrder) sql += ` ORDER BY ${column(primary)} ASC`;
+          const offset = findOptions.offset ?? 0;
+          values.push(offset, findOptions.limit ?? 2_147_483_647);
+          sql += ` OFFSET ${ph(values.length - 1)} ROWS FETCH NEXT ${ph(values.length)} ROWS ONLY`;
+        } else {
+          if (findOptions.limit === undefined) {
+            throw new DbConfigError('findMany: offset requires limit on this dialect');
+          }
+          values.push(findOptions.limit);
+          sql += ` LIMIT ${ph(values.length)}`;
+          if (findOptions.offset !== undefined) {
+            values.push(findOptions.offset);
+            sql += ` OFFSET ${ph(values.length)}`;
+          }
+        }
       }
       const rows = await runner.all(sql, values);
       return rows.map((row) => rowToEntity(dialect, model, row as Row));
@@ -180,6 +199,10 @@ export function createRepository<M extends Model>(model: M, options: RepositoryO
       const values: unknown[] = Object.keys(row).map((name) => (row as Row)[name]);
       if (versionField !== null) assignments.push(`${column(versionField)} = ${column(versionField)} + 1`);
       if (assignments.length === 0) throw new DbConfigError(`update: nothing to update for "${String(id)}"`);
+      if (versionField === null && updateOptions.expectedVersion !== undefined) {
+        // 没有 version 列就无法做条件更新；静默忽略会让调用方以为 CAS 生效
+        throw new DbConfigError(`update: model "${model.name}" has no version field; expectedVersion is not supported`);
+      }
 
       values.push(id);
       let where = `${column(primary)} = ${ph(values.length)}`;

@@ -40,6 +40,8 @@ interface OtlpOptions {
   maxBatch?: number;
   flushIntervalMs?: number;
   fetch?: typeof fetch;
+  /** Per-request timeout (default 5s). A hung collector must not hang shutdown. */
+  timeoutMs?: number;
 }
 
 /** 导出统计：失败必须可见（不静默丢 span）。 */
@@ -104,6 +106,7 @@ function otlp(options: OtlpOptions = {}): OtlpExporter {
   const maxBatch = Number.isInteger(options.maxBatch) ? (options.maxBatch as number) : 512;
   const flushIntervalMs = Number.isFinite(options.flushIntervalMs) ? (options.flushIntervalMs as number) : 5000;
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? (options.timeoutMs as number) : 5000;
 
   let buffer: Span[] = [];
   let timer: { id: number } | null = null;
@@ -136,10 +139,12 @@ function otlp(options: OtlpOptions = {}): OtlpExporter {
     stats.batches += 1;
     flushing = (async () => {
       try {
+        const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(Math.max(1, timeoutMs)) : undefined;
         const response = await fetchImpl(`${endpoint}/v1/traces`, {
           method: 'POST',
           headers,
           body: JSON.stringify(body(batch)),
+          ...(signal === undefined ? {} : { signal }),
         });
         if (response === undefined || response.ok !== true) {
           throw new Error(`HTTP ${response === undefined ? 'no response' : response.status}`);

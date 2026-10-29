@@ -94,11 +94,9 @@ export function requestLogPlugin(options: RequestLogPluginOptions = {}): PluginS
         }
         sink(sanitized);
       };
-      app.on('http:request', onRequest);
-      // 审计 F14：把退订句柄存下来，teardown 时摘掉（原来直接丢弃）
-      detach = () => {
-        (app as { off?: (event: string, fn: (entry: never) => void) => void }).off?.('http:request', onRequest);
-      };
+      // `Application.on()` 返回的就是退订函数，直接存下来；`Application` 没有 `off()`，
+      // 先前的 `app.off?.()` 是空操作（审计 F14 没修对）。
+      detach = app.on('http:request', onRequest);
     },
 
     teardown() {

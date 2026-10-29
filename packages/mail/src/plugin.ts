@@ -1,4 +1,4 @@
-import { createAppRequire, supervise, type DriverResolver, type ManagedResource, type SupervisionEvent } from '@actor/resource';
+import { createAppRequire, ResourceConfigError, supervise, type DriverResolver, type ManagedResource, type SupervisionEvent } from '@actor/resource';
 
 import { fileTransport, type MailTransport } from './transport.ts';
 import { smtpTransport } from './smtp.ts';
@@ -87,6 +87,12 @@ export function mailPlugin(options: MailPluginOptions = {}): MailPluginSpec {
         ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
       });
       await resource.connect();
+      // 启动期探活：配错 SMTP/驱动缺失必须现在失败，而不是等到第一封邮件或停机
+      await resource.checkHealth().catch((err: unknown) => {
+        throw new ResourceConfigError(
+          `mail("${transport.kind}"): transport is not healthy: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
       app.provide?.('mail', resource);
       app.provide?.('mail:resource', resource);
       let registry: Array<{ name: string; resource: unknown }> = [];

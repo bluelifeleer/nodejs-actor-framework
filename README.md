@@ -512,7 +512,7 @@ await alerts.start();
 ## 功能状态
 
 下表是**实测状态**，保留的每一项都有 `test/` 下的自动化用例覆盖
-（共 620+ 个用例，`npm test`）。**已移除/未实现的能力不在此表**（见下方"不做"一节）：
+（共 1,100+ 个用例，`npm test`）。**已移除/未实现的能力不在此表**（见下方"不做"一节）：
 
 
 | 能力 | 状态 | 说明 |
@@ -821,7 +821,7 @@ exit
 - **吊销与轮换**：`ACTOR_TLS_CRL` 提供标准 CRL 吊销，`ACTOR_TLS_DENY_NODES` 提供即时黑名单；
   证书文件变更后由 `setSecureContext` 热加载（默认 30s 轮询），已建立的连接不受影响。
   加载失败会保留旧上下文继续服务，绝不因为半写入的文件而中断集群。
-- **输入校验**：actorId 限制为 `[A-Za-z0-9._:-]{1,128}`（落盘名再经哈希与转义，无法穿越目录）；优先级、伤害值、JSON 载荷都会校验。
+- **输入校验**：控制台对 actorId/路径有字符与长度限制；库 API 的落盘名一律经哈希与转义，无法穿越目录。伤害值/JSON 载荷由调用方按业务校验（框架不替业务定义 schema）。
 - **文件权限**：`data/` 内含消息与日志，建议部署时限制目录权限。
 
 ---
@@ -829,7 +829,7 @@ exit
 ## 测试
 
 ```bash
-npm test                    # 620+ 个用例（Node 内置 node:test，无运行时依赖）
+npm test                    # 1,100+ 个用例（Node 内置 node:test，无运行时依赖）
 npm run typecheck           # tsc 校验 index.d.ts 与公开 API 的类型
 npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
 ```
@@ -853,7 +853,7 @@ npm run gen-test-certs      # 需要时重新生成测试证书（openssl）
   - （已随旧运行时删除的用例：优先级邮箱、`supervisor.js`、热更新、队列式 Actor 的批量/DLQ ——
     它们不再出现在本清单里，见下方"不做"一节。）
   - worker 未捕获异常不会打死主进程，且 Actor 会被重启；
-  - 指标真正从 worker 传到主进程（`metrics dump` 不再是 `{}`）；
+  - Actor 计数器进入指标存储与 `/metrics`（主线程累加；worker 通过快照/状态回读参与断言）；
   - 存活节点的远端 Actor 不会被 TTL 误剔除（负向验证：去掉修复后该用例失败）。
 - **单元测试**：配置、Trace、Protobuf 编解码（含未知字段跳过与畸形帧）、共享帧编解码（两种 codec 混用）、
   三后端持久化一致性、CRC 损坏/截断恢复、日志压缩、旧版 `.jsonl` 迁移、manifest 索引、DLQ、注册中心、

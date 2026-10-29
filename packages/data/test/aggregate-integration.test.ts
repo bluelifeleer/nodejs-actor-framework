@@ -470,3 +470,52 @@ test('aggregate: 对照——只实现 appendEvent 的后端上，一条命令�
     await system.stop();
   }
 });
+
+test('aggregate: 快照缓存恢复后继续写入，seq 必须接续而不是从 1 重来（回归：二次启动永久失败）', async () => {
+  const dir = tempDir();
+  const store = new FilePersistence({ baseDir: dir });
+  const Counter = defineAggregate<{ n: number }>({
+    name: 'Counter',
+    initialState: () => ({ n: 0 }),
+    events: [defineEventSchema({ type: 'Inc', version: 1 })],
+    snapshot: { version: 1 },
+    applyEvent: (state, event) => (event.type === 'Inc' ? { n: state.n + 1 } : state),
+    commands: { inc: () => ({ type: 'Inc' }) },
+  });
+  const persistence = {
+    mode: 'events' as const,
+    evolution: Counter.evolution ?? undefined,
+    snapshot: { every: 1 },
+  };
+
+  const system1 = createSystem({ logger: false, persistence: { dir } });
+  const ref1 = await system1.spawn(Counter, { id: 'counter-seq', persistence });
+  await ref1.ask({ type: 'inc' });
+  await ref1.ask({ type: 'inc' });
+  await system1.stop();
+  assert.deepStrictEqual(
+    ((await store.loadEvents('counter-seq')) as { seq: number }[]).map((event) => event.seq),
+    [1, 2],
+    '前两条事件的 seq 应为 1、2',
+  );
+
+  const system2 = createSystem({ logger: false, persistence: { dir } });
+  const ref2 = await system2.spawn(Counter, { id: 'counter-seq', persistence });
+  assert.deepStrictEqual(await ref2.state(), { n: 2 }, '应从快照恢复状态');
+  await ref2.ask({ type: 'inc' });
+  await system2.stop();
+
+  const seqs = ((await store.loadEvents('counter-seq')) as { seq: number }[]).map((event) => event.seq);
+  assert.deepStrictEqual(seqs, [1, 2, 3], `快照恢复后新事件的 seq 必须接续（实际 ${JSON.stringify(seqs)}）`);
+
+  // 第三次启动：旧实现会在这里抛 EventSchemaError（seq=1 没有大于前一条 seq=2）
+  const system3 = createSystem({ logger: false, persistence: { dir } });
+  const ref3 = await system3.spawn(Counter, { id: 'counter-seq', persistence });
+  assert.deepStrictEqual(await ref3.state(), { n: 3 });
+  await ref3.ask({ type: 'inc' });
+  await system3.stop();
+  assert.deepStrictEqual(
+    ((await store.loadEvents('counter-seq')) as { seq: number }[]).map((event) => event.seq),
+    [1, 2, 3, 4],
+  );
+});

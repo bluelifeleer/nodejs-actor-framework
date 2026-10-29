@@ -36,6 +36,10 @@ export interface AuthPluginOptions {
   header?: string;
   /** 从 cookie 取（例如 `access_token`）。 */
   cookie?: string;
+  /** cookie 来源的**写请求**是否要求 CSRF 证据（默认 true）。 */
+  csrfForCookie?: boolean;
+  /** 要求的 CSRF 头（默认 `x-requested-with`）；`false` 关闭。 */
+  csrfHeader?: string | false;
   /** 完全自定义取法（返回 null 表示没有）。 */
   extractToken?: (ctx: { header(name: string): string | undefined; headers: Record<string, unknown> }) => string | null;
   /** 角色 claim 名（默认 roles）。 */
@@ -44,6 +48,11 @@ export interface AuthPluginOptions {
   scopesClaim?: string;
   /** 额外校验（撤销/黑名单）—— 抛错即拒绝。 */
   verifyExtra?: (payload: JwtPayload) => void | Promise<void>;
+  /**
+   * 是否要求 token 带 `exp`（默认 **true**）。
+   * 显式 `false` 才允许永久 token；仅在迁移期/内部工具使用。
+   */
+  requireExp?: boolean;
   /** 服务端记明细（失败原因只到这里，绝不回给客户端）。 */
   logger?: (event: string, meta?: Record<string, unknown>) => void;
 }
@@ -115,7 +124,13 @@ export function authPlugin(options: AuthPluginOptions): WebPluginSpec {
       if (cookie !== undefined) {
         for (const part of cookie.split(';')) {
           const [name, ...rest] = part.trim().split('=');
-          if (name === options.cookie) return decodeURIComponent(rest.join('='));
+          if (name === options.cookie) {
+            try {
+              return decodeURIComponent(rest.join('='));
+            } catch {
+              return null; // 畸形 cookie 当“没有 token”，走 401 而不是 500
+            }
+          }
         }
       }
     }
@@ -135,6 +150,17 @@ export function authPlugin(options: AuthPluginOptions): WebPluginSpec {
             options.required === true || requirement?.required === true || (requirement?.roles?.length ?? 0) > 0;
 
           const token = extract(ctx);
+          const fromCookie =
+            options.cookie !== undefined &&
+            ctx.header('cookie') !== undefined &&
+            ctx.header(options.header ?? 'authorization') === undefined &&
+            ctx.header('sec-websocket-protocol') === undefined;
+          if (options.csrfForCookie !== false && options.csrfHeader !== false && fromCookie && ctx.method.toUpperCase() !== 'GET' && ctx.method.toUpperCase() !== 'HEAD' && ctx.method.toUpperCase() !== 'OPTIONS') {
+            // 双提交/自定义头：表单跨站请求无法带上自定义头
+            if (ctx.header(options.csrfHeader ?? 'x-requested-with') === undefined) {
+              throw new HttpError(403, 'csrf check failed');
+            }
+          }
           if (token === null) {
             if (!needsAuth) return next(); // 不要求鉴权：放行（ctx.user 不设置）
             options.logger?.('auth_failed', { requestId: ctx.requestId, path: ctx.path, reason: 'missing_token' });
@@ -150,6 +176,7 @@ export function authPlugin(options: AuthPluginOptions): WebPluginSpec {
               ...(options.audience === undefined ? {} : { audience: options.audience }),
               ...(options.clockToleranceSec === undefined ? {} : { clockToleranceSec: options.clockToleranceSec }),
               ...(options.verifyExtra === undefined ? {} : { verifyExtra: options.verifyExtra }),
+              requireExp: options.requireExp ?? true,
             });
             user = toUser(payload, rolesClaim, scopesClaim);
           } catch (err) {

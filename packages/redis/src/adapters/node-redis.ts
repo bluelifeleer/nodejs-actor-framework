@@ -56,6 +56,7 @@ export async function createNodeRedisHandle(input: RedisConnectInput): Promise<R
     throw new DbConnectionError(`cannot connect to redis: ${error.message}`, error);
   }
 
+  const subscriptions = new Set<() => Promise<void>>();
   return {
     name: 'redis',
     raw: client,
@@ -66,17 +67,36 @@ export async function createNodeRedisHandle(input: RedisConnectInput): Promise<R
       for (const event of FORWARDED_EVENTS) {
         subscriber.on(event, (detail: unknown) => input.emitDriverEvent?.(`subscriber:${event}`, describeError(detail)));
       }
-      await subscriber.connect();
-      await subscriber.subscribe(channel, (message: string, received: string) => handler(message, received));
-      return async () => {
-        await subscriber.unsubscribe(channel).catch(() => undefined);
-        await subscriber.quit().catch(() => undefined);
+      const disconnect = async (): Promise<void> => {
+        await Promise.resolve(subscriber.disconnect?.()).catch(() => undefined);
       };
+      try {
+        await subscriber.connect();
+        await subscriber.subscribe(channel, (message: string, received: string) => {
+          try {
+            handler(message, received);
+          } catch (err) {
+            input.emitDriverEvent?.('subscriber:handler_error', describeError(err));
+          }
+        });
+      } catch (err) {
+        await disconnect();
+        throw err;
+      }
+      const cleanup = async (): Promise<void> => {
+        subscriptions.delete(cleanup);
+        await subscriber.unsubscribe(channel).catch(() => undefined);
+        await subscriber.quit().catch(() => disconnect());
+      };
+      subscriptions.add(cleanup);
+      return cleanup;
     },
     async ping() {
       await client.ping();
     },
     async close() {
+      for (const cleanup of [...subscriptions]) await cleanup().catch(() => undefined);
+      subscriptions.clear();
       try {
         await client.quit();
       } catch {

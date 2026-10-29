@@ -96,7 +96,11 @@ export function createFaultInjector(): Faults {
       if (typeof originalReceive !== 'function') {
         throw new TypeError('createFaultInjector().wrap() 需要一个带 receive() 的 Actor 定义');
       }
-      const wrapped: Record<string, unknown> = { ...definition };
+      // 不能只 spread：class 的生命周期方法在 prototype 上，spread 会全部丢掉
+      const wrapped: Record<string, unknown> = Object.create(
+        Object.getPrototypeOf(definition),
+        Object.getOwnPropertyDescriptors(definition),
+      ) as Record<string, unknown>;
       wrapped.receive = async function receive(this: unknown, msg: unknown, ctx: { sleep(ms: number): Promise<void> }) {
         for (const rule of rules) {
           if (rule.match !== undefined && !rule.match(msg)) continue;

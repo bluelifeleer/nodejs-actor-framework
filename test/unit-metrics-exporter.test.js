@@ -264,3 +264,18 @@ test('integration: a busy metrics port degrades to a warning, not a crash', asyn
     await first.close();
   }
 });
+
+test('exporter: 非回环绑定必须显式 allowInsecureBinding（回归：指标端点可裸奔）', async () => {
+  const exporter = new MetricsExporter({ host: '0.0.0.0', port: 0, metrics: new Metrics({ logDir: tempDir }) });
+  await assert.rejects(() => exporter.listen(), /refusing to bind the metrics endpoint/);
+
+  const allowed = new MetricsExporter({
+    host: '0.0.0.0',
+    port: 0,
+    metrics: new Metrics({ logDir: tempDir }),
+    allowInsecureBinding: true,
+  });
+  await allowed.listen();
+  assert.ok(allowed.boundPort > 0);
+  await allowed.close();
+});

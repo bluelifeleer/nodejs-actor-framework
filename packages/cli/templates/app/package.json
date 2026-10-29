@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@actor/app": "*",
+    "@actor/cli": "*",
     "@actor/data": "*",
+    "@actor/db": "*",
     "@actor/web": "*"
   },
   "engines": {

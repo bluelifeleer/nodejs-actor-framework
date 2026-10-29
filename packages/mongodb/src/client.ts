@@ -27,6 +27,12 @@ export interface MongoNativeCollection {
   drop(options?: MongoDocument): Promise<void>;
 }
 
+/** 事务会话（官方驱动 `ClientSession` 的最小结构视图）。 */
+export interface MongoSessionLike {
+  readonly id?: unknown;
+  endSession(): Promise<void>;
+}
+
 /** 驱动句柄：驱动实现归一到这个形状。 */
 export interface MongoDriverHandle {
   readonly name: string;
@@ -34,8 +40,8 @@ export interface MongoDriverHandle {
   readonly db: MongoNativeDb;
   /** 原生客户端（逃生通道）。 */
   readonly raw: unknown;
-  /** 事务：官方驱动用 `session.withTransaction`。 */
-  transaction<T>(fn: (db: MongoNativeDb) => Promise<T>): Promise<T>;
+  /** 事务：官方驱动用 `session.withTransaction`；回调必须拿到 session 才能把操作纳入事务。 */
+  transaction<T>(fn: (db: MongoNativeDb, session: MongoSessionLike) => Promise<T>): Promise<T>;
   ping(): Promise<void>;
   close(): Promise<void>;
   stats(): Record<string, unknown>;
@@ -48,17 +54,17 @@ export interface MongoCollection<Doc extends MongoDocument = MongoDocument> {
   readonly raw: MongoNativeCollection;
   find(filter?: MongoDocument, options?: MongoDocument): unknown;
   findOne(filter?: MongoDocument, options?: MongoDocument): Promise<Doc | null>;
-  insertOne(doc: Doc): Promise<{ insertedId: unknown }>;
-  insertMany(docs: Doc[]): Promise<{ insertedCount: number }>;
-  updateOne(filter: MongoDocument, update: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
-  updateMany(filter: MongoDocument, update: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
-  deleteOne(filter: MongoDocument): Promise<{ deletedCount: number }>;
-  deleteMany(filter: MongoDocument): Promise<{ deletedCount: number }>;
-  countDocuments(filter?: MongoDocument): Promise<number>;
-  aggregate(pipeline: MongoDocument[]): Promise<MongoDocument[]>;
+  insertOne(doc: Doc, options?: MongoDocument): Promise<{ insertedId: unknown }>;
+  insertMany(docs: Doc[], options?: MongoDocument): Promise<{ insertedCount: number }>;
+  updateOne(filter: MongoDocument, update: MongoDocument, options?: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
+  updateMany(filter: MongoDocument, update: MongoDocument, options?: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
+  deleteOne(filter: MongoDocument, options?: MongoDocument): Promise<{ deletedCount: number }>;
+  deleteMany(filter: MongoDocument, options?: MongoDocument): Promise<{ deletedCount: number }>;
+  countDocuments(filter?: MongoDocument, options?: MongoDocument): Promise<number>;
+  aggregate(pipeline: MongoDocument[], options?: MongoDocument): Promise<MongoDocument[]>;
   createIndex(keys: Record<string, number>, options?: MongoDocument): Promise<string>;
-  listIndexes(): Promise<Array<{ name: string; key: Record<string, number> }>>;
-  drop(): Promise<void>;
+  listIndexes(options?: MongoDocument): Promise<Array<{ name: string; key: Record<string, number> }>>;
+  drop(options?: MongoDocument): Promise<void>;
 }
 
 /** 文档客户端：集合薄封装 + 事务 + 逃生通道。 */
@@ -67,6 +73,8 @@ export interface DocumentClient {
   readonly raw: unknown;
   /** 原生 db（逃生通道）。 */
   readonly db: MongoNativeDb;
+  /** 当前客户端绑定的事务会话（普通客户端为 undefined）。 */
+  readonly session?: MongoSessionLike;
   /** 原生 db 上做点什么（逃生通道，最常用的形式）。 */
   withDb<T>(fn: (db: MongoNativeDb) => Promise<T>): Promise<T>;
   collection<Doc extends MongoDocument = MongoDocument>(name: string): MongoCollection<Doc>;
@@ -82,32 +90,40 @@ async function settle<T>(value: Promise<T> | { toArray(): Promise<T> }): Promise
 }
 
 /** 用一个驱动句柄造文档客户端。 */
-export function createDocumentClient(handle: MongoDriverHandle): DocumentClient {
+export function createDocumentClient(handle: MongoDriverHandle, session?: MongoSessionLike): DocumentClient {
+  /**
+   * 事务内的每个操作都必须带 `{ session }`；官方驱动不会自动从 `withTransaction` 的
+   * 回调上下文里推断它。这里把注入集中到一处，避免每个调用点漏传。
+   */
+  const withSession = (options?: MongoDocument): MongoDocument | undefined =>
+    session === undefined ? options : { ...(options ?? {}), session };
   const client: DocumentClient = {
     raw: handle.raw,
     db: handle.db,
+    ...(session === undefined ? {} : { session }),
     withDb: (fn) => fn(handle.db),
     collection<Doc extends MongoDocument = MongoDocument>(name: string): MongoCollection<Doc> {
       const native = handle.db.collection(name);
       return {
         name,
         raw: native,
-        find: (filter, options) => native.find(filter, options),
-        findOne: (filter, options) => native.findOne(filter, options) as Promise<Doc | null>,
-        insertOne: (doc) => native.insertOne(doc),
-        insertMany: (docs) => native.insertMany(docs),
-        updateOne: (filter, update) => native.updateOne(filter, update),
-        updateMany: (filter, update) => native.updateMany(filter, update),
-        deleteOne: (filter) => native.deleteOne(filter),
-        deleteMany: (filter) => native.deleteMany(filter),
-        countDocuments: (filter) => native.countDocuments(filter),
-        aggregate: (pipeline) => settle<MongoDocument[]>(native.aggregate(pipeline) as never),
-        createIndex: (keys, options) => native.createIndex(keys, options),
-        listIndexes: async () => native.listIndexes().toArray(),
-        drop: () => native.drop(),
+        find: (filter, options) => native.find(filter, withSession(options)),
+        findOne: (filter, options) => native.findOne(filter, withSession(options)) as Promise<Doc | null>,
+        insertOne: (doc, options) => native.insertOne(doc, withSession(options)),
+        insertMany: (docs, options) => native.insertMany(docs, withSession(options)),
+        updateOne: (filter, update, options) => native.updateOne(filter, update, withSession(options)),
+        updateMany: (filter, update, options) => native.updateMany(filter, update, withSession(options)),
+        deleteOne: (filter, options) => native.deleteOne(filter, withSession(options)),
+        deleteMany: (filter, options) => native.deleteMany(filter, withSession(options)),
+        countDocuments: (filter, options) => native.countDocuments(filter, withSession(options)),
+        aggregate: (pipeline, options) => settle<MongoDocument[]>(native.aggregate(pipeline, withSession(options)) as never),
+        createIndex: (keys, options) => native.createIndex(keys, withSession(options)),
+        listIndexes: async (options) => native.listIndexes(withSession(options)).toArray(),
+        drop: (options) => native.drop(withSession(options)),
       };
     },
-    transaction: (fn) => handle.transaction((db) => fn(createDocumentClient({ ...handle, db }))),
+    transaction: (fn) =>
+      handle.transaction((db, txSession) => fn(createDocumentClient({ ...handle, db }, txSession))),
   };
   return client;
 }

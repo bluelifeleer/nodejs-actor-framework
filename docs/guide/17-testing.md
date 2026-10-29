@@ -167,6 +167,8 @@ console.log('ok');
 - 已有示例的测试怎么写的：`examples/*/test/`、脚手架生成项目的 `test/api.test.ts`
 - 测试用 http 客户端与探针 → [internals/06-testing](./internals/06-testing.md)
 - 契约套件（自己写插件/适配器时自证合规）→ [internals/11-custom-adapter](./internals/11-custom-adapter.md)
+- 契约套件仍从各包主入口导出；`node:test` 是**惰性加载**的：应用 import 生产入口不会启动测试运行器，
+  只有真正调用 `run*Contract` 时才加载。打包到 serverless/边缘时不用担心测试框架被带进去。
 
 ## 下一步
 

@@ -7,7 +7,6 @@
   },
   "include": [
     "main.ts",
-    "server.ts",
     "src/**/*.ts",
     "config/**/*.ts",
     "test/**/*.ts"

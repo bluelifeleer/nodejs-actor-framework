@@ -59,6 +59,8 @@ export async function newApp(
     graph?: ReturnType<typeof graphOf>;
     /** 只打印计划，一个字节都不写。 */
     dryRun?: boolean;
+    /** 生成后执行 `npm install`（显式 `--install` 才做）。 */
+    install?: boolean;
   } = {},
 ): Promise<NewAppResult> {
   if (target === undefined || String(target).trim() === '') {
@@ -122,7 +124,9 @@ export async function newApp(
   if (packageFile !== undefined) {
     const pkg = JSON.parse(packageFile.content) as { dependencies?: Record<string, string> };
     const dependencies: Record<string, string> = {};
-    for (const name of closure.transitivePackages) dependencies[name] = '*';
+    // 生成器可能产出 `@actor/db`（model/schema）与 `@actor/cli`（自定义命令）的骨架：
+    // 它们是生成项目的真实依赖，不能指望 monorepo 的软链或“以后再加”。
+    for (const name of new Set([...closure.transitivePackages, '@actor/db', '@actor/cli'])) dependencies[name] = '*';
     pkg.dependencies = dependencies;
     packageFile.content = `${JSON.stringify(pkg, null, 2)}\n`;
   }
@@ -134,9 +138,22 @@ export async function newApp(
   if (options.dryRun !== true) {
     for (const file of templates) {
       const destination = path.join(dir, file.relative);
+      const stat = await fs.lstat(destination).catch(() => null);
+      if (stat?.isSymbolicLink()) {
+        throw new UsageError(`拒绝写入符号链接：${file.relative}`, '符号链接可能指向项目外；请先移除它');
+      }
       await fs.mkdir(path.dirname(destination), { recursive: true });
       await fs.writeFile(destination, file.content, 'utf8');
     }
+  }
+
+  if (options.install === true && options.dryRun !== true) {
+    const { spawn } = await import('node:child_process');
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('npm', ['install'], { cwd: dir, stdio: 'inherit', shell: process.platform === 'win32' });
+      child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`npm install exited with ${String(code)}`))));
+      child.on('error', reject);
+    });
   }
 
   return {

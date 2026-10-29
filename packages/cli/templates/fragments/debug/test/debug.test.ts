@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ test('debug 能力：默认关闭（/__debug/routes 是 404）', async () => {
   delete process.env['APP_DEBUG'];
   process.env['APP_PLUGINS__HTTP__PORT'] = '0';
   const application = createApp(app, {
-    configDir: new URL('../config', import.meta.url).pathname,
+    configDir: fileURLToPath(new URL('../config', import.meta.url)),
     kernel: { logger: false, persistence: { dir: dataDir } },
   });
   await application.start();

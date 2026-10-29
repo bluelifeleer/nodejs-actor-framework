@@ -176,3 +176,32 @@ test('resourceAdapter: 空名字要报错（否则服务名/配置节都会含�
 });
 
 void supervise; // 说明：插件内部用的就是它（同一套连接管控）
+
+test('resourceAdapter: 适配器声明的 driver/prefix/database 必须传进 connection（回归：配置静默失效）', async () => {
+  let seen: Record<string, unknown> | null = null;
+  const adapter = fakeAdapter({
+    config: {
+      url: { type: 'string' as const, default: '' },
+      driver: { type: 'string' as const, default: 'redis' },
+      prefix: { type: 'string' as const, default: '' },
+      database: { type: 'string' as const, default: '' },
+    },
+    async connect({ connection }: { connection: Record<string, unknown> }) {
+      seen = connection;
+      return { client: { kind: 'fake-client' }, async healthCheck() {}, async close() {} };
+    },
+  } as never);
+  const plugin = resourceAdapter(adapter, { name: 'cache' });
+  const { app } = fakeApp({
+    'plugins.cache.url': 'redis://127.0.0.1:6379/1',
+    'plugins.cache.driver': 'ioredis',
+    'plugins.cache.prefix': 'queue:',
+    'plugins.cache.database': 'appdb',
+  });
+  await plugin.onReady?.(app as never);
+  assert.ok(seen !== null);
+  assert.strictEqual((seen as Record<string, unknown>).driver, 'ioredis');
+  assert.strictEqual((seen as Record<string, unknown>).prefix, 'queue:');
+  assert.strictEqual((seen as Record<string, unknown>).database, 'appdb');
+  await plugin.onStopping?.(app as never);
+});

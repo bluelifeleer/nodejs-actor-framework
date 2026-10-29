@@ -40,7 +40,7 @@ const system: ActorSystem = createSystem(systemOptions);
 const capabilities = system.persistenceCapabilities();
 const conditional: string | false = capabilities.conditionalAppend;
 const ownership = system.ownership;
-const ownerOfShard: string | null = ownership.ownerOf(0);
+const ownerOfShard: string | null = ownership === null ? null : ownership.ownerOf(0);
 const peerLimit: number = system.maxPeers;
 const stopping: Promise<void> = system.stop({ timeoutMs: 1000 });
 
@@ -52,9 +52,9 @@ if (cluster !== null) {
   const fencing: unknown = cluster.fencing();
   const metrics: unknown = cluster.metrics();
   const quorum: unknown = cluster.quorum();
-  const singletons: string[] = cluster.singletons();
+  const singletons: Array<{ id: string; owner: string | null; local: boolean }> = cluster.singletons();
   const owner: string | null = cluster.ownerOfActor('player_1');
-  const one: Promise<ActorRef | null> = cluster.spawnSingleton(Ticking, { id: 'singleton' });
+  const one: Promise<{ id: string; local: boolean; owner: string | null }> = cluster.spawnSingleton(Ticking, { id: 'singleton' });
   const ref: ActorRef | null = cluster.ownership.ownerOf(1) === null ? null : system.resolve('singleton');
   void [drainResult, fencing, metrics, quorum, singletons, owner, one, ref];
 }

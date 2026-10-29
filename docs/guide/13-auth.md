@@ -37,9 +37,18 @@ plugins: [
 | `header` / `cookie` / `extractToken` | token 从哪取（默认 `Authorization: Bearer …`） |
 | `rolesClaim` / `scopesClaim` | 角色/权限读哪个 claim（默认 `roles` / `scope`） |
 | `verifyExtra` | 额外校验（撤销名单等）：抛错即拒绝 |
+| `requireExp` | 是否要求 token 带 `exp`（**默认 true**；显式 `false` 才允许永久 token） |
 | `logger` | 服务端记失败明细（**失败原因不会回给客户端**） |
 
 **HMAC 密钥至少 32 字节**（RFC 7518）；短了 `authPlugin` 直接拒绝启动。
+
+> **无 `exp` 的 token 默认被拒绝**：`authPlugin` 从 2026-10-29 起默认 `requireExp: true`，
+> 服务端日志 reason=`missing_exp`，对外仍是 401。旧 token 请重新签发（`signJwt` 传
+> `expiresInSec`）；迁移期可临时 `requireExp: false`，不要长期关闭。
+
+> **cookie 来源的 CSRF**：用 `cookie` 取 token 时，非 GET/HEAD/OPTIONS 请求默认要求
+> `x-requested-with`（双提交/自定义头，跨站表单带不上）。客户端确实无法加头时用
+> `csrfHeader: false` 明确关掉，并自行加 Origin/Referer 校验。
 
 ## 2. 签发 token（你的登录接口）
 

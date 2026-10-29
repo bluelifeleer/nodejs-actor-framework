@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -20,7 +21,7 @@ import app, { http } from '../server.ts';
 async function boot(dataDir: string): Promise<{ application: Awaited<ReturnType<typeof createApp>>; base: string }> {
   process.env.APP_PLUGINS__HTTP__PORT = '0';
   const application = createApp(app, {
-    configDir: new URL('../config', import.meta.url).pathname,
+    configDir: fileURLToPath(new URL('../config', import.meta.url)),
     kernel: { logger: false, persistence: { dir: dataDir } },
   });
   await application.start();

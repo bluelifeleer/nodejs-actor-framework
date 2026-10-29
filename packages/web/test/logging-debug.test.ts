@@ -65,9 +65,9 @@ test('request-log: 采样率 0 时不记普通请求，但**慢请求一定记**
   const app = createApp(
     defineApp({
       name: 'log-app',
-      modules: [defineModule({ name: 'app', routes: defineRoutes([get('/fast', () => ({ ok: true })), get('/slow', async () => { await new Promise((r) => setTimeout(r, 30)); return { ok: true }; })]) })],
+      modules: [defineModule({ name: 'app', routes: defineRoutes([get('/fast', () => ({ ok: true })), get('/slow', async () => { await new Promise((r) => setTimeout(r, 200)); return { ok: true }; })]) })],
       // 注意 slowMs 要明显大于 /fast 的耗时，否则普通请求自己就变成"慢请求"了（采样就挡不住）
-      plugins: [http, requestLogPlugin({ sampleRate: 0, slowMs: 15, format: 'json', onRequest: (entry) => entries.push(entry) })],
+      plugins: [http, requestLogPlugin({ sampleRate: 0, slowMs: 100, format: 'json', onRequest: (entry) => entries.push(entry) })],
     }),
     { configDir: null, env: {} },
   );
@@ -76,7 +76,7 @@ test('request-log: 采样率 0 时不记普通请求，但**慢请求一定记**
   try {
     await fetch(`http://127.0.0.1:${port}/fast`);
     await fetch(`http://127.0.0.1:${port}/slow`);
-    // 采样 0 → 只有慢请求那条（/slow 睡 30ms >= 15ms）
+    // 采样 0 → 只有慢请求那条（/slow 睡 200ms >= 100ms）
     assert.ok(entries.length >= 1, '慢请求必须被记录');
     assert.ok(entries.every((entry) => entry.path === '/slow'), `采样 0 时不该记普通请求：${JSON.stringify(entries)}`);
     const structured = toStructuredLog(entries[0] as RequestLogEntry, { slowMs: 15 });

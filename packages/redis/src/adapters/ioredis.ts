@@ -62,6 +62,7 @@ export async function createIoredisHandle(input: RedisConnectInput): Promise<Red
     throw new DbConnectionError(`cannot connect to redis (ioredis): ${error.message}`, error);
   }
 
+  const subscriptions = new Set<() => Promise<void>>();
   return {
     name: 'ioredis',
     raw: client,
@@ -76,18 +77,34 @@ export async function createIoredisHandle(input: RedisConnectInput): Promise<Red
       }
       subscriber.on('message', (...args: unknown[]) => {
         const [received, message] = args;
-        handler(String(message ?? ''), String(received ?? channel));
+        try {
+          handler(String(message ?? ''), String(received ?? channel));
+        } catch (err) {
+          // 回调抛错若逃进驱动的事件分发会变成 uncaughtException；这里转成可见事件
+          input.emitDriverEvent?.('subscriber:handler_error', { message: err instanceof Error ? err.message : String(err) });
+        }
       });
-      await subscriber.subscribe(channel, () => undefined);
-      return async () => {
+      try {
+        await subscriber.subscribe(channel, () => undefined);
+      } catch (err) {
+        subscriber.disconnect();
+        throw err;
+      }
+      const cleanup = async (): Promise<void> => {
+        subscriptions.delete(cleanup);
         await subscriber.unsubscribe(channel).catch(() => undefined);
         subscriber.disconnect();
       };
+      subscriptions.add(cleanup);
+      return cleanup;
     },
     async ping() {
       await client.ping();
     },
     async close() {
+      // 订阅连接不随主连接 quit：必须先逐个退订，否则进程会留下一条活连接
+      for (const cleanup of [...subscriptions]) await cleanup().catch(() => undefined);
+      subscriptions.clear();
       try {
         await client.quit();
       } catch {

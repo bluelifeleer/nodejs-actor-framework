@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ test('mail 能力：fileTransport 不需要任何服务，应用照常启动', a
   process.env['APP_PLUGINS__HTTP__PORT'] = '0';
   process.env['APP_MAIL_DIR'] = path.join(dataDir, 'mail');
   const application = createApp(app, {
-    configDir: new URL('../config', import.meta.url).pathname,
+    configDir: fileURLToPath(new URL('../config', import.meta.url)),
     kernel: { logger: false, persistence: { dir: dataDir } },
   });
   await application.start();

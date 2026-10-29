@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ test('redis 能力：没配 APP_REDIS_URL 时**不挂**（应用照常启动）'
   delete process.env['APP_REDIS_URL'];
   process.env['APP_PLUGINS__HTTP__PORT'] = '0';
   const application = createApp(app, {
-    configDir: new URL('../config', import.meta.url).pathname,
+    configDir: fileURLToPath(new URL('../config', import.meta.url)),
     kernel: { logger: false, persistence: { dir: dataDir } },
   });
   await application.start();

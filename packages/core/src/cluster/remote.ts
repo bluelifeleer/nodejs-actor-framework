@@ -200,9 +200,12 @@ class Peer {
   /** This node's own reachable gateway address, so the peer can reply to us. */
   /** 本节点的可达网关地址（对端据此直接回发，不用再走 gossip）。 */
   _selfAddress(sender: { path?: string } | null | undefined, trace: unknown): SelfAddress {
+    // 插件选项 `advertiseHost` 必须优先于全局配置：否则多网卡部署里 gossip 广播的地址
+    // 与网关回复地址不一致，对端会按错误地址回发。
+    const advertised = (this.system as { cluster?: { gossip?: { advertiseHost?: unknown } } }).cluster?.gossip?.advertiseHost;
     return {
       path: sender && sender.path ? sender.path : null,
-      host: this.system.server ? config.gossip.advertiseHost : null,
+      host: this.system.server ? (typeof advertised === 'string' && advertised !== '' ? advertised : config.gossip.advertiseHost) : null,
       port: this.system.server ? this.system.server.boundPort : null,
       trace: trace || null,
     };

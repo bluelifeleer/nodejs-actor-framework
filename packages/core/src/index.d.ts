@@ -40,6 +40,11 @@ export interface ActorCounters {
   crashed: number;
   restarted: number;
   recovered: number;
+  throttled: number;
+  dropped: number;
+  batches: number;
+  totalLatencyMs: number;
+  maxLatencyMs: number;
 }
 
 export interface SupervisorInfo {
@@ -98,6 +103,16 @@ export interface ActorContext<S = unknown> {
   readonly children: ActorId[];
   /** True when a snapshot or replayed events were applied (meaningful in postRecover). */
   readonly restored: boolean;
+  /** 已恢复到的日志版本（events 模式；其它模式为 0）。 */
+  readonly eventVersion: number;
+  /** 当前是否在 receive 里。 */
+  readonly handling: boolean;
+  /** 当前消息的 trace 上下文（tracing 插件；否则 null）。 */
+  readonly trace: unknown;
+  /** 基于当前 trace 创建子 span（没装 tracing 插件时返回 null）。 */
+  span(): unknown;
+  /** 一次写入多条事件（批量条件写）。 */
+  persistAll(events: unknown[]): Promise<unknown>;
   spawn<M = unknown, R = unknown>(
     definition: ActorDefinitionInput<M, R> | string,
     options?: ActorOptions,
@@ -401,7 +416,7 @@ export class ActorSystem {
   deadLetterStore: unknown;
   readonly installed: Map<string, Plugin>;
   readDeadLetters(): Promise<unknown[]>;
-  clearDeadLetters(): Promise<void>;
+  clearDeadLetters(): Promise<number>;
 
   listen(options?: ListenOptions): Promise<number>;
   connect(options: ConnectOptions): Promise<Peer>;
@@ -415,8 +430,8 @@ export class ActorSystem {
    * 注意 `conditionalAppend`/`conditionalUpdate` 的 `'in-process'` 是**进程内**保证。
    */
   persistenceCapabilities(): PersistenceCapabilities;
-  /** 所有权服务（集群插件装上；应用层可写 `recreate` 钩子）。 */
-  ownership: OwnershipService;
+  /** 所有权服务（装集群插件后才存在；应用层可写 `recreate` 钩子）。 */
+  ownership: OwnershipService | null;
   /** 对等体数量上限（审计 F7），默认 128。 */
   readonly maxPeers: number;
   /**
@@ -461,7 +476,7 @@ export interface ClusterOptions {
   gatewayPort?: number;
   /** 分片数（一致性哈希环的大小）。 */
   shardCount?: number;
-  /** 写操作是否要求带 epoch（默认 true）。 */
+  /** 写操作是否要求带 epoch（默认 false：软升级；显式 true 才切硬门）。 */
   requireFencing?: boolean;
   /** 是否要求多数派才可写（默认 false）。 */
   enforceQuorum?: boolean;
@@ -510,13 +525,13 @@ export interface ClusterService {
   metrics(): unknown;
   /** 多数派状态。 */
   quorum(): unknown;
-  /** 单例列表。 */
-  singletons(): string[];
-  /** 按定义起一个全集群唯一的 Actor。 */
+  /** 单例列表（每项含 id/owner/local）。 */
+  singletons(): Array<{ id: string; owner: string | null; local: boolean }>;
+  /** 按定义起一个全集群唯一的 Actor；返回本节点是否真的运行。 */
   spawnSingleton(
     definition: ActorDefinitionInput | string,
     options?: ActorOptions,
-  ): Promise<ActorRef | null>;
+  ): Promise<{ id: string; local: boolean; owner: string | null }>;
   /** 某个 Actor 的 shard 当前归谁。 */
   ownerOfActor(path: string): string | null;
   /** 所有权服务的引用（与 `system.ownership` 同一个）。 */
@@ -760,9 +775,9 @@ export class Mailbox<E = unknown> {
   constructor(options?: { maxSize?: number; overflow?: 'reject' | 'drop-oldest' | 'drop-newest' });
   readonly maxSize: number;
   readonly size: number;
-  push(envelope: E, opts?: { priority?: number }): boolean;
+  push(envelope: E, opts?: { system?: boolean }): boolean;
   shift(): E | undefined;
-  pushFront(envelope: E): void;
+  pushFront(envelope: E): boolean;
   drain(): E[];
   clear(): void;
 }

@@ -163,13 +163,13 @@ test('smtp: 懒加载驱动、选项映射、错误包装（用假 nodemailer �
   await transport.verify?.();
   const result = await transport.send(base);
   assert.strictEqual(result.id, '<fake@id>');
-  assert.deepStrictEqual(calls[0]?.['createTransport'], { host: 'mail.example.com', port: 465, secure: true, auth: { user: 'user', pass: 'secret' } });
+  assert.deepStrictEqual(calls[0]?.['createTransport'], { host: 'mail.example.com', port: 465, secure: true, auth: { user: 'user', pass: 'secret' }, connectionTimeout: 10000 });
   const sent = calls.find((call) => 'sendMail' in call)?.['sendMail'] as Record<string, unknown>;
   assert.ok(String(sent['raw']).includes('Subject: =?UTF-8?B?'), '走的是渲染好的 raw（SMTP 不自己拼 MIME）');
 
   // 驱动没装 → 安装提示（不是静默失败）
   const missing = smtpTransport({ url: 'smtp://mail.example.com', resolve: () => { const e = new Error("Cannot find module 'nodemailer'"); (e as { code?: string }).code = 'MODULE_NOT_FOUND'; throw e; } });
-  await assert.rejects(() => missing.send(base), /Cannot find module 'nodemailer'/);
+  await assert.rejects(() => missing.send(base), /nodemailer/);
 });
 
 const smtpUrl = realResourceUrl('ACTOR_TEST_SMTP_URL');
@@ -186,4 +186,25 @@ testWithResource('ACTOR_TEST_SMTP_URL', 'smtp: 真服务上的契约套件', () 
     realDelivery: true,
     to: 'contract@example.com',
   });
+});
+
+test('mail: 单段中文纯文本正文必须按声明的 base64 编码（回归：头说 base64、正文写原文）', () => {
+  const rendered = renderMail({ from: 'from@example.com', to: ['to@example.com'], subject: 's', text: '你好，世界' });
+  const [head = '', body = ''] = rendered.raw.split('\r\n\r\n');
+  assert.match(head, /content-transfer-encoding:\s*base64/i);
+  assert.strictEqual(Buffer.from(body, 'base64').toString('utf8'), '你好，世界');
+});
+
+test('mail: 附件 contentType/contentId、Message-ID、header 名都不能注入（回归）', () => {
+  const base = { from: 'from@example.com', to: ['to@example.com'], subject: 's', text: 'x' };
+  assert.throws(
+    () => renderMail({ ...base, attachments: [{ filename: 'a.txt', content: Buffer.from('x'), contentType: 'text/plain\r\nBcc: evil@example.com' }] }),
+    /contentType/,
+  );
+  assert.throws(
+    () => renderMail({ ...base, attachments: [{ filename: 'a.txt', content: Buffer.from('x'), contentId: 'id\r\nBcc: evil@example.com' }] }),
+    /contentId/,
+  );
+  assert.throws(() => renderMail(base, { messageId: '<a@b>\r\nBcc: evil@example.com' }), /Message-ID/);
+  assert.throws(() => renderMail({ ...base, headers: { ' X-Smuggled': 'evil' } }), /header name/);
 });

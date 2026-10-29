@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ test('upload 能力：路由真的挂上了（不带文件 → 400）', async ()
   process.env['APP_PLUGINS__HTTP__PORT'] = '0';
   // 内核持久化目录要传（模板里的 Actor 用了 snapshot 持久化，不传会明确报 PersistenceError）
   const application = createApp(app, {
-    configDir: new URL('../config', import.meta.url).pathname,
+    configDir: fileURLToPath(new URL('../config', import.meta.url)),
     kernel: { logger: false, persistence: { dir: dataDir } },
   });
   await application.start();

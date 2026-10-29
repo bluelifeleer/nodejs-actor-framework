@@ -173,3 +173,75 @@ test('plugin: 重复声明同名插件会报错', async () => {
     },
   );
 });
+
+test('plugin: 模块级 plugins 贡献的 routes/middleware 必须生效（回归：曾被静默丢弃）', async () => {
+  const moduleMiddleware = async (_ctx: unknown, next: () => Promise<unknown>) => next();
+  const moduleRoute = { method: 'GET', path: '/from-module-plugin', controller: async () => 'ok' };
+  const topMiddleware = async (_ctx: unknown, next: () => Promise<unknown>) => next();
+
+  const app = createApp(
+    defineApp({
+      plugins: [
+        definePlugin({ name: 'top', middleware: [topMiddleware] }),
+      ],
+      modules: [
+        defineModule({
+          name: 'main',
+          plugins: [
+            definePlugin({
+              name: 'from-module',
+              routes: [moduleRoute],
+              middleware: [moduleMiddleware],
+            }),
+          ],
+        }),
+      ],
+    }),
+    { configDir: tempConfigDir(), env: {} },
+  );
+
+  await app.start();
+  try {
+    assert.ok(app.routes.includes(moduleRoute), '模块级插件贡献的路由必须进 app.routes');
+    assert.ok(app.middleware.includes(moduleMiddleware), '模块级插件贡献的中间件必须进 app.middleware');
+    assert.ok(app.middleware.includes(topMiddleware), '顶层插件贡献的中间件仍然必须生效');
+  } finally {
+    await app.stop();
+  }
+});
+
+test('app.start(): 失败后不能静默“第二次成功”，且已就绪插件会被回收（回归）', async () => {
+  const events: string[] = [];
+  const app = createApp(
+    defineApp({
+      modules: [defineModule({ name: 'main' })],
+      plugins: [
+        definePlugin({
+          name: 'first',
+          onReady: () => {
+            events.push('first.ready');
+          },
+          onStopping: () => {
+            events.push('first.stopping');
+          },
+          teardown: () => {
+            events.push('first.teardown');
+          },
+        }),
+        definePlugin({
+          name: 'boom',
+          onReady: () => {
+            throw new Error('second plugin failed');
+          },
+        }),
+      ],
+    }),
+    { configDir: tempConfigDir(), env: {} },
+  );
+
+  await assert.rejects(() => app.start(), /second plugin failed/);
+  assert.ok(events.includes('first.stopping'), '已就绪插件必须收到 onStopping');
+  assert.ok(events.includes('first.teardown'), '已就绪插件必须被 teardown');
+  await assert.rejects(() => app.start(), /上一次 start\(\) 已失败/, '第二次 start 必须明确失败，而不是静默 resolve');
+  await app.stop().catch(() => undefined);
+});

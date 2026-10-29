@@ -425,3 +425,51 @@ test('plugins: a broken plugin does not wedge spawn, and init is idempotent', as
     await system.stop();
   }
 });
+
+test('metrics: per-actor dead-letter 与 dropped 指标不再是恒 0（回归）', async () => {
+  const system = createSystem({
+    logger: false,
+    plugins: [metricsPlugin({ intervalMs: 0, exporter: { enabled: true, host: '127.0.0.1', port: 0 } })],
+  });
+  try {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const slow = await system.spawn(async (msg) => {
+      if (msg === 'block') await gate;
+      return 'ok';
+    }, { id: 'drop', mailbox: { maxSize: 1 } });
+    slow.tell('block');
+    await new Promise((resolve) => setImmediate(resolve));
+    slow.tell('a');
+    slow.tell('b'); // 队列已满 → 背压丢弃
+    release();
+
+    const dead = await system.spawn(async () => {
+      throw new Error('no');
+    }, { id: 'dead', failure: 'retry', maxRetry: 0 });
+    await dead.ask('x').catch(() => undefined);
+
+    system.collectMetrics();
+    const port = system.metricsExporter.boundPort;
+    const res = await httpGet(port, '/metrics');
+    assert.match(res.body, /actor_messages_dead_lettered_total\{actor="dead"\} [1-9]/, '死信必须进入 per-actor 指标');
+    assert.match(res.body, /actor_messages_dropped_total\{actor="drop"\} [1-9]/, '背压丢弃必须进入 per-actor 指标');
+  } finally {
+    await system.stop();
+  }
+});
+
+test('metrics: exporter.enabled=false 必须真的不启动（回归）', async () => {
+  const system = createSystem({
+    logger: false,
+    plugins: [metricsPlugin({ intervalMs: 0, exporter: { enabled: false, host: '127.0.0.1', port: 0 } })],
+  });
+  try {
+    await system.spawn(async () => 'ok', { id: 'no-exporter' });
+    assert.strictEqual(system.metricsExporter, null, 'enabled:false 时不应启动导出器');
+  } finally {
+    await system.stop();
+  }
+});

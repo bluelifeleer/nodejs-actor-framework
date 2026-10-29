@@ -287,7 +287,7 @@ export interface DispatchResult {
   headOnly?: true;
 }
 
-function makeRequestId(): string {
+export function makeRequestId(): string {
   return `r-${Math.random().toString(36).slice(2, 10)}`;
 }
 

@@ -187,3 +187,34 @@ test('redis adapter: DSN 解析与免密描述（含 rediss/TLS 与库索引）'
 
   assert.throws(() => parseRedisUrl('pgsql://x/y'), /must start with redis:\/\//);
 });
+
+test('redis adapter: close() 必须关闭订阅用的 duplicate 连接（回归：连接泄漏）', async () => {
+  const { store, make } = makeTarget('redis');
+  const resource = make({});
+  await resource.connect();
+  const kv = await resource.acquire();
+  await kv.subscribe('news', () => undefined);
+  await resource.close();
+  // 主连接 + 订阅连接各 quit 一次；旧实现只关主连接
+  assert.ok(store.closed >= 2, `close() 之后应有 >=2 条连接被关闭，实际 ${store.closed}`);
+});
+
+test('redis adapter: 订阅回调抛错必须转成可见的 driver_event，而不是 uncaughtException（回归）', async () => {
+  const { store, make } = makeTarget('redis');
+  const events: Array<{ event?: string }> = [];
+  const resource = make({ onEvent: (event) => events.push(event as { event?: string }) });
+  await resource.connect();
+  try {
+    const kv = await resource.acquire();
+    await kv.subscribe('news', () => {
+      throw new Error('handler boom');
+    });
+    store.deliver('news', 'hello');
+    assert.ok(
+      events.some((event) => event.event === 'subscriber:handler_error'),
+      '回调抛错必须变成 subscriber:handler_error 事件',
+    );
+  } finally {
+    await resource.close();
+  }
+});

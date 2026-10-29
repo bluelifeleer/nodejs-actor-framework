@@ -17,7 +17,9 @@ export default defineModule({
   providers: {
     // @actor:mount providers
     // 换成 SQL 只改这一行：createSqlRepository({ runner, ... })
-    notes: ({ config }) => createFileRepository({ dir: path.join(config.get<string>('dataDir'), 'notes') }),
+    notes: ({ config }) => createFileRepository({
+      dir: path.join((config as { get<T>(key: string): T }).get<string>('dataDir'), 'notes'),
+    }),
   },
 
   // Actor：写路径在这里（有状态、串行、可持久化）

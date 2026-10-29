@@ -77,14 +77,19 @@ export interface CollectionInfo {
   readonly name: string;
   readonly exists: boolean;
   readonly validator: Record<string, unknown> | null;
-  readonly indexes: readonly { readonly name: string; readonly keys: Record<string, number> }[];
+  readonly indexes: readonly {
+    readonly name: string;
+    readonly keys: Record<string, number>;
+    readonly unique?: boolean;
+    readonly sparse?: boolean;
+  }[];
 }
 export interface MongoDatabaseLike {
   listCollections(filter: { name: string }): { toArray(): Promise<Array<{ name: string; options?: Record<string, unknown> }>> };
   createCollection(name: string, options?: Record<string, unknown>): Promise<unknown>;
   command(command: Record<string, unknown>): Promise<unknown>;
   collection(name: string): {
-    listIndexes(): { toArray(): Promise<Array<{ name: string; key: Record<string, number> }>> };
+    listIndexes(): { toArray(): Promise<Array<{ name: string; key: Record<string, number>; unique?: boolean; sparse?: boolean }>> };
     createIndex(keys: Record<string, number>, options?: Record<string, unknown>): Promise<string>;
   };
 }
@@ -138,11 +143,15 @@ export interface MongoNativeCollection {
 export interface MongoNativeDb extends MongoDatabaseLike {
   collection(name: string): MongoNativeCollection;
 }
+export interface MongoSessionLike {
+  readonly id?: unknown;
+  endSession(): Promise<void>;
+}
 export interface MongoDriverHandle {
   readonly name: string;
   readonly db: MongoNativeDb;
   readonly raw: unknown;
-  transaction<T>(fn: (db: MongoNativeDb) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (db: MongoNativeDb, session: MongoSessionLike) => Promise<T>): Promise<T>;
   ping(): Promise<void>;
   close(): Promise<void>;
   stats(): Record<string, unknown>;
@@ -152,26 +161,27 @@ export interface MongoCollection<Doc extends MongoDocument = MongoDocument> {
   readonly raw: MongoNativeCollection;
   find(filter?: MongoDocument, options?: MongoDocument): unknown;
   findOne(filter?: MongoDocument, options?: MongoDocument): Promise<Doc | null>;
-  insertOne(doc: Doc): Promise<{ insertedId: unknown }>;
-  insertMany(docs: Doc[]): Promise<{ insertedCount: number }>;
-  updateOne(filter: MongoDocument, update: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
-  updateMany(filter: MongoDocument, update: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
-  deleteOne(filter: MongoDocument): Promise<{ deletedCount: number }>;
-  deleteMany(filter: MongoDocument): Promise<{ deletedCount: number }>;
-  countDocuments(filter?: MongoDocument): Promise<number>;
-  aggregate(pipeline: MongoDocument[]): Promise<MongoDocument[]>;
+  insertOne(doc: Doc, options?: MongoDocument): Promise<{ insertedId: unknown }>;
+  insertMany(docs: Doc[], options?: MongoDocument): Promise<{ insertedCount: number }>;
+  updateOne(filter: MongoDocument, update: MongoDocument, options?: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
+  updateMany(filter: MongoDocument, update: MongoDocument, options?: MongoDocument): Promise<{ matchedCount: number; modifiedCount: number }>;
+  deleteOne(filter: MongoDocument, options?: MongoDocument): Promise<{ deletedCount: number }>;
+  deleteMany(filter: MongoDocument, options?: MongoDocument): Promise<{ deletedCount: number }>;
+  countDocuments(filter?: MongoDocument, options?: MongoDocument): Promise<number>;
+  aggregate(pipeline: MongoDocument[], options?: MongoDocument): Promise<MongoDocument[]>;
   createIndex(keys: Record<string, number>, options?: MongoDocument): Promise<string>;
-  listIndexes(): Promise<Array<{ name: string; key: Record<string, number> }>>;
-  drop(): Promise<void>;
+  listIndexes(options?: MongoDocument): Promise<Array<{ name: string; key: Record<string, number> }>>;
+  drop(options?: MongoDocument): Promise<void>;
 }
 export interface DocumentClient {
   readonly raw: unknown;
   readonly db: MongoNativeDb;
+  readonly session?: MongoSessionLike;
   withDb<T>(fn: (db: MongoNativeDb) => Promise<T>): Promise<T>;
   collection<Doc extends MongoDocument = MongoDocument>(name: string): MongoCollection<Doc>;
   transaction<T>(fn: (client: DocumentClient) => Promise<T>): Promise<T>;
 }
-export declare function createDocumentClient(handle: MongoDriverHandle): DocumentClient;
+export declare function createDocumentClient(handle: MongoDriverHandle, session?: MongoSessionLike): DocumentClient;
 
 // --- 适配器 -----------------------------------------------------------------
 export interface MongoAdapterOptions {

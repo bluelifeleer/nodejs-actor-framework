@@ -160,7 +160,7 @@ test('multipart: 畸形请求明确报错（缺 boundary / 起始边界不符 / 
 });
 
 // --- 插件端到端（真 HTTP）---------------------------------------------------
-async function startUploadApp(options: { dir: string; chunkDir: string; maxFileSize?: number }) {
+async function startUploadApp(options: { dir: string; chunkDir: string; maxFileSize?: number; allowedExtensions?: string[]; maxUploadSize?: number }) {
   const storage = localDiskStorage({ dir: options.dir });
   const http = httpPlugin({ port: 0 }); // 用实例读监听端口（服务名不是 'http'）
   const app = createApp(
@@ -172,6 +172,8 @@ async function startUploadApp(options: { dir: string; chunkDir: string; maxFileS
           storage,
           chunkStore: diskChunkStore({ dir: options.chunkDir }),
           ...(options.maxFileSize === undefined ? {} : { limits: { maxFileSize: options.maxFileSize } }),
+          ...(options.allowedExtensions === undefined ? {} : { allowedExtensions: options.allowedExtensions }),
+          ...(options.maxUploadSize === undefined ? {} : { maxUploadSize: options.maxUploadSize }),
         }),
         http,
       ],
@@ -568,5 +570,83 @@ test('upload plugin 加固: auth 声明只在显式配置时才写进控制器�
   } finally {
     await plain.app.stop({ timeoutMs: 5000 });
     await declared.app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin: 分片上传同样受扩展名白名单约束（回归：complete 曾绕过白名单）', async () => {
+  const dir = tmp();
+  const { app, base, storage } = await startUploadApp({
+    dir,
+    chunkDir: path.join(dir, 'chunks'),
+    allowedExtensions: ['png'],
+  });
+  const CHUNK = 5 * 1024 * 1024;
+  const whole = Buffer.alloc(10, 1);
+  try {
+    const init = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'evil.php', size: whole.length, chunkSize: CHUNK, sha256: sha(whole) }),
+    });
+    assert.strictEqual(init.status, 415, 'init 阶段就必须拒绝不在白名单里的扩展名');
+
+    const okInit = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'safe.png', size: whole.length, chunkSize: CHUNK, sha256: sha(whole) }),
+    });
+    assert.strictEqual(okInit.status, 201);
+    const session = (await okInit.json()) as { uploadId: string };
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${session.uploadId}/0`, { method: 'PUT', body: whole })).status, 200);
+    assert.strictEqual((await fetch(`${base}/uploads/chunked/${session.uploadId}/complete`, { method: 'POST' })).status, 201);
+    assert.strictEqual((await storage.list?.())?.some((file) => file.name === 'safe.png'), true);
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('upload plugin: 尾斜杠 / NaN 分片 / multipart 总上限 / 非 ASCII 文件名（回归）', async () => {
+  const dir = tmp();
+  const { app, base } = await startUploadApp({ dir, chunkDir: path.join(dir, 'chunks'), maxUploadSize: 1024 });
+  try {
+    // 1) 尾斜杠必须仍被当作流式路由（不能 500）
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from('ok')], { type: 'text/plain' }), 'a.txt');
+    const trailing = await fetch(`${base}/uploads/`, { method: 'POST', body: form });
+    assert.strictEqual(trailing.status, 201, await trailing.text());
+
+    // 2) NaN 分片下标必须 400，且不留下分片文件
+    const whole = Buffer.alloc(10, 1);
+    const init = await fetch(`${base}/uploads/chunked/init`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filename: 'ok.bin', size: whole.length, chunkSize: 5 * 1024 * 1024, sha256: sha(whole) }),
+    });
+    const session = (await init.json()) as { uploadId: string };
+    const nan = await fetch(`${base}/uploads/chunked/${session.uploadId}/NaN`, { method: 'PUT', body: whole });
+    assert.strictEqual(nan.status, 400);
+    const chunkDir = path.join(dir, 'chunks');
+    const files = fs.existsSync(chunkDir) ? fs.readdirSync(chunkDir, { recursive: true }) : [];
+    assert.ok(!files.some((file) => String(file).includes('.NaN.')), 'NaN 分片不能落盘');
+
+    // 3) maxUploadSize 对 multipart 生效
+    const big = new FormData();
+    big.append('file', new Blob([Buffer.alloc(2048, 2)], { type: 'application/octet-stream' }), 'big.bin');
+    const tooBig = await fetch(`${base}/uploads`, { method: 'POST', body: big });
+    assert.strictEqual(tooBig.status, 413, await tooBig.text());
+
+    // 4) 非 ASCII 文件名：能上传、能下载、Content-Disposition 用 RFC 6266
+    const cjk = new FormData();
+    cjk.append('file', new Blob([Buffer.from('hello')], { type: 'text/plain' }), '测试文件.txt');
+    const uploaded = await fetch(`${base}/uploads`, { method: 'POST', body: cjk });
+    const uploadedText = await uploaded.text();
+    assert.strictEqual(uploaded.status, 201, uploadedText);
+    const payload = JSON.parse(uploadedText) as { files: Array<{ key: string }> };
+    const download = await fetch(`${base}/uploads/${payload.files[0]!.key}`);
+    assert.strictEqual(download.status, 200);
+    assert.match(String(download.headers.get('content-disposition')), /filename\*=UTF-8''/);
+    assert.strictEqual(await download.text(), 'hello');
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
   }
 });

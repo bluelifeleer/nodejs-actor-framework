@@ -256,6 +256,8 @@ export interface RequestContext {
   user?: unknown;
   /** 约定字段：由 uploadPlugin 写入（M8b）。 */
   files?: unknown;
+  /** 由 viewPlugin 写入：读取模板并注入数据。 */
+  render?: (name: string, data?: unknown) => HttpResponse | Promise<HttpResponse>;
 }
 
 export function createRequestContext(init: RequestContextInit): RequestContext {
@@ -313,12 +315,17 @@ export interface HttpResponseInit {
 export interface HttpResponse {
   status: number;
   contentType: string;
-  /** string 直接写；Uint8Array 原样写；null 表示空体。 */
-  body: string | Uint8Array | null;
+  /** string 直接写；Uint8Array 原样写；AsyncIterable 流式写；null 表示空体。 */
+  body: string | Uint8Array | AsyncIterable<Uint8Array> | null;
   headers: Record<string, string>;
 }
 
-function make(status: number, contentType: string, body: string | Uint8Array | null, init: HttpResponseInit = {}): HttpResponse {
+function make(
+  status: number,
+  contentType: string,
+  body: string | Uint8Array | AsyncIterable<Uint8Array> | null,
+  init: HttpResponseInit = {},
+): HttpResponse {
   return {
     status: init.status ?? status,
     contentType: init.contentType ?? contentType,
@@ -335,6 +342,9 @@ export const reply = {
   html: (body: string, init?: HttpResponseInit): HttpResponse =>
     make(200, 'text/html; charset=utf-8', body, init),
   buffer: (body: Uint8Array, init?: HttpResponseInit): HttpResponse =>
+    make(200, 'application/octet-stream', body, init),
+  /** 流式响应（大文件下载不整份进内存）。 */
+  stream: (body: AsyncIterable<Uint8Array>, init?: HttpResponseInit): HttpResponse =>
     make(200, 'application/octet-stream', body, init),
   protobuf: (body: Uint8Array, init?: HttpResponseInit): HttpResponse =>
     make(200, 'application/x-protobuf', body, init),

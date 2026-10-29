@@ -114,13 +114,13 @@ export const pgsql: DialectSpec = {
 
   introspection: {
     tableExists: (table) => ({
-      sql: 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = $1',
+      sql: 'SELECT 1 AS found FROM information_schema.tables WHERE table_name = $1 AND table_schema = current_schema()',
       params: [table],
     }),
     columns: (table) => ({
       sql:
         'SELECT column_name, is_nullable, data_type, character_maximum_length, column_default ' +
-        'FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position',
+        'FROM information_schema.columns WHERE table_name = $1 AND table_schema = current_schema() ORDER BY ordinal_position',
       params: [table],
     }),
     toColumn: (row) => {

@@ -27,6 +27,8 @@ interface ContextCell {
   persistEvent(event: unknown): Promise<unknown> | unknown;
   persistEvents(events: unknown[]): Promise<unknown> | unknown;
   saveSnapshot(): Promise<unknown> | unknown;
+  /** 已恢复到的日志版本（events 模式）。 */
+  readonly _eventVersion: number | null;
 }
 
 /** `ctx.system` 的最小视图（只列 ctx 用到的）。 */
@@ -90,6 +92,17 @@ class ActorContext {
   /** Trace context of the message being handled (tracing plugin installed). */
   get trace(): unknown {
     return this.cell.currentTrace || null;
+  }
+
+  /**
+   * 已恢复到的日志版本（events 模式；其它模式为 0）。
+   *
+   * 为什么需要它：`readLog`/`upcast` 给到 `applyEvent` 的是**事件体**，信封上的 `seq` 不在了。
+   * 从快照恢复时只重放增量，数据层若按"应用了几条"计数，序号会从 0 重来。
+   * `postRecover` 里读这个值，就能把序号对齐到日志真实版本。
+   */
+  get eventVersion(): number {
+    return typeof this.cell._eventVersion === 'number' ? this.cell._eventVersion : 0;
   }
 
   /** Create a child span of the current one (for spans the actor starts). */

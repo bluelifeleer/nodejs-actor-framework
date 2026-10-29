@@ -83,10 +83,14 @@ function pubsub(options: PubSubOptions = {}) {
 
       const onUpdate = (key: string, value: unknown) => {
         if (!key.startsWith('subs:')) return;
-        remoteSubs.set(
-          key.slice('subs:'.length),
-          value !== null && typeof value === 'object' ? (value as Record<string, string[]>) : {},
-        );
+        // registry 值来自对端：形状不可信。坏值必须丢弃，而不是让 subscribers()/publish() 抛错。
+        const sanitized: Record<string, string[]> = {};
+        if (value !== null && typeof value === 'object') {
+          for (const [topic, paths] of Object.entries(value as Record<string, unknown>)) {
+            if (Array.isArray(paths)) sanitized[topic] = paths.filter((path): path is string => typeof path === 'string');
+          }
+        }
+        remoteSubs.set(key.slice('subs:'.length), sanitized);
       };
       const onDelete = (key: string) => {
         if (key.startsWith('subs:')) remoteSubs.delete(key.slice('subs:'.length));

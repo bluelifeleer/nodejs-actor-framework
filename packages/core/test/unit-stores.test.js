@@ -13,6 +13,7 @@ const { MemoryStore } = require('../src/store/backends/memory-store.ts');
 const { LevelStore, isAvailable: levelAvailable } = require('../src/store/backends/level-store.ts');
 const { createStore, validateStoreConfig, BACKENDS } = require('../src/store/backends/index.ts');
 const { MessageStore } = require('../src/store/message-store.ts');
+const { FilePersistence } = require('../src/store/persistence.ts');
 const { fileName } = require('../src/store/backends/naming.ts');
 
 test.after(() => cleanup(tempDir));
@@ -341,4 +342,33 @@ test('facade: the default singleton uses the configured backend', () => {
   const store = require('../src/store/message-store.ts');
   assert.ok(BACKENDS.includes(store.backendName));
   assert.ok(store.pathFor('x').startsWith(require('../src/config.ts').dataDir));
+});
+
+test('FilePersistence: 日志中段损坏必须明确报错，而不是静默丢掉后半段（回归）', async () => {
+  const baseDir = uniqueDir('event-corrupt-middle');
+  const store = new FilePersistence({ baseDir });
+  await store.appendEvent('actor-x', { type: 'A', n: 1 });
+  await store.appendEvent('actor-x', { type: 'A', n: 2 });
+  const eventDir = path.join(baseDir, 'events');
+  const file = path.join(eventDir, fs.readdirSync(eventDir)[0]);
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  // 在两条合法记录之间插入一条坏行：后面的记录还在，说明不是撕裂尾部
+  fs.writeFileSync(file, `${lines[0]}\nnot-json-at-all\n${lines[1]}\n`);
+
+  await assert.rejects(
+    () => store.loadEvents('actor-x'),
+    /corrupt/i,
+    '中段损坏必须抛错；静默返回第一条会表现为“最近的命令没发生”',
+  );
+});
+
+test('FilePersistence: 只有最后一行读不通时才按撕裂尾部容忍（回归）', async () => {
+  const baseDir = uniqueDir('event-torn-tail');
+  const store = new FilePersistence({ baseDir });
+  await store.appendEvent('actor-y', { type: 'A', n: 1 });
+  const eventDir = path.join(baseDir, 'events');
+  const file = path.join(eventDir, fs.readdirSync(eventDir)[0]);
+  fs.appendFileSync(file, '{"partial":');
+  const events = await store.loadEvents('actor-y');
+  assert.deepStrictEqual(events.map((event) => event.n), [1], '撕裂尾部之前的事件必须保留');
 });

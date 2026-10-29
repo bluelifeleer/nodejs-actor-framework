@@ -51,6 +51,19 @@ function assertNoInjection(value: string, what: string): void {
   if (CRLF.test(value)) throw new DbConfigError(`mail: ${what} 里不允许出现换行（防头部注入）：${JSON.stringify(value)}`);
 }
 
+/** 头部字段名必须是 RFC 5322 token（拒绝冒号/空白/控制字符）。 */
+function assertHeaderName(name: string): void {
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) {
+    throw new DbConfigError(`mail: header name 不是合法 token：${JSON.stringify(name)}`);
+  }
+}
+
+function assertMessageId(value: string): void {
+  if (!/^<[^<>\s]+@[^<>\s]+>$/.test(value)) {
+    throw new DbConfigError(`mail: Message-ID 格式不对：${JSON.stringify(value)}`);
+  }
+}
+
 function addressOf(input: string | MailAddress): MailAddress {
   if (typeof input === 'string') {
     assertNoInjection(input, 'address');
@@ -72,7 +85,14 @@ function encodeWord(value: string): string {
 function formatAddress(input: string | MailAddress): string {
   const { name, address } = addressOf(input);
   if (name === undefined || name === '') return address;
-  return `${encodeWord(name)} <${address}>`;
+  // 显示名里的逗号/分号/引号等必须按 RFC 5322 quoted-string 处理，否则
+  // `Doe, John <j@example.com>` 会被解析成两个地址
+  const display = /^[\x20-\x7e]*$/.test(name)
+    ? /[",;:<>@\\\[\]]/.test(name)
+      ? `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      : name
+    : encodeWord(name);
+  return `${display} <${address}>`;
 }
 
 function formatDate(date: Date): string {
@@ -115,7 +135,9 @@ export function renderMail(message: MailMessage, options: { now?: Date; messageI
   const cc = (message.cc ?? []).map(addressOf);
   const bcc = (message.bcc ?? []).map(addressOf);
   const domain = options.domain ?? from.address.split('@')[1] ?? 'localhost';
+  if (!/^[A-Za-z0-9.-]+$/.test(domain)) throw new DbConfigError(`mail: domain 格式不对：${JSON.stringify(domain)}`);
   const messageId = options.messageId ?? `<${randomUUID()}@${domain}>`;
+  assertMessageId(messageId);
   const date = options.now ?? new Date();
 
   const headers: string[] = [
@@ -129,7 +151,7 @@ export function renderMail(message: MailMessage, options: { now?: Date; messageI
     'MIME-Version: 1.0',
   ];
   for (const [key, value] of Object.entries(message.headers ?? {})) {
-    assertNoInjection(key, 'header name');
+    assertHeaderName(key);
     assertNoInjection(value, `header ${key}`);
     headers.push(`${key}: ${value}`);
   }
@@ -139,9 +161,14 @@ export function renderMail(message: MailMessage, options: { now?: Date; messageI
   const attachments = message.attachments ?? [];
   const stamp = randomUUID().slice(0, 8);
 
-  const bodyPart = (contentType: string, body: string): string =>
-    `Content-Type: ${contentType}\r\nContent-Transfer-Encoding: ${/^[\x20-\x7e\r\n]*$/.test(body) ? '7bit' : 'base64'}\r\n\r\n` +
-    (/^[\x20-\x7e\r\n]*$/.test(body) ? body : base64Lines(Buffer.from(body, 'utf8')));
+  const bodyPart = (contentType: string, rawBody: string): string => {
+    // RFC 5322 §2.3：正文行必须用 CRLF；先规范化再判断 7bit/base64
+    const body = rawBody.replace(/\r?\n/g, '\r\n');
+    return (
+      `Content-Type: ${contentType}\r\nContent-Transfer-Encoding: ${/^[\x20-\x7e\r\n]*$/.test(body) ? '7bit' : 'base64'}\r\n\r\n` +
+      (/^[\x20-\x7e\r\n]*$/.test(body) ? body : base64Lines(Buffer.from(body, 'utf8')))
+    );
+  };
 
   let body: string;
   if (html !== undefined && attachments.length === 0) {
@@ -178,7 +205,13 @@ export function renderMail(message: MailMessage, options: { now?: Date; messageI
     for (const attachment of attachments) {
       assertNoInjection(attachment.filename, 'attachment filename');
       const contentType = attachment.contentType ?? 'application/octet-stream';
+      if (!/^[\w.+-]+\/[\w.+-]+(?:;\s*[\w.-]+=[^;\r\n]+)*$/.test(contentType)) {
+        throw new DbConfigError(`mail: attachment contentType 格式不对：${JSON.stringify(contentType)}`);
+      }
       const id = attachment.contentId ?? `${randomUUID()}@${domain}`;
+      if (!/^[^\s<>\r\n]+@[^\s<>\r\n]+$/.test(id)) {
+        throw new DbConfigError(`mail: attachment contentId 格式不对：${JSON.stringify(id)}`);
+      }
       parts.push(
         `--${mixed}`,
         `Content-Type: ${contentType}; name="${encodeWord(attachment.filename)}"`,
@@ -193,8 +226,12 @@ export function renderMail(message: MailMessage, options: { now?: Date; messageI
     parts.push(`--${mixed}--`, '');
     body = parts.join('\r\n');
   } else {
-    headers.push(bodyPart('text/plain; charset=utf-8', text).split('\r\n\r\n')[0] as string);
-    body = text;
+    // 头部声明的 CTE（7bit/base64）与正文必须来自**同一次**渲染：
+    // 旧实现只取了头部，正文却写原文，非 ASCII 正文会被收件端按 base64 解码成乱码。
+    const rendered = bodyPart('text/plain; charset=utf-8', text);
+    const separator = rendered.indexOf('\r\n\r\n');
+    headers.push(rendered.slice(0, separator));
+    body = rendered.slice(separator + 4);
   }
 
   return {

@@ -40,9 +40,17 @@ export interface MongoAdapterOptions {
 export function parseMongoUrl(url: string): MongoConnection {
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(String(url))?.[1]?.toLowerCase();
   if (scheme !== 'mongodb' && scheme !== 'mongodb+srv') {
-    throw new DbConfigError(`mongodb connection url must start with mongodb:// or mongodb+srv:// (got "${String(url)}")`);
+    // 不回显整串（可能含密码）
+    throw new DbConfigError(`mongodb connection url must start with mongodb:// or mongodb+srv:// (got scheme "${String(scheme)}")`);
   }
-  const parsed = new URL(url);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // 副本集多主机 DSN（mongodb://h1,h2,h3/db?replicaSet=rs0）不是 RFC URL；
+    // 直接交给驱动，别在这里用 URL 解析器拒掉标准写法。
+    return { kind: 'mongodb', url, tls: scheme === 'mongodb+srv' };
+  }
   const database = parsed.pathname.replace(/^\//, '');
   const authSource = parsed.searchParams.get('authSource');
   const tlsParam = parsed.searchParams.get('tls');
@@ -88,8 +96,9 @@ export function mongoAdapter(options: MongoAdapterOptions = {}): DatabaseAdapter
     describe: (connection) => describeMongo(connection),
 
     async connect({ connection, pool, load, emitDriverEvent, logger }): Promise<ManagedConnection<DocumentClient>> {
-      const impl = resolveMongoDriver(driverName);
-      const database = options.database ?? connection.database ?? 'test';
+      const declaredDriver = (connection as { driver?: unknown }).driver;
+      const impl = resolveMongoDriver(typeof declaredDriver === 'string' && declaredDriver !== '' ? declaredDriver : driverName);
+      const database = connection.database ?? options.database ?? 'test';
       const url =
         connection.url ??
         `mongodb://${connection.host ?? 'localhost'}${connection.port === undefined ? '' : `:${String(connection.port)}`}/${database}`;

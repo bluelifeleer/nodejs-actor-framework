@@ -18,6 +18,8 @@
  */
 
 import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { statSync } from 'node:fs';
@@ -140,7 +142,65 @@ function specFrom(value: unknown, source: string): CommandSpec {
  *
  * 返回按名字排序；重名（含与内置命令重名）**明确报错**，不静默取一个。
  */
-export async function discoverCommands(projectDir: string): Promise<DiscoveredCommand[]> {
+const DISCOVERY_MARKER = '__ACTOR_DISCOVERY_JSON__';
+const execFileAsync = promisify(execFile);
+
+/**
+ * 在**子进程**里发现命令：`actor commands` / 未知命令提示只需要元数据，
+ * 而用户命令文件可能 `process.exit()` / 崩溃 —— 绝不能把主 CLI 一起带走。
+ * 子进程只回传 name/summary/usage/flags/source（run 是函数，无法也无需序列化）。
+ */
+async function discoverInChild(projectDir: string): Promise<DiscoveredCommand[]> {
+  const self = import.meta.filename;
+  const script = `
+import { pathToFileURL } from 'node:url';
+const self = process.env.ACTOR_DISCOVERY_SELF;
+const dir = process.env.ACTOR_DISCOVERY_DIR;
+const mod = await import(pathToFileURL(self).href);
+try {
+  const found = await mod.discoverCommands(dir, true);
+  const out = found.map(({ spec, source }) => ({
+    source,
+    spec: { name: spec.name, summary: spec.summary, usage: spec.usage, flags: spec.flags },
+  }));
+  process.stdout.write('\\n${DISCOVERY_MARKER}' + JSON.stringify({ ok: true, found: out }));
+} catch (err) {
+  process.stdout.write('\\n${DISCOVERY_MARKER}' + JSON.stringify({
+    ok: false,
+    error: { message: err?.message ?? String(err), hint: err?.hint, name: err?.name },
+  }));
+}
+`;
+  try {
+    const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+      env: {
+        ...process.env,
+        ACTOR_DISCOVERY_CHILD: '1',
+        ACTOR_DISCOVERY_SELF: self,
+        ACTOR_DISCOVERY_DIR: projectDir,
+      },
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const start = stdout.indexOf(DISCOVERY_MARKER);
+    if (start < 0) throw new Error(`自定义命令发现子进程没有返回结果：${stdout.slice(-500)}`);
+    const parsed = JSON.parse(stdout.slice(start + DISCOVERY_MARKER.length)) as
+      | { ok: true; found: Array<{ source: string; spec: Omit<CommandSpec, 'run'> }> }
+      | { ok: false; error: { message?: string; hint?: string; name?: string } };
+    if (parsed.ok !== true) {
+      const error = new UsageError(parsed.error.message ?? '自定义命令发现失败', parsed.error.hint);
+      if (parsed.error.name !== 'UsageError') error.name = parsed.error.name ?? 'Error';
+      throw error;
+    }
+    return parsed.found.map((item) => ({ source: item.source, spec: item.spec as CommandSpec }));
+  } catch (err) {
+    if (err instanceof UsageError) throw err;
+    const error = err as { stderr?: string; message?: string };
+    throw new Error(`自定义命令发现失败（子进程）：${String(error.stderr ?? error.message ?? err)}`);
+  }
+}
+
+export async function discoverCommands(projectDir: string, internal = false): Promise<DiscoveredCommand[]> {
+  if (!internal && process.env.ACTOR_DISCOVERY_CHILD !== '1') return discoverInChild(projectDir);
   const found: DiscoveredCommand[] = [];
   const seen = new Map<string, string>();
 

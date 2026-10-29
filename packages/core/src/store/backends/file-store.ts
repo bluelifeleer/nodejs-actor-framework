@@ -78,6 +78,8 @@ class FileStore {
   skippedRecords: number;
   /** 从旧格式迁移过来的 actor 数。 */
   migrated: number;
+  /** 已经为"live 数据超过单文件上限"告警过的 actor（避免每次 append 刷屏）。 */
+  readonly _maxBytesWarned: Set<string>;
 
   constructor(options: FileStoreOptions = {}) {
     this.baseDir = options.baseDir ?? path.join(config.dataDir, 'msg_store');
@@ -90,6 +92,7 @@ class FileStore {
     this.maxTrackedActors = (options.maxTrackedActors as number | undefined) ?? 1024;
     this.skippedRecords = 0;
     this.migrated = 0;
+    this._maxBytesWarned = new Set();
   }
 
   get backendName(): string {
@@ -204,8 +207,20 @@ class FileStore {
 
   async _maybeCompact(actorId: string, state: ActorState): Promise<void> {
     const dead = state.fileBytes - state.liveBytes;
+    const overMax = this.maxFileBytes > 0 && state.fileBytes >= this.maxFileBytes;
+    if (overMax && state.liveBytes >= this.maxFileBytes) {
+      // 压缩不会让 live 数据变小；到了这一步只能如实告警（不静默假装有上限）
+      if (!this._maxBytesWarned.has(actorId)) {
+        this._maxBytesWarned.add(actorId);
+        process.emitWarning(
+          `file store: actor "${actorId}" has ${state.liveBytes} live bytes, above maxFileBytes=${this.maxFileBytes}; compaction cannot reduce live data`,
+          { code: 'ACTOR_STORE_MAX_BYTES' },
+        );
+      }
+      return;
+    }
     const threshold = Math.max(this.compactionThresholdBytes, state.liveBytes);
-    if (dead < threshold) return;
+    if (dead < threshold && !overMax) return;
     await this._compactLocked(actorId, state);
   }
 
@@ -265,7 +280,11 @@ class FileStore {
       const expected = buf.readUInt32BE(offset + 4);
       const start = offset + HEADER_BYTES;
       const end = start + len;
-      if (len === 0 || end > buf.length) break; // torn tail from a crash
+      if (len === 0) {
+        // 合法帧不可能长度为 0；这是损坏的头部，继续读下去只会静默丢数据
+        throw new Error(`corrupt message-store record at offset ${offset} (zero-length frame)`);
+      }
+      if (end > buf.length) break; // torn tail from a crash
       const body = buf.subarray(start, end);
       offset = end;
 

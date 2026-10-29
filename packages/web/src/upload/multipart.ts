@@ -16,6 +16,8 @@ export interface MultipartLimits {
   maxFiles: number;
   maxFieldSize: number;
   maxFields: number;
+  /** 整个请求体的上限（可选；与分片上传的 maxUploadSize 同义）。 */
+  maxTotalBytes?: number;
 }
 
 export interface MultipartPart {
@@ -110,8 +112,13 @@ export async function parseMultipart(
     Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 
   /** 把一段数据交给当前 part（文件 → sink；字段 → 累积）。**唯一出口**，避免漏掉某条路径。 */
+  let totalBytes = 0;
   const pushData = async (slice: Buffer): Promise<void> => {
     if (slice.length === 0) return;
+    totalBytes += slice.byteLength;
+    if (limits.maxTotalBytes !== undefined && totalBytes > limits.maxTotalBytes) {
+      throw new HttpError(413, `请求体超过上限（maxUploadSize=${limits.maxTotalBytes}）`);
+    }
     const active = partState.current;
     if (active === null) return;
     if (active.sink !== null) {

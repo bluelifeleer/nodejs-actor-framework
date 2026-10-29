@@ -220,3 +220,73 @@ test('auth plugin: 自定义 extractor + verifyExtra 撤销；密钥太短直接
   assert.throws(() => authPlugin({ keys: [{ algorithm: 'HS256', key: 'short' }] }), /密钥太短/);
   assert.throws(() => authPlugin({ keys: [] }), /不能为空/);
 });
+
+function rawPost(url: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(url, { method: 'POST', headers }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += String(chunk); });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('auth plugin: cookie 来源的写请求必须有 CSRF 证据；畸形 cookie 走 401（回归）', async () => {
+  const { app, base } = await startAuthApp(
+    { keys: [hmacKey()], cookie: 'access_token' },
+    defineRoutes([
+      get('/me', defineController({ auth: { required: true }, async handle() { return { ok: true }; } })),
+      post('/write', defineController({ auth: { required: true }, async handle() { return { ok: true }; } })),
+    ]),
+  );
+  try {
+    const token = signJwt({ sub: 'u' }, { key: hmacKey(), expiresInSec: 60 });
+    const noCsrf = await rawPost(`${base}/write`, { cookie: `access_token=${token}` });
+    assert.strictEqual(noCsrf.status, 403, 'cookie + 写请求且没有自定义头 → 403（CSRF 防护）');
+
+    const withCsrf = await rawPost(`${base}/write`, { cookie: `access_token=${token}`, 'x-requested-with': 'XMLHttpRequest' });
+    assert.strictEqual(withCsrf.status, 200);
+
+    const malformed = await rawGet(`${base}/me`, { cookie: 'access_token=%E0%A4%A' });
+    assert.strictEqual(malformed.status, 401, '畸形 cookie 应 401，而不是 500');
+  } finally {
+    await app.stop({ timeoutMs: 5000 });
+  }
+});
+
+test('auth plugin: 默认拒绝没有 exp 的 token；requireExp:false 才放行（回归）', async () => {
+  const noExpiry = signJwt({ sub: 'u', roles: ['user'] }, { key: hmacKey() }); // 不带 expiresInSec
+  await assert.rejects(
+    () => verifyJwt(noExpiry, { keys: [hmacKey()], requireExp: true }),
+    (err: unknown) => {
+      assert.ok(err instanceof JwtError);
+      assert.strictEqual(err.reason, 'missing_exp');
+      return true;
+    },
+  );
+  assert.ok((await verifyJwt(noExpiry, { keys: [hmacKey()] })).payload.sub === 'u', '默认 verifyJwt 仍兼容旧调用');
+
+  const strict = await startAuthApp(
+    { keys: [hmacKey()] },
+    defineRoutes([get('/me', defineController({ auth: { required: true }, async handle() { return { ok: true }; } }))]),
+  );
+  try {
+    const rejected = await fetch(`${strict.base}/me`, { headers: { authorization: `Bearer ${noExpiry}` } });
+    assert.strictEqual(rejected.status, 401, 'authPlugin 默认要求 exp');
+  } finally {
+    await strict.app.stop({ timeoutMs: 5000 });
+  }
+
+  const lax = await startAuthApp(
+    { keys: [hmacKey()], requireExp: false },
+    defineRoutes([get('/me', defineController({ auth: { required: true }, async handle() { return { ok: true }; } }))]),
+  );
+  try {
+    const accepted = await fetch(`${lax.base}/me`, { headers: { authorization: `Bearer ${noExpiry}` } });
+    assert.strictEqual(accepted.status, 200, '显式关闭后才允许永久 token');
+  } finally {
+    await lax.app.stop({ timeoutMs: 5000 });
+  }
+});

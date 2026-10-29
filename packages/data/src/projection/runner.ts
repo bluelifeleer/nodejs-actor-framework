@@ -81,10 +81,20 @@ export async function clearRepository(
     // 逐页删：删掉一页之后，不带游标的 findMany 自然返回"下一批"（前一批已经不在库里了）
     const page = await repository.findMany({ limit: batchSize });
     if (page.items.length === 0) break;
+    let deletedThisPage = 0;
     for (const item of page.items) {
       const id = item[idField];
       if (id === undefined || id === null) continue;
-      if (await repository.delete(String(id))) deleted += 1;
+      if (await repository.delete(String(id))) {
+        deleted += 1;
+        deletedThisPage += 1;
+      }
+    }
+    if (deletedThisPage === 0) {
+      // idField 配错时原实现会永远删不掉、永远拿到同一页 → rebuild() 挂死。
+      throw new ProjectionError(
+        `clearRepository: page of ${page.items.length} rows deleted nothing (idField="${idField}" does not match the entities?)`,
+      );
     }
     if (page.items.length < batchSize) break;
   }

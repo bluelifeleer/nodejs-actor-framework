@@ -11,6 +11,7 @@ import path from 'node:path';
 import { UsageError, parseArgs } from './args.ts';
 import type { Capability, WebPlugin } from './capabilities.ts';
 import type { Layout } from './templates/app.ts';
+import { PLUGIN_KINDS } from './templates/plugin.ts';
 import { doctor } from './commands/doctor.ts';
 import { GENERATE_KINDS, generate, parseField, type GenerateKind } from './commands/generate.ts';
 import { missingMarkerHelp, MOUNT_MARKER } from './commands/mount.ts';
@@ -28,16 +29,16 @@ function usage(): string {
     'actor —— actor 框架的命令行工具',
     '',
     '用法：',
-    '  actor new app <dir> [--layout layered|flat] [--with redis,mail] [--web-plugins upload,auth,debug] [--dry-run] [--force]',
-    '  actor new plugin <name> --kind web|resource [--dir <父目录>] [--repo] [--dry-run] [--force]',
+    '  actor new app <dir> [--layout layered|flat] [--with redis,mail] [--web-plugins upload,auth,debug] [--install] [--dry-run] [--force]',
+    `  actor new plugin <name> --kind ${PLUGIN_KINDS.join('|')} [--dir <父目录>] [--repo] [--dry-run] [--force]`,
     '                                              生成能自证合规的插件包骨架（自带已发布契约套件的测试）',
     '  actor add <capability> [--web-plugin <name>] [--dir <项目目录>] [--dry-run]',
     '                                              给已有项目增量加能力（非破坏性；不覆盖已有片段）',
     '                                              生成可运行骨架（CRUD + Actor + 持久化 + 测试）',
     '                                              layered（默认）= 按业务分层；flat = 最小扁平形状',
-    '  actor generate <kind> <name> [--field k:type]… [--optimistic-lock] [--migration-version <n>]',
+    `  actor generate <kind> <name> [--field k:type]… [--optimistic-lock] [--migration-version <n>]`,
     '                                [--no-test] [--dry-run] [--force] [--mount]',
-    '                                              生成常用骨架（controller/actor/service/model/schema/middleware/test）',
+    `                                              生成常用骨架（${GENERATE_KINDS.join('/')}）`,
     '                                              不覆盖已有文件；默认只打印 module.ts 的接线片段，',
     '                                              --mount 才自动插到 `// @actor:mount <槽位>` 标记后面（没有标记就提示你加）',
     '  actor migrate status|up|down [--to <v>]      查看/应用/回滚迁移（默认项目目录 = 当前目录）',
@@ -48,7 +49,7 @@ function usage(): string {
     '通用选项：--dir <path>（项目目录，默认当前目录）、--data <path>（数据目录，默认 APP_DATA_DIR 或 <dir>/data）、',
     '          --json（机器可读输出）、--debug（打印堆栈）',
     '',
-    '约定：目标目录非空时会拒绝写入（除非 --force）；生成后不自动安装依赖；',
+    '约定：目标目录非空时会拒绝写入（除非 --force）；--install 才自动安装依赖；',
     '      退出码 0 成功 / 1 用法错误 / 2 环境或用户操作问题（doctor 有问题时退出码 2）。',
   ].join('\n');
 }
@@ -69,8 +70,14 @@ async function main(argv: readonly string[]): Promise<number> {
       generate: [...GENERATE_KINDS],
       commands: [],
       help: [],
+      g: [...GENERATE_KINDS],
     },
   });
+  if (parsed.command[0] === 'g') parsed.command[0] = 'generate';
+  if (parsed.command[0] === 'help') {
+    process.stdout.write(`${usage()}\n`);
+    return 0;
+  }
 
   if (parsed.flags.version === true) {
     process.stdout.write(`${VERSION}\n`);
@@ -138,8 +145,9 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(webPlugins === undefined ? {} : { webPlugins }),
       ...(capabilities === undefined ? {} : { capabilities }),
       ...(parsed.flags['dry-run'] === true ? { dryRun: true } : {}),
+      ...(parsed.flags.install === true && parsed.flags['no-install'] !== true ? { install: true } : {}),
     });
-    process.stdout.write(`已生成 ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
+    process.stdout.write(`${parsed.flags['dry-run'] === true ? '[dry-run] 计划生成' : '已生成'} ${result.files.length} 个文件到 ${path.relative(process.cwd(), result.dir) || '.'}\n`);
     for (const file of result.files) process.stdout.write(`  ${file}\n`);
     process.stdout.write(`\n下一步：\n${result.nextSteps.map((step) => `  ${step}`).join('\n')}\n`);
     return 0;
@@ -194,10 +202,16 @@ async function main(argv: readonly string[]): Promise<number> {
     if (error instanceof UsageError) throw error;
     custom = [];
   }
-    const capabilities =
-      typeof parsed.flags['with'] === 'string'
-        ? (parsed.flags['with'].split(',').map((name) => name.trim()).filter((name) => name !== '') as Capability[])
-        : [];
+    // 文档/自身 --help 都写 `actor add <capability>`：位置参数与 --with 都接受
+    const positionalCapability = parsed.positionals[0];
+    const capabilities = [
+      ...new Set([
+        ...(positionalCapability === undefined ? [] : [positionalCapability]),
+        ...(typeof parsed.flags['with'] === 'string'
+          ? parsed.flags['with'].split(',').map((name) => name.trim()).filter((name) => name !== '')
+          : []),
+      ]),
+    ] as Capability[];
     // `--web-plugin auth` 与 `--with redis` 是两类东西（前者是 web 的插件选项）
     const webPlugins =
       typeof parsed.flags['web-plugin'] === 'string'
@@ -413,7 +427,10 @@ async function dispatchCustomCommand(argv: readonly string[]): Promise<number | 
   const runner = path.join(import.meta.dirname, 'run-command.ts');
   const { spawn } = await import('node:child_process');
   return new Promise<number>((resolve) => {
-    const child = spawn(process.execPath, [runner, path.resolve(dir ?? process.cwd()), name, ...forwarded], { stdio: 'inherit' });
+    const child = spawn(process.execPath, [runner, path.resolve(dir ?? process.cwd()), name, ...forwarded], {
+      stdio: 'inherit',
+      env: { ...process.env, ACTOR_DISCOVERY_CHILD: '1' },
+    });
     child.on('exit', (exitCode) => resolve(exitCode ?? 1));
     child.on('error', () => resolve(2));
   });

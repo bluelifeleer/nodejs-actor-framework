@@ -702,3 +702,44 @@ test('stop() is bounded even when an actor is stuck in a handler that never reso
   assert.ok(warning, 'the stuck actor is reported instead of hanging silently');
   assert.ok(warning.meta.busyActors.includes('stuck'));
 });
+
+test('defineActor(instance): 同一个实例定义不能被两个 Actor 共享（回归：state 串联）', async () => {
+  const system = createSystem(quiet);
+  class Counter extends Actor {
+    preStart() { this.state = { n: 0 }; }
+    async receive() { this.state.n += 1; return this.state.n; }
+  }
+  const definition = defineActor(new Counter());
+  try {
+    const first = await system.spawn(definition, { id: 'instance-a' });
+    assert.strictEqual(await first.ask('inc'), 1);
+    await assert.rejects(
+      () => system.spawn(definition, { id: 'instance-b' }),
+      /live instance|already bound|each actor gets its own state/,
+      '第二个 spawn 必须明确失败，而不是共享 state',
+    );
+    assert.strictEqual(await first.ask('inc'), 2, '第一个 Actor 的状态不受影响');
+  } finally {
+    await system.stop();
+  }
+});
+
+test('system.stop: 注入“不会触发的定时器”时，强制停机仍走真实时间（回归：虚拟时钟挂死）', async () => {
+  const clock = {
+    now: () => Date.now(),
+    setTimeout: () => ({ id: 1 }), // 永不触发（模拟没人推进的虚拟时钟）
+    clearTimeout: () => {},
+    setInterval: () => ({ id: 2 }),
+    clearInterval: () => {},
+  };
+  const system = createSystem({ logger: false, clock });
+  const ref = await system.spawn(() => new Promise(() => {}), { id: 'stuck' });
+  ref.tell('go');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const outcome = await Promise.race([
+    system.stop({ timeoutMs: 30 }).then(() => 'stopped'),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 1000)),
+  ]);
+  assert.strictEqual(outcome, 'stopped', '停机预算不能依赖可注入时钟，否则不推进就永久挂住');
+});

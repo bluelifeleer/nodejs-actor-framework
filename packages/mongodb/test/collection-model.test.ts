@@ -156,7 +156,7 @@ test('collection: checkCollectionDrift 单集合查询（缺集合/缺索引/val
     validator: { $jsonSchema: Events.jsonSchema },
     indexes: [
       { name: 'events_type_at', keys: { type: 1, at: 1 } },
-      { name: 'events_seq', keys: { seq: 1 } },
+      { name: 'events_seq', keys: { seq: 1 }, unique: true },
     ],
   });
   assert.strictEqual(ok.ok, true, `不该报漂移：${JSON.stringify(ok.drift)}`);

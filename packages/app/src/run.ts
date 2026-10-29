@@ -54,8 +54,21 @@ export async function runApp(spec: unknown, options: RunAppOptions = {}): Promis
 
   // ⚠️ 顺序要紧：信号处理器在**第一个 await 之前**注册（启动窗口内也要能优雅停）
   let stopping = false;
+  const handlers: Array<{ signal: NodeJS.Signals; handler: () => void }> = [];
+  const removeHandlers = (): void => {
+    for (const { signal, handler } of handlers.splice(0)) process.off(signal, handler);
+  };
+  // 程序化 stop / 启动失败也要摘掉监听器，否则同进程多次 runApp 会累积
+  const originalStop = application.stop.bind(application);
+  application.stop = async (stopOptions?: Parameters<typeof application.stop>[0]) => {
+    try {
+      return await originalStop(stopOptions);
+    } finally {
+      removeHandlers();
+    }
+  };
   for (const signal of options.signals ?? (['SIGTERM', 'SIGINT'] as const)) {
-    process.on(signal, () => {
+    const handler = (): void => {
       if (stopping) return; // 重复信号只处理一次
       stopping = true;
       void application
@@ -68,11 +81,18 @@ export async function runApp(spec: unknown, options: RunAppOptions = {}): Promis
           process.stderr.write(`[${label}] stop failed: ${String(err)}\n`);
           exit(1);
         });
-    });
+    };
+    handlers.push({ signal, handler });
+    process.on(signal, handler);
   }
 
-  await options.beforeStart?.(application);
-  await application.start();
-  await options.onStarted?.(application);
+  try {
+    await options.beforeStart?.(application);
+    await application.start();
+    await options.onStarted?.(application);
+  } catch (err) {
+    removeHandlers();
+    throw err;
+  }
   return application;
 }

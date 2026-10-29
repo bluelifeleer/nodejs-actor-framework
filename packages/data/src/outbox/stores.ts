@@ -73,6 +73,8 @@ export function createFileOutboxCursor(options: FileOutboxCursorOptions): Outbox
 export interface OutboxSqlRunner {
   all(sql: string, params: readonly unknown[]): Promise<Record<string, unknown>[]>;
   run(sql: string, params: readonly unknown[]): Promise<number>;
+  /** 可选：真事务（提供给游标更新的原子性） */
+  transaction?<R>(fn: (scoped: OutboxSqlRunner) => Promise<R>): Promise<R>;
 }
 
 export interface SqlOutboxCursorOptions {
@@ -102,9 +104,14 @@ export function createSqlOutboxCursor(options: SqlOutboxCursorOptions): OutboxCu
     },
     async write(seq) {
       checkSeq(seq);
-      // DELETE + INSERT：三种方言都认（不用 ON CONFLICT / ON DUPLICATE KEY）
-      await runner.run(`DELETE FROM ${table} WHERE id = 1`, []);
-      await runner.run(`INSERT INTO ${table} (id, cursor) VALUES (1, ?)`, [seq]);
+      // DELETE + INSERT：三种方言都认（不用 ON CONFLICT / ON DUPLICATE KEY）。
+      // 两条语句必须在同一事务里，否则崩溃窗口会留下"已删除、未插入" → 游标归零、整段重投。
+      const write = async (scoped: OutboxSqlRunner): Promise<void> => {
+        await scoped.run(`DELETE FROM ${table} WHERE id = 1`, []);
+        await scoped.run(`INSERT INTO ${table} (id, cursor) VALUES (1, ?)`, [seq]);
+      };
+      if (typeof runner.transaction === 'function') await runner.transaction(write);
+      else await write(runner);
     },
   };
 }

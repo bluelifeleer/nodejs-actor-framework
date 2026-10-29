@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { createApp } from '@actor/app';
 
 import app, { http } from './src/app.ts';
@@ -6,7 +7,7 @@ import app, { http } from './src/app.ts';
 const dataDir = process.env.APP_DATA_DIR ?? './data';
 
 const application = createApp(app, {
-  configDir: new URL('./config', import.meta.url).pathname,
+  configDir: fileURLToPath(new URL('./config', import.meta.url)),
   // 内核持久化：Actor 的快照/事件写到这里；共享存储（SQL/共享盘）才能跨节点交接
   kernel: { logger: false, persistence: { dir: dataDir } },
 });

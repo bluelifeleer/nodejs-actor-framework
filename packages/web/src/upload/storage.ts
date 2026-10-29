@@ -1,7 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { test } from 'node:test';
+import { createRequire } from 'node:module';
+
+// 契约套件是**测试工具**：`node:test` 必须等到真正调用 run*Contract 时才加载，
+// 否则生产入口 import 一个常量就会把测试运行器带进进程/打包产物。
+const require = createRequire(import.meta.url);
+let nodeTest: typeof import('node:test') | null = null;
+const test: typeof import('node:test').test = ((...args: unknown[]) => {
+  nodeTest ??= require('node:test') as typeof import('node:test');
+  return (nodeTest.test as unknown as (...values: unknown[]) => unknown)(...args);
+}) as unknown as typeof import('node:test').test;
 import assert from 'node:assert';
 
 import { DbConfigError } from '@actor/resource';
@@ -53,11 +63,9 @@ export function generateKey(extension: string | undefined): string {
   return `${randomUUID()}${ext === '' ? '' : `.${ext}`}`;
 }
 
-async function* fileStream(file: string, chunkSize = 64 * 1024): AsyncIterable<Uint8Array> {
-  const handle = await readFile(file);
-  for (let offset = 0; offset < handle.length; offset += chunkSize) {
-    yield handle.subarray(offset, Math.min(offset + chunkSize, handle.length));
-  }
+async function* fileStream(file: string): AsyncIterable<Uint8Array> {
+  // 流式读，不把整个文件读进内存（默认单文件上限 512MiB）
+  for await (const chunk of createReadStream(file)) yield chunk as Uint8Array;
 }
 
 export interface LocalDiskStorageOptions {

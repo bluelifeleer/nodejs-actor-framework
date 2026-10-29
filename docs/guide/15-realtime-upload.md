@@ -41,7 +41,7 @@ routes: defineRoutes([
 | 端口 | 不写 `port` → 与 HTTP 同端口（推荐，少一个暴露面）；独立端口用于隔离流量 |
 | 推送 | 控制器里 `ctx.get('wsConnections')` 拿连接注册表，按 id/playerId 主动推 |
 | 关闭 | 停服务时框架先发 `1001 server shutting down`，等连接排空（有超时兜底） |
-| 连接标识 | 连接上设置了 `playerId` 就用它，否则自动 `ws-<序号>` |
+| 连接标识 | 用 `wsPlugin({ identify: (req) => ... })` 返回 `playerId`，否则自动 `ws-<序号>` |
 
 ### 2. 客户端怎么连
 

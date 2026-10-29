@@ -19,5 +19,5 @@
     "declaration": false
   },
   // 只编译运行时需要的部分（config/ 与 test/ 里的非 TS 资产由 scripts/copy-assets.mjs 处理）
-  "include": ["main.ts", "server.ts", "src/**/*.ts", "config/**/*.ts"]
+  "include": ["main.ts", "src/**/*.ts", "config/**/*.ts"]
 }

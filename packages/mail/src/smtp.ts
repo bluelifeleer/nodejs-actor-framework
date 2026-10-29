@@ -1,4 +1,4 @@
-import { DbConfigError, DbConnectionError, type DriverResolver } from '@actor/resource';
+import { DbConfigError, DbConnectionError, DbDriverMissingError, loadDriverModule, type DriverResolver } from '@actor/resource';
 
 import { renderMail, type MailMessage } from './message.ts';
 import { defineMailTransport, type MailTransport } from './transport.ts';
@@ -21,6 +21,10 @@ export interface SmtpOptions {
   resolve?: DriverResolver;
   /** 连接超时（默认 10s）。 */
   connectionTimeoutMs?: number;
+  /** 非 465 端口也强制 STARTTLS（默认 false：`secure:false` 时是机会式的）。 */
+  requireTLS?: boolean;
+  /** 透传给 nodemailer 的 TLS 选项（自定义 CA / servername / minVersion）。 */
+  tls?: Record<string, unknown>;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -41,6 +45,9 @@ function optionsFrom(input: SmtpOptions): Record<string, unknown> {
       port: parsed.port === '' ? 587 : Number(parsed.port),
       secure: parsed.protocol === 'smtps:' || parsed.port === '465',
       ...(parsed.username === '' ? {} : { auth: { user: decodeURIComponent(parsed.username), pass: decodeURIComponent(parsed.password) } }),
+      connectionTimeout: input.connectionTimeoutMs ?? 10_000,
+      ...(input.requireTLS === true ? { requireTLS: true } : {}),
+      ...(input.tls === undefined ? {} : { tls: input.tls }),
     };
   }
   if (input.host === undefined) throw new DbConfigError('smtpTransport: 需要 url 或 host');
@@ -50,6 +57,8 @@ function optionsFrom(input: SmtpOptions): Record<string, unknown> {
     secure: input.secure === true,
     ...(input.auth === undefined ? {} : { auth: input.auth }),
     connectionTimeout: input.connectionTimeoutMs ?? 10_000,
+    ...(input.requireTLS === true ? { requireTLS: true } : {}),
+    ...(input.tls === undefined ? {} : { tls: input.tls }),
   };
 }
 
@@ -61,7 +70,7 @@ export function smtpTransport(input: SmtpOptions): MailTransport {
     if (resolve === undefined) {
       throw new DbConfigError('smtpTransport: 需要 resolve（由 mailPlugin 注入；独立使用时请传 createAppRequire() 的结果）');
     }
-    const module = resolve('nodemailer') as NodemailerModule;
+    const module = loadDriverModule<NodemailerModule>('nodemailer', 'smtp', 'nodemailer', resolve);
     transport = module.createTransport(optionsFrom(input));
     return transport;
   };
@@ -86,6 +95,7 @@ export function smtpTransport(input: SmtpOptions): MailTransport {
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
         if (error instanceof DbConfigError) throw error;
+        if (error instanceof DbDriverMissingError) throw error;
         input.logger?.('smtp_send_failed', { subject: rendered.subject, error: error.message });
         throw new DbConnectionError(`smtp 发送失败：${error.message}`, error);
       }
@@ -94,7 +104,9 @@ export function smtpTransport(input: SmtpOptions): MailTransport {
       await get().verify?.();
     },
     async close() {
-      get().close?.();
+      if (transport === null) return; // 从未建过 transport：不要在停机时懒加载
+      transport.close?.();
+      transport = null;
     },
   });
 }

@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 import { createApp, defineApp, defineModule } from '@actor/app';
 
-import { defineController, defineMiddleware, defineRoutes, reply, ws, wsPlugin } from '../src/index.ts';
+import { defineController, defineMiddleware, defineRoutes, httpPlugin, reply, ws, wsPlugin } from '../src/index.ts';
 
 // 内核是 CJS：客户端辅助函数也用 createRequire 取（与 wsPlugin 内部一致）
 const require = createRequire(import.meta.url);
@@ -140,4 +140,126 @@ test('ws: 每条消息走同一套中间件链（全局 → 路由 → 控制器
   denyClient.close();
 
   await app.stop();
+});
+
+test('ws: 畸形百分号编码的 URL 不会打崩进程（回归：一条消息曾触发 unhandled rejection）', async () => {
+  const plugin = wsPlugin({ port: 0 });
+  const app = createApp(
+    defineApp({
+      modules: [
+        defineModule({
+          name: 'api',
+          routes: defineRoutes([
+            ws(
+              '/chat/:room',
+              defineController({
+                body: ['type'],
+                input: { room: { type: 'string' }, type: { type: 'string' } },
+                handle: (input) => ({ room: input.room, type: input.type }),
+              }),
+            ),
+          ]),
+        }),
+      ],
+      plugins: [plugin],
+    }),
+    { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-ws-bad-url-')), env: {} },
+  );
+
+  await app.start();
+  const address = plugin.address();
+  assert.ok(address && address.port > 0);
+
+  const bad = await connect(`ws://127.0.0.1:${String(address.port)}/chat/%E0%A4%A`);
+  bad.sendJson({ type: 'say' });
+  const response = JSON.parse(String((await bad.nextMessage(3000)).data));
+  assert.strictEqual(response.error.status, 400, '畸形 URL 应回 400，而不是让进程退出');
+
+  // 进程还在：同一个应用仍能服务一条正常连接
+  const ok = await connect(`ws://127.0.0.1:${String(address.port)}/chat/lobby`);
+  ok.sendJson({ type: 'say' });
+  assert.deepStrictEqual(JSON.parse(String((await ok.nextMessage(3000)).data)), { room: 'lobby', type: 'say' });
+
+  ok.close();
+  bad.close();
+  await app.stop();
+});
+
+test('ws: 共享 HTTP 端口时按实际绑定地址执行安全守卫（回归：曾绕过非回环检查）', async () => {
+  const make = (wsOptions: Parameters<typeof wsPlugin>[0]) => {
+    const http = httpPlugin({ host: '0.0.0.0', port: 0 });
+    const ws = wsPlugin(wsOptions);
+    const app = createApp(
+      defineApp({ modules: [defineModule({ name: 'api', routes: [] })], plugins: [http, ws] }),
+      { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-ws-shared-')), env: {} },
+    );
+    return { app, ws };
+  };
+
+  const guarded = make({});
+  await assert.rejects(
+    () => guarded.app.start(),
+    (err: unknown) => err instanceof Error && /refusing to bind the websocket server/.test(err.message),
+    '共享 0.0.0.0 的 HTTP 端口时，WS 也必须拒绝无 TLS/verifyClient 的入口',
+  );
+  await guarded.app.stop().catch(() => undefined);
+
+  const allowed = make({ allowInsecureBinding: true });
+  await allowed.app.start();
+  assert.ok(allowed.ws.address()?.port !== undefined, '显式 allowInsecureBinding 后应能启动');
+  await allowed.app.stop();
+});
+
+test('ws: 同一连接的消息串行处理，identify 设置 playerId（回归）', async () => {
+  const plugin = wsPlugin({
+    port: 0,
+    identify: (req) => (String(req?.url ?? '').includes('alice') ? 'alice' : null),
+  });
+  const seen: number[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const app = createApp(
+    defineApp({
+      modules: [
+        defineModule({
+          name: 'api',
+          routes: defineRoutes([
+            ws('/chat/:room', defineController({
+              body: ['n'],
+              input: { room: { type: 'string' }, n: { type: 'number' } },
+              async handle(input) {
+                seen.push(input.n as number);
+                if (seen.length === 1) await gate;
+                return { n: input.n };
+              },
+            })),
+          ]),
+        }),
+      ],
+      plugins: [plugin],
+    }),
+    { configDir: fs.mkdtempSync(path.join(os.tmpdir(), 'actor-ws-queue-')), env: {} },
+  );
+  await app.start();
+  const address = plugin.address();
+  assert.ok(address && address.port > 0);
+  const client = await connect(`ws://127.0.0.1:${String(address.port)}/chat/alice`);
+  try {
+    const connections = app.get('wsConnections') as { byPlayer(id: string): unknown[] };
+    assert.strictEqual(connections.byPlayer('alice').length, 1, 'identify 应把连接归到 playerId 下');
+
+    client.sendJson({ n: 1 });
+    client.sendJson({ n: 2 });
+    client.sendJson({ n: 3 });
+    // 第一条被 gate 卡住：如果并发处理，seen 会立刻变成 [1,2,3]
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepStrictEqual(seen, [1], '同一连接必须串行（后一条要等前一条完成）');
+    release();
+    const replies = [];
+    for (let index = 0; index < 3; index += 1) replies.push(JSON.parse(String((await client.nextMessage(3000)).data)));
+    assert.deepStrictEqual(replies.map((reply) => reply.n), [1, 2, 3], '回复顺序必须与发送顺序一致');
+  } finally {
+    client.close();
+    await app.stop();
+  }
 });

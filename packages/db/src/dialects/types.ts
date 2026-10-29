@@ -142,7 +142,17 @@ export interface Introspection {
  * 再调这里 —— 避免把同一段规则抄三遍。
  */
 export function normalizeTypeText(rawType: string, length?: number | null): string {
-  const text = String(rawType).toLowerCase().trim();
+  let text = String(rawType).toLowerCase().trim();
+  // pg 的 information_schema 叫 character/time without time zone，DDL 里叫 char/time
+  if (text === 'character') text = 'char';
+  if (text === 'time without time zone') text = 'time';
+  if (text === 'time with time zone') text = 'timetz';
+  if (text === 'timestamp without time zone') text = 'timestamp';
+  if (text === 'timestamp with time zone') text = 'timestamptz';
+  // numeric/decimal/时间精度不是 data_type 的一部分：两边都剥掉才可比
+  if (/^(numeric|decimal|time|timestamp|timestamptz|timetz|float|real|double)(\s|\(|$)/.test(text)) {
+    text = text.replace(/\([^)]*\)/g, '').trim();
+  }
   const size = length ?? null;
   // 需要"补长度才能与 DDL 对上"的类型名（含 SQL Server 的 n 前缀与二进制类型）
   const needsLength = /^(n?varchar|n?char|character|varbinary|binary)$/.test(text);

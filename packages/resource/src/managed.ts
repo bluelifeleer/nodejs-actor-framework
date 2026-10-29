@@ -81,12 +81,27 @@ export function supervise<C = unknown, Conn extends BaseConnection = BaseConnect
   const idleWaiters: Array<() => void> = [];
   let healthTimer: ReturnType<typeof setInterval> | null = null;
   let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** 在途 connect：并发调用复用它，close 也要先等它，避免“close 返回后资源复活”。 */
+  let connecting: Promise<void> | null = null;
 
   const emit = (event: SupervisionEvent): void => {
-    options.onEvent?.(event);
+    try {
+      options.onEvent?.(event);
+    } catch (err) {
+      // 观测钩子抛错绝不能卡死状态机或泄漏连接：降级为一条日志（日志也坏就吞掉）
+      try {
+        options.logger?.('event_handler_failed', { kind: adapter.kind, err: err instanceof Error ? err.message : String(err) });
+      } catch {
+        /* ignore */
+      }
+    }
   };
   const log = (event: string, meta?: Record<string, unknown>): void => {
-    options.logger?.(event, meta);
+    try {
+      options.logger?.(event, meta);
+    } catch {
+      /* 日志出口故障不影响资源状态 */
+    }
   };
 
   const stopTimers = (): void => {
@@ -140,9 +155,11 @@ export function supervise<C = unknown, Conn extends BaseConnection = BaseConnect
 
     async connect(): Promise<void> {
       if (state === 'ready' || state === 'degraded') return; // 幂等
+      if (connecting !== null) return connecting; // 并发 connect 复用同一个在途操作
       if (state === 'draining' || state === 'closed') {
         throw new ResourceUnavailableError(adapter.kind, state, 'resource was closed');
       }
+      connecting = (async (): Promise<void> => {
       state = 'connecting';
       emit({ type: 'connecting', kind: adapter.kind });
       const started = Date.now();
@@ -183,19 +200,32 @@ export function supervise<C = unknown, Conn extends BaseConnection = BaseConnect
           keepAliveTimer.unref?.();
         }
       } catch (err) {
-        state = 'idle'; // 不假装 ready
+        const halfBuilt = connection;
         connection = null;
+        state = 'idle'; // 不假装 ready
         stopTimers();
+        // 半建成的连接必须关掉，否则 onEvent/健康检查失败一次就泄漏一条 TCP 连接
+        if (halfBuilt !== null) await halfBuilt.close().catch(() => undefined);
         throw err;
+      }
+      })();
+      try {
+        await connecting;
+      } finally {
+        connecting = null;
       }
     },
 
     async acquire(): Promise<C> {
       if (state !== 'ready' && state !== 'degraded') {
+        emit({ type: 'unavailable', kind: adapter.kind, reason: `state=${state}` });
         throw new ResourceUnavailableError(adapter.kind, state, 'resource is not connected');
       }
       const current = connection;
-      if (current === null) throw new ResourceUnavailableError(adapter.kind, state, 'resource is not connected');
+      if (current === null) {
+        emit({ type: 'unavailable', kind: adapter.kind, reason: 'no connection' });
+        throw new ResourceUnavailableError(adapter.kind, state, 'resource is not connected');
+      }
       return current.client;
     },
 
@@ -226,6 +256,10 @@ export function supervise<C = unknown, Conn extends BaseConnection = BaseConnect
 
     async close(): Promise<void> {
       if (state === 'closed' || state === 'draining') return; // 幂等
+      if (connecting !== null) {
+        // 与建连竞态：先等它结束，再走关闭（否则 connect 的成功分支会把状态改回 ready）
+        await connecting.catch(() => undefined);
+      }
       const current = connection;
       if (current === null) {
         state = 'closed';

@@ -16,7 +16,9 @@ export {
   type WebPluginSpec,
 } from './plugins.ts';
 
-export { httpPlugin, type HttpPlugin, type HttpPluginOptions } from './http.ts';
+export { httpPlugin, HTTP_FALLBACK_SERVICE, type HttpFallback, type HttpPlugin, type HttpPluginOptions } from './http.ts';
+export { staticPlugin, type StaticPluginOptions } from './static.ts';
+export { viewPlugin, renderTemplate, type ViewPluginOptions, type ViewService } from './view.ts';
 export { wsPlugin, type WsPlugin, type WsPluginOptions } from './ws.ts';
 export {
   requestLogPlugin,

@@ -218,3 +218,65 @@ test('repository(sql): 事务内的语句必须走到**事务连接**上（否�
   );
   runner.close();
 });
+
+test('repository(sql): 事务外并发读必须走基础 runner，不能被卷进事务（回归：activeRunner 实例字段）', async () => {
+  const calls: string[] = [];
+  const rows = [{ id: 'x', version: 1, owner: 'o', rank: 1 }];
+  const base: SqlRunner = {
+    async all() {
+      calls.push('base.all');
+      return rows;
+    },
+    async run() {
+      calls.push('base.run');
+      return 1;
+    },
+  };
+  const scoped: SqlRunner = {
+    async all() {
+      calls.push('scoped.all');
+      return rows;
+    },
+    async run() {
+      calls.push('scoped.run');
+      return 1;
+    },
+  };
+
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const runner: SqlRunner = {
+    ...base,
+    transaction: async <R>(fn: (s: SqlRunner) => Promise<R>): Promise<R> => {
+      try {
+        return await fn(scoped);
+      } catch (err) {
+        throw err;
+      }
+    },
+  };
+  const repo = makeSqlRepo(runner);
+
+  const tx = repo.transaction(async (txRepo) => {
+    started();
+    await txRepo.findById('x');
+    await gate;
+    throw new Error('rollback');
+  });
+  await startedPromise;
+
+  // 事务进行中，事务外的读必须用基础 runner（旧实现会用 activeRunner=scoped）
+  await repo.findById('x');
+  release();
+  await tx.catch(() => undefined);
+
+  assert.ok(calls.includes('scoped.all'), '事务内的读必须走 scoped runner');
+  assert.ok(calls.includes('base.all'), '事务外的读必须走基础 runner');
+});

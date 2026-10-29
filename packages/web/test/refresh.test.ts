@@ -23,10 +23,12 @@ const fakeClient = (namespace: string): RefreshKeyValueClient => {
       return entry.value as T;
     },
     async set(raw, value, options) {
+      if (options?.ifNotExists === true && backing.has(key(raw))) return false;
       backing.set(key(raw), {
         value,
         ...(options?.ttlMs === undefined ? {} : { expiresAt: Date.now() + options.ttlMs }),
       });
+      return true;
     },
     async del(...raws) {
       let removed = 0;
@@ -84,4 +86,12 @@ test('refresh: 重放会留下服务端日志（对外只回 401 的语义由 au
   const replay = await store.consume(issued.token);
   assert.strictEqual(replay.ok, false);
   assert.ok(events.some((item) => item.event === 'refresh_replay_detected'), `要记重放：${JSON.stringify(events)}`);
+});
+
+test('refresh: 同一 token 并发消费只能有一个成功（回归：读-改-写竞态发两把新 token）', async () => {
+  const store = redisRefreshStore(fakeClient('race:'), { prefix: 'auth:' });
+  const issued = await store.issue({ subject: 'u1' });
+  const results = await Promise.all([store.consume(issued.token), store.consume(issued.token)]);
+  assert.strictEqual(results.filter((result) => result.ok).length, 1, '并发消费必须只有一个赢家');
+  assert.ok(results.some((result) => result.ok === false && result.reason === 'replay'));
 });

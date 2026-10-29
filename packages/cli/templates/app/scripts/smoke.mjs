@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 /**
  * 生产冒烟：把**编译产物**（`dist/main.js`）真起一次，打一个 `/health`，然后停掉。
  *
@@ -10,7 +11,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 
-const PROJECT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const PROJECT = path.resolve(path.dirname(fileURLToPath(new URL(import.meta.url))), '..');
 const ENTRY = path.join(PROJECT, 'dist', 'main.js');
 
 if (!existsSync(ENTRY)) {

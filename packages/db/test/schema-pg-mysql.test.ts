@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { createDatabase, createMysqlDriver, createPgDriver, defineModel } from '../src/index.ts';
+import { createDatabase, createMysqlDriver, createPgDriver, defineModel, normalizeDbType } from '../src/index.ts';
 
 /**
  * pg / mysql 的 schema 路径离线测不了真库，但**可以测契约**：
@@ -228,4 +228,12 @@ test('schema/pg: 注释走独立的 COMMENT ON 语句（默认只在建表时写
   } finally {
     await db.close();
   }
+});
+
+test('schema: decimal/char/time 的内省规范化不会误报漂移（回归：正确 schema 被 sync 拒绝）', () => {
+  assert.strictEqual(normalizeDbType('pgsql', 'numeric(10, 2)'), normalizeDbType('pgsql', 'numeric'));
+  assert.strictEqual(normalizeDbType('pgsql', 'character', { length: 1 }), normalizeDbType('pgsql', 'char(1)'));
+  assert.strictEqual(normalizeDbType('pgsql', 'time without time zone'), normalizeDbType('pgsql', 'time'));
+  assert.strictEqual(normalizeDbType('mysql', 'decimal(10,2)'), normalizeDbType('mysql', 'decimal'));
+  assert.strictEqual(normalizeDbType('pgsql', 'varchar', { length: 255 }), 'varchar(255)');
 });

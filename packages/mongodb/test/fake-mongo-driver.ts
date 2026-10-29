@@ -15,16 +15,26 @@ export interface FakeMongoDriver {
     closed: number;
     sessions: number;
     opened: number;
+    lastSession: Record<string, unknown> | null;
+    operationOptions: Array<Record<string, unknown> | undefined>;
   };
   setHealthy(healthy: boolean): void;
   fire(event: string, detail?: unknown): void;
 }
 
 export function createFakeMongoDriver(): FakeMongoDriver {
-  const db = createFakeMongoDb();
+  const state = {
+    url: '',
+    clientOptions: {} as Record<string, unknown>,
+    closed: 0,
+    sessions: 0,
+    opened: 0,
+    lastSession: null as Record<string, unknown> | null,
+    operationOptions: [] as Array<Record<string, unknown> | undefined>,
+  };
+  const db = createFakeMongoDb({}, (options) => state.operationOptions.push(options));
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   let healthy = true;
-  const state = { url: '', clientOptions: {} as Record<string, unknown>, closed: 0, sessions: 0, opened: 0 };
 
   const fire = (event: string, detail?: unknown): void => {
     for (const listener of listeners.get(event) ?? []) listener(detail);
@@ -59,7 +69,12 @@ export function createFakeMongoDriver(): FakeMongoDriver {
     }
     startSession(): unknown {
       state.sessions += 1;
-      return { withTransaction: async (fn: () => Promise<unknown>) => fn(), endSession: async () => undefined };
+      const session = { marker: `session-${state.sessions}` };
+      state.lastSession = session;
+      return {
+        withTransaction: async (fn: (active: Record<string, unknown>) => Promise<unknown>) => fn(session),
+        endSession: async () => undefined,
+      };
     }
     on(event: string, listener: (...args: unknown[]) => void): unknown {
       const list = listeners.get(event) ?? [];

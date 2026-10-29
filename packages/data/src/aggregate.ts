@@ -316,9 +316,28 @@ export function defineAggregate<S>(spec: AggregateSpec<S>): AggregateDefinition<
       // 信封带 seq 时以它为准（未接 evolution 的路径）；否则按"应用了几条"递增
       this[SEQ_KEY] = incoming.seq ?? (this[SEQ_KEY] ?? 0) + 1;
     },
+
   } as unknown as AggregateDefinition<S>;
 
-  if (spec.postRecover) definition.postRecover = (ctx: unknown) => spec.postRecover?.(ctx);
+  /**
+   * 从快照恢复时只重放**增量**，`applyEvent` 可能一条都没跑（或只跑了几条尾部），
+   * 按条数计数会让 seq 从头开始 → 下一条事件序号重复 → 下次启动日志校验失败。
+   * 内核在恢复完成后把日志真实版本放在 `ctx.eventVersion`，这里以它为准。
+   *
+   * 用不可枚举属性：内核的 handler 转发按名字取，而 `unknownKeys` 拼写检查/测试
+   * 期望的键集合不应因为内部钩子而变化。
+   */
+  Object.defineProperty(definition, 'postRecover', {
+    enumerable: false,
+    configurable: true,
+    value(this: AggregateHost<S>, ctx: unknown): unknown {
+      const version = (ctx as { eventVersion?: unknown } | null)?.eventVersion;
+      if (typeof version === 'number' && Number.isInteger(version) && version >= 0) {
+        this[SEQ_KEY] = version;
+      }
+      return spec.postRecover?.(ctx);
+    },
+  });
   if (spec.postStop) definition.postStop = (ctx: unknown) => spec.postStop?.(ctx);
   if (spec.preRestart) {
     definition.preRestart = (reason: unknown, msg: unknown, ctx: unknown) => spec.preRestart?.(reason, msg, ctx);

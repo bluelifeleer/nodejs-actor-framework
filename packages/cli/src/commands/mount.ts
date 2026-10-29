@@ -143,7 +143,7 @@ export function mountLines(options: {
       };
     case 'migration':
       return {
-        imports: [`import ${camel} from './migrations/${options.migrationFile ?? kebab}';`],
+        imports: [`import ${camel} from './migrations/${options.migrationFile ?? kebab}.ts';`],
         migrations: [`${camel},`],
       };
     default:

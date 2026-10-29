@@ -77,6 +77,8 @@ interface ClusterSystem {
     }
   >;
   cluster: unknown;
+  /** 传输层默认 TLS（插件 setup 时写入；listen/connect 会使用）。 */
+  tls?: unknown;
   connect(options: { host: string; port: number }): Promise<PeerLike>;
   spawn(definition: unknown, options?: Record<string, unknown>): Promise<{ path: string }>;
   resolve(target: string): unknown;
@@ -234,6 +236,8 @@ function cluster(options: ClusterPluginOptions = {}) {
       // epoch：本节点只在自己确实是 owner 时给出声明（claimFor，不自封）。
       const shardCount: number = Number.isInteger(options.shardCount) ? (options.shardCount as number) : 256;
       const guard = createOwnershipGuard({ nodeId: gossip.nodeId, shardCount });
+      // 网关与 gossip 必须用同一份 TLS 配置：插件选项只给 gossip 会让 actor 网关裸奔/连不上
+      if (options.tls !== undefined) system.tls = options.tls;
       const fencingStats = { skipped: 0, rejected: 0, conflicts: 0 };
 
       /**

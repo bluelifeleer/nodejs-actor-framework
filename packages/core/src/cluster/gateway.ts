@@ -120,6 +120,8 @@ interface GatewayOptions {
   allowInsecureBinding?: boolean;
   /** 每个连接的在途入站请求上限（默认 1000）：超限即断开并记一条 `overloaded`。 */
   maxInflightPerConnection?: number;
+  /** 入站连接数上限（默认 1024）：半开连接不能无限占 fd/内存。 */
+  maxConnections?: number;
 }
 
 function encodeFrame(obj: GatewayFrame, codec: number = CODEC.PROTOBUF): Buffer {
@@ -158,6 +160,7 @@ class Gateway extends EventEmitter {
   verifyOwnership: GatewayOptions['verifyOwnership'];
   readonly allowInsecureBinding: boolean;
   readonly maxInflightPerConnection: number;
+  readonly maxConnections: number;
   readonly epochFor: GatewayOptions['epochFor'];
   _inflight: number;
   server: import('node:net').Server | import('node:tls').Server | null;
@@ -206,6 +209,7 @@ class Gateway extends EventEmitter {
     this.verifyOwnership = options.verifyOwnership ?? null;
     this.allowInsecureBinding = options.allowInsecureBinding === true;
     this.maxInflightPerConnection = options.maxInflightPerConnection ?? 1000;
+    this.maxConnections = options.maxConnections ?? 1024;
     /** 出站时"本节点认为目标 shard 是第几代"（没装守卫时返回 null，即不带字段）。 */
     this.epochFor = options.epochFor ?? null;
     /** 正在处理的入站请求数（离场排空时要用；不做按 shard 细分——那是保守但诚实的简化）。 */
@@ -219,6 +223,8 @@ class Gateway extends EventEmitter {
     this.inbound = new Set();
     /** @type {WeakMap<object, {helloOk:boolean}>} per inbound connection state */
     this.inboundState = new WeakMap();
+    /** 每个入站 socket 的在途请求数（`maxInflightPerConnection` 的语义靠它）。 */
+    this.inboundInflight = new WeakMap();
     this.closed = false;
   }
 
@@ -338,6 +344,12 @@ class Gateway extends EventEmitter {
   }
 
   _handleInbound(socket: import('node:net').Socket): void {
+    if (this.inbound.size >= this.maxConnections) {
+      this._logSafe('gateway_connection_limit', { limit: this.maxConnections });
+      this._safeEmit('connection_rejected', { limit: this.maxConnections });
+      socket.destroy();
+      return;
+    }
     socket.setNoDelay(true);
     this.inbound.add(socket);
     this.inboundState.set(socket, { helloOk: false });
@@ -435,6 +447,18 @@ class Gateway extends EventEmitter {
     return null;
   }
 
+  _beginInbound(socket: import('node:net').Socket): void {
+    this._inflight += 1;
+    this.inboundInflight.set(socket, (this.inboundInflight.get(socket) ?? 0) + 1);
+  }
+
+  _endInbound(socket: import('node:net').Socket): void {
+    this._inflight -= 1;
+    const next = (this.inboundInflight.get(socket) ?? 1) - 1;
+    if (next <= 0) this.inboundInflight.delete(socket);
+    else this.inboundInflight.set(socket, next);
+  }
+
   async _handleFrame(frame: GatewayFrame, socket: import('node:net').Socket): Promise<void> {
     if (!frame || typeof frame !== 'object') return;
     const state = this.inboundState.get(socket) || { helloOk: false };
@@ -472,9 +496,10 @@ class Gateway extends EventEmitter {
      * （每份 payload 最大 maxFrameBytes），而且 `inflight()` 是集群优雅离场判断"排空了没有"的依据，
      * 无界在途会让 drain 永远等不到排空。
      */
-    if (this._inflight >= this.maxInflightPerConnection) {
-      this._safeEmit('overloaded', { inflight: this._inflight, limit: this.maxInflightPerConnection });
-      this._logSafe('gateway_overloaded', { inflight: this._inflight, limit: this.maxInflightPerConnection });
+    const socketInflight = this.inboundInflight.get(socket) ?? 0;
+    if (socketInflight >= this.maxInflightPerConnection) {
+      this._safeEmit('overloaded', { inflight: socketInflight, limit: this.maxInflightPerConnection });
+      this._logSafe('gateway_overloaded', { inflight: socketInflight, limit: this.maxInflightPerConnection });
       socket.destroy();
       return;
     }
@@ -512,7 +537,7 @@ class Gateway extends EventEmitter {
         this.emit('protocol_error', new Error('peer sent a tell but no handler is registered'));
         return;
       }
-      this._inflight += 1;
+      this._beginInbound(socket);
       try {
         const target = requireTarget(frame);
         await this.onTell(target, frame.payload, {
@@ -525,13 +550,13 @@ class Gateway extends EventEmitter {
         // There is no reply channel: surface it locally instead of silently.
         this.emit('tell_error', err, frame.targetActorId);
       } finally {
-        this._inflight -= 1;
+        this._endInbound(socket);
       }
       return;
     }
 
     if (frame.kind === 'stop') {
-      this._inflight += 1;
+      this._beginInbound(socket);
       try {
         if (!this.onStop) throw new Error('remote stop is not supported by this node');
         await this.onStop(requireTarget(frame));
@@ -544,13 +569,13 @@ class Gateway extends EventEmitter {
           error: err instanceof Error ? err.message : String(err),
         });
       } finally {
-        this._inflight -= 1;
+        this._endInbound(socket);
       }
       return;
     }
 
     if (frame.kind === 'deliver') {
-      this._inflight += 1;
+      this._beginInbound(socket);
       try {
         const target = requireTarget(frame);
         const sender = {
@@ -576,7 +601,7 @@ class Gateway extends EventEmitter {
           error: err instanceof Error ? err.message : String(err),
         });
       } finally {
-        this._inflight -= 1;
+        this._endInbound(socket);
       }
       return;
     }
@@ -602,11 +627,17 @@ class Gateway extends EventEmitter {
     const { socket, readyEvent } = tlsUtil.connect(this.tls, { host, port });
     conn.socket = socket;
     socket.setNoDelay(true);
+    // 连接超时：对端黑洞/半开时不能永久挂住并复用坏连接
+    socket.setTimeout(this.connectTimeoutMs, () => {
+      this._failConnection(conn, new Error(`connect to ${host}:${port} timed out after ${this.connectTimeoutMs}ms`));
+      socket.destroy();
+    });
     socket.on('error', (err: Error) => this._failConnection(conn, err));
     socket.on('close', () => this._failConnection(conn, new Error('connection closed')));
 
     conn.ready = new Promise<void>((resolve, reject) => {
       socket.once(readyEvent, () => {
+        socket.setTimeout(0); // 建立后不再用连接超时（空闲回收不在这里做）
         this.emit('connected', addr);
         // Announce ourselves first: the peer rejects data before hello.
         try {

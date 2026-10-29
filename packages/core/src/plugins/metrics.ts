@@ -104,7 +104,8 @@ function metrics(options: MetricsPluginOptions = {}) {
         state.timer = system.clock.setInterval(collect, options.intervalMs ?? 500, { unref: true });
       }
 
-      if (options.exporter) {
+      // `enabled: false` 必须真的不启动：早期只看对象是否存在，配置里的开关是假的
+      if (options.exporter && options.exporter.enabled !== false) {
         const exporter = new MetricsExporter({
           ...(options.exporter ?? {}),
           metrics: instance,

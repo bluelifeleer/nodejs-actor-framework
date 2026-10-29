@@ -45,12 +45,17 @@ export interface FieldSpec {
  * 而生成器只该读一眼。
  */
 export async function nextMigration(project: ProjectInfo, explicit?: number): Promise<{ version: number }> {
-  if (explicit !== undefined) return { version: explicit };
+  if (explicit !== undefined) {
+    if (!Number.isInteger(explicit) || explicit < 1) {
+      throw new UsageError(`--migration-version 必须是 >= 1 的整数（当前 ${String(explicit)}）`);
+    }
+    return { version: explicit };
+  }
   const dir = path.join(project.dir, 'src', 'migrations');
   const candidates: string[] = [];
   try {
-    const entries = await fs.readdir(dir);
-    for (const entry of entries) if (entry.endsWith('.ts')) candidates.push(path.join(dir, entry));
+    const entries = await fs.readdir(dir, { recursive: true });
+    for (const entry of entries) if (String(entry).endsWith('.ts')) candidates.push(path.join(dir, String(entry)));
   } catch {
     /* 还没有 src/migrations/ 目录 */
   }
@@ -136,6 +141,12 @@ export function parseField(raw: string): FieldSpec {
   const [name, type] = raw.split(':', 2);
   if (name === undefined || name.trim() === '') {
     throw new UsageError(`--field 的格式是 <名字>:<类型>（拿到 '${raw}'）`, '例如：--field title:string --field done:bool');
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name.trim())) {
+    throw new UsageError(`--field 的字段名不合法：'${name.trim()}'`, '字段名必须是 TypeScript 标识符（字母/下划线开头）');
+  }
+  if (['id', 'createdAt', 'updatedAt', 'version'].includes(name.trim())) {
+    throw new UsageError(`--field 的字段名 '${name.trim()}' 是保留名`, 'id/createdAt/updatedAt/version 由模型自己维护');
   }
   const normalized = (type ?? 'string').trim().toLowerCase();
   const allowed = ['string', 'text', 'number', 'int', 'bool', 'boolean', 'json', 'timestamp', 'uuid'];
@@ -649,8 +660,9 @@ export function wiringSnippet(options: {
   migrationFile?: string;
   migrationVersion?: number;
 }): string {
-  const camel = camelOf(options.name);
-  const pascal = pascalOf(options.name);
+  const baseName = baseNameFor(options.name, options.kind);
+  const camel = camelOf(baseName);
+  const pascal = pascalOf(baseName);
   const kebab = kebabOf(options.name);
   const prefix = options.layout === 'layered' ? `./${options.kind === 'schema' ? 'schema' : options.kind}/` : './';
 
@@ -703,7 +715,7 @@ export function wiringSnippet(options: {
     case 'migration':
       return [
         `// src/migrations.ts —— 把新迁移 import 进来并放进数组（文件名与版本号都对好了）`,
-        `import v${String(options.migrationVersion ?? 1)} from './migrations/${options.migrationFile ?? kebabOf(options.name)}';`,
+        `import v${String(options.migrationVersion ?? 1)} from './migrations/${options.migrationFile ?? kebabOf(options.name)}.ts';`,
         ``,
         `export default [/* 既有迁移… */, v${String(options.migrationVersion ?? 1)}];`,
         ``,
@@ -773,8 +785,27 @@ export async function generate(
 
   const written: string[] = [];
   const skipped: string[] = [];
+  // 源文件被跳过时，配套测试也必须跳过：否则会造出一个 import 不存在导出的必然失败测试
+  const skippedSources = new Set(
+    (await Promise.all(
+      generated
+        .filter((file) => file.relative.startsWith('src/'))
+        .map(async (file) => ((await exists(path.join(project.dir, file.relative))) && options.force !== true ? file.relative : null)),
+    )).filter((file): file is string => file !== null),
+  );
   for (const file of generated) {
     const destination = path.join(project.dir, file.relative);
+    if (file.relative.startsWith('test/')) {
+      const imported = /\.\.\/(src\/[^'"\s]+\.ts)/.exec(file.content)?.[1];
+      if (imported !== undefined && skippedSources.has(imported)) {
+        skipped.push(file.relative);
+        continue;
+      }
+    }
+    const link = await fs.lstat(destination).catch(() => null);
+    if (link?.isSymbolicLink()) {
+      throw new UsageError(`拒绝写入符号链接：${file.relative}`, '符号链接可能指向项目外；请先移除它');
+    }
     if (await exists(destination) && options.force !== true) {
       skipped.push(file.relative);
       continue;

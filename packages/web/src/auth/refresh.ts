@@ -1,5 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { test } from 'node:test';
+import { createRequire } from 'node:module';
+
+// 契约套件是**测试工具**：`node:test` 必须等到真正调用 run*Contract 时才加载，
+// 否则生产入口 import 一个常量就会把测试运行器带进进程/打包产物。
+const require = createRequire(import.meta.url);
+let nodeTest: typeof import('node:test') | null = null;
+const test: typeof import('node:test').test = ((...args: unknown[]) => {
+  nodeTest ??= require('node:test') as typeof import('node:test');
+  return (nodeTest.test as unknown as (...values: unknown[]) => unknown)(...args);
+}) as unknown as typeof import('node:test').test;
 import assert from 'node:assert';
 
 import { DbConfigError } from '@actor/resource';
@@ -150,7 +159,7 @@ export function memoryRefreshStore(options: RefreshStoreOptions = {}): RefreshTo
 /** `redisRefreshStore` 需要的最小客户端形状（`@actor/redis` 的 KeyValueClient 满足它，**不引入依赖**）。 */
 export interface RefreshKeyValueClient {
   get<T = unknown>(key: string): Promise<T | null>;
-  set(key: string, value: unknown, options?: { ttlMs?: number }): Promise<void>;
+  set(key: string, value: unknown, options?: { ttlMs?: number; ifNotExists?: boolean }): Promise<boolean | void>;
   del(...keys: string[]): Promise<number>;
 }
 
@@ -187,35 +196,51 @@ export function redisRefreshStore(client: RefreshKeyValueClient, options: Refres
     return { token, family, subject: existing.subject || subject, expiresAt };
   };
 
+  /** 已持有 NX 锁后执行真正的消费逻辑（见下方 consume 的并发说明）。 */
+  const consumeLocked = async (hash: string): Promise<RefreshConsumeResult> => {
+    const family = await client.get<string>(tokenKey(hash));
+    if (family === null || family === undefined) return { ok: false, reason: 'unknown' };
+    const record = await readFamily(family);
+    if (record === null) return { ok: false, reason: 'unknown' };
+    const entry = record.tokens.find((item) => item.hash === hash);
+    if (entry === undefined) return { ok: false, reason: 'unknown' };
+    if (Date.parse(entry.expiresAt) < Date.now()) {
+      await client.del(tokenKey(hash));
+      return { ok: false, reason: 'expired' };
+    }
+    if (entry.used) {
+      const keys = [familyKey(family), ...record.tokens.map((item) => tokenKey(item.hash))];
+      const revoked = await client.del(...keys);
+      options.logger?.('refresh_replay_detected', { family, revoked });
+      return { ok: false, reason: 'replay' };
+    }
+    const ttl = Math.max(1000, Date.parse(entry.expiresAt) - Date.now());
+    const updated: StoredFamily = {
+      subject: record.subject,
+      tokens: record.tokens.map((item) => (item.hash === hash ? { ...item, used: true } : item)),
+    };
+    await writeFamily(family, updated, ttl);
+    return { ok: true, subject: record.subject, family, issued: await issueInto(record.subject, family, ttl) };
+  };
+
   return {
     async issue(input) {
       return issueInto(input.subject, input.family ?? newFamily(), input.ttlMs ?? ttlMs);
     },
     async consume(token) {
       const hash = hashToken(token);
-      const family = await client.get<string>(tokenKey(hash));
-      if (family === null || family === undefined) return { ok: false, reason: 'unknown' };
-      const record = await readFamily(family);
-      if (record === null) return { ok: false, reason: 'unknown' };
-      const entry = record.tokens.find((item) => item.hash === hash);
-      if (entry === undefined) return { ok: false, reason: 'unknown' };
-      if (Date.parse(entry.expiresAt) < Date.now()) {
-        await client.del(tokenKey(hash));
-        return { ok: false, reason: 'expired' };
+      /**
+       * 同一 token 的并发消费必须只有一个赢家：读-改-写没有 CAS 时，
+       * 两个请求会各发一把新 token，重放检测形同虚设。用短 TTL 的 NX 锁串行化。
+       */
+      const lockKey = `${tokenKey(hash)}:lock`;
+      const acquired = await client.set(lockKey, '1', { ttlMs: 5000, ifNotExists: true });
+      if (acquired === false) return { ok: false, reason: 'replay' };
+      try {
+        return await consumeLocked(hash);
+      } finally {
+        await client.del(lockKey).catch(() => 0);
       }
-      if (entry.used) {
-        const keys = [familyKey(family), ...record.tokens.map((item) => tokenKey(item.hash))];
-        const revoked = await client.del(...keys);
-        options.logger?.('refresh_replay_detected', { family, revoked });
-        return { ok: false, reason: 'replay' };
-      }
-      const ttl = Math.max(1000, Date.parse(entry.expiresAt) - Date.now());
-      const updated: StoredFamily = {
-        subject: record.subject,
-        tokens: record.tokens.map((item) => (item.hash === hash ? { ...item, used: true } : item)),
-      };
-      await writeFamily(family, updated, ttl);
-      return { ok: true, subject: record.subject, family, issued: await issueInto(record.subject, family, ttl) };
     },
     async revokeFamily(family) {
       const record = await readFamily(family);

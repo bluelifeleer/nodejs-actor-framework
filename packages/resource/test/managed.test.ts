@@ -201,3 +201,89 @@ test('managed: loadDriverModule 的安装提示（从应用根解析，不假装
     },
   );
 });
+
+test('supervise: onEvent/logger 抛错不会卡死 connect（回归：永久 connecting/连接泄漏）', async () => {
+  let connects = 0;
+  const adapter = defineDatabaseAdapter<{ id: string }>({
+    kind: 'event-throw',
+    driverPackage: 'none',
+    connectionKind: 'host',
+    async connect() {
+      connects += 1;
+      return {
+        client: { id: 'c' },
+        async healthCheck() {},
+        async close() {},
+      };
+    },
+  });
+  const resource = supervise(adapter, {
+    connection: { host: 'h' },
+    onEvent: () => {
+      throw new Error('sink down');
+    },
+    logger: () => {
+      throw new Error('logger down');
+    },
+  });
+  await resource.connect();
+  assert.strictEqual(connects, 1);
+  assert.strictEqual(resource.state, 'ready');
+  await resource.close();
+});
+
+test('supervise: 并发 connect 只建一条连接；close 与 connect 竞态不得让资源复活（回归）', async () => {
+  let connects = 0;
+  let closes = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const adapter = defineDatabaseAdapter<{ id: string }>({
+    kind: 'race',
+    driverPackage: 'none',
+    connectionKind: 'host',
+    async connect() {
+      connects += 1;
+      await gate;
+      return { client: { id: `c${connects}` }, async healthCheck() {}, async close() { closes += 1; } };
+    },
+  });
+  const resource = supervise(adapter, { connection: { host: 'h' } });
+
+  const first = resource.connect();
+  const second = resource.connect();
+  release();
+  await Promise.all([first, second]);
+  assert.strictEqual(connects, 1, '并发 connect 必须复用同一个在途操作');
+  assert.strictEqual(resource.state, 'ready');
+  await resource.close();
+  assert.strictEqual(closes, 1);
+
+  // close 在 connect 之前发生：connect 完成后 close 仍然要把它关掉，不能停在 ready
+  let release2!: () => void;
+  const gate2 = new Promise<void>((resolve) => {
+    release2 = resolve;
+  });
+  let connects2 = 0;
+  let closes2 = 0;
+  const adapter2 = defineDatabaseAdapter<{ id: string }>({
+    kind: 'race-close',
+    driverPackage: 'none',
+    connectionKind: 'host',
+    async connect() {
+      connects2 += 1;
+      await gate2;
+      return { client: { id: 'c' }, async healthCheck() {}, async close() { closes2 += 1; } };
+    },
+  });
+  const resource2 = supervise(adapter2, { connection: { host: 'h' } });
+  const pendingConnect = resource2.connect();
+  const pendingClose = resource2.close();
+  release2();
+  await Promise.allSettled([pendingConnect, pendingClose]);
+  assert.strictEqual(connects2, 1);
+  assert.strictEqual(resource2.state, 'closed');
+  assert.strictEqual(closes2, 1, 'close 返回后不能留下活连接');
+  await assert.rejects(() => resource2.acquire(), /not connected|closed/i);
+});

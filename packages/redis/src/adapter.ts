@@ -32,9 +32,15 @@ export interface RedisAdapterOptions extends KeyValueOptions {
 export function parseRedisUrl(url: string): RedisConnection {
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(String(url))?.[1]?.toLowerCase();
   if (scheme !== 'redis' && scheme !== 'rediss') {
-    throw new DbConfigError(`redis connection url must start with redis:// or rediss:// (got "${String(url)}")`);
+    throw new DbConfigError(`redis connection url must start with redis:// or rediss:// (got scheme "${String(scheme)}")`);
   }
-  const parsed = new URL(url);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // 集群/哨兵多主机写法不是 RFC URL；保留整串交给驱动，不在解析层拒掉
+    return { kind: 'redis', url, tls: scheme === 'rediss', port: 6379, database: '0' };
+  }
   const db = parsed.pathname.replace(/^\//, '');
   return {
     kind: 'redis',
@@ -75,7 +81,9 @@ export function redisAdapter(options: RedisAdapterOptions = {}): DatabaseAdapter
     describe: (connection) => describeRedis(connection),
 
     async connect({ connection, pool, load, emitDriverEvent }): Promise<ManagedConnection<KeyValueClient>> {
-      const impl = resolveRedisDriver(options.driver ?? DEFAULT_REDIS_DRIVER);
+      const declaredDriver = (connection as { driver?: unknown }).driver;
+      const driverName = typeof declaredDriver === 'string' && declaredDriver !== '' ? declaredDriver : (options.driver ?? DEFAULT_REDIS_DRIVER);
+      const impl = resolveRedisDriver(driverName);
       const url =
         connection.url ??
         `${connection.tls === true ? 'rediss' : 'redis'}://${connection.host ?? 'localhost'}:${String(connection.port ?? 6379)}/${String(connection.database ?? '0')}`;
@@ -87,8 +95,10 @@ export function redisAdapter(options: RedisAdapterOptions = {}): DatabaseAdapter
         ...(options.clientOptions === undefined ? {} : { clientOptions: options.clientOptions }),
         ...(emitDriverEvent === undefined ? {} : { emitDriverEvent }),
       });
+      const declaredPrefix = (connection as { prefix?: unknown }).prefix;
+      const prefix = typeof declaredPrefix === 'string' ? declaredPrefix : options.prefix;
       const client = createKeyValueClient(handle, {
-        ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+        ...(prefix === undefined ? {} : { prefix }),
         ...(options.serialize === undefined ? {} : { serialize: options.serialize }),
         ...(options.parse === undefined ? {} : { parse: options.parse }),
       });

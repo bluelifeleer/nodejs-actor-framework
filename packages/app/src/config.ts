@@ -455,11 +455,25 @@ export function validateValues(
     validate(dotted, coerced, spec, issues);
     values.set(dotted, coerced);
   }
-  for (const [dotted] of Object.entries(source)) {
-    if (!fields.has(dotted) && typeof (source[dotted] as unknown) !== 'object') {
+  const checkUnknown = (value: unknown, prefix = ''): void => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      if (prefix !== '' && !fields.has(prefix)) {
+        issues.push({ path: prefix, message: `未声明的输入项（来自 ${sourceLabel}，拼写错误？）` });
+      }
+      return;
+    }
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const dotted = prefix === '' ? key : `${prefix}.${key}`;
+      if (fields.has(dotted)) continue;
+      // 已知的容器（schema 里有 `dotted.` 子键）继续下钻；否则就是未声明项
+      if ([...fields.keys()].some((candidate) => candidate.startsWith(`${dotted}.`))) {
+        checkUnknown(child, dotted);
+        continue;
+      }
       issues.push({ path: dotted, message: `未声明的输入项（来自 ${sourceLabel}，拼写错误？）` });
     }
-  }
+  };
+  checkUnknown(source);
   return { values: unflatten(values), issues };
 }
 

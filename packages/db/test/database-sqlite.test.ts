@@ -77,3 +77,69 @@ test('db/sqlite: 配置校验 —— 未知方言/缺连接配置要明确报错
   assert.throws(() => createDatabase({ dialect: 'oracle' as never, connection: { filename: 'x' } }), /dialect|oracle/i);
   assert.throws(() => createDatabase({ dialect: 'sqlite' } as never), /connection/i);
 });
+
+test('db/sqlite: 事务期间的外部写入必须等待，不能被卷入回滚（回归：静默丢写）', async () => {
+  const db = sqliteDb();
+  await db.connect();
+  try {
+    const runner = db.runner();
+    await runner.run('CREATE TABLE t (v TEXT)');
+
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const tx = runner.transaction?.(async (scoped) => {
+      await scoped.run('INSERT INTO t (v) VALUES (?)', ['in-tx']);
+      started();
+      await gate;
+      throw new Error('rollback');
+    });
+    await startedPromise;
+
+    // 事务正在进行：外部写入必须先等它结束，而不是跑进同一个事务
+    const external = runner.run('INSERT INTO t (v) VALUES (?)', ['outside']);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    await tx?.catch(() => undefined);
+    await external;
+
+    const rows = await runner.all('SELECT v FROM t ORDER BY v');
+    assert.deepStrictEqual(rows.map((row) => row.v), ['outside'], '事务回滚只能回滚事务内的写入');
+  } finally {
+    await db.close();
+  }
+});
+
+test('db/sqlite: 并发 transaction 串行执行，不出现 nested transaction 错误', async () => {
+  const db = sqliteDb();
+  await db.connect();
+  try {
+    const runner = db.runner();
+    await runner.run('CREATE TABLE c (v INTEGER)');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = runner.transaction?.(async (scoped) => {
+      await scoped.run('INSERT INTO c (v) VALUES (?)', [1]);
+      await gate;
+      await scoped.run('INSERT INTO c (v) VALUES (?)', [2]);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = runner.transaction?.(async (scoped) => {
+      await scoped.run('INSERT INTO c (v) VALUES (?)', [3]);
+    });
+    release();
+    await Promise.all([first, second]);
+    const rows = await runner.all('SELECT v FROM c ORDER BY v');
+    assert.deepStrictEqual(rows.map((row) => row.v), [1, 2, 3]);
+  } finally {
+    await db.close();
+  }
+});

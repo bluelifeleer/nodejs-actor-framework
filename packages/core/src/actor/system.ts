@@ -11,7 +11,7 @@ const { defineActor } = require('./actor.ts');
 const { FilePersistence, MemoryPersistence } = require('../store/persistence.ts');
 const { Peer, createServerGateway, RemoteRef } = require('../cluster/remote.ts');
 const { resolveClock } = require('../obs/clock.ts');
-const { ActorNotFoundError, ActorStoppedError, EscalationError } = require('./errors.ts');
+const { ActorNotFoundError, ActorStoppedError, DefinitionError, EscalationError } = require('./errors.ts');
 const RestartStrategy = require('./restart-strategy.ts');
 
 const { randomBytes } = require('node:crypto');
@@ -179,6 +179,8 @@ class ActorSystem extends EventEmitter {
   metrics: PluginService | null;
   metricsExporter: PluginService | null;
   shutdownTimeoutMs: number;
+  /** 传输层默认 TLS 配置（插件可覆盖；listen/connect 未显式传时使用）。 */
+  tls: unknown;
 
   constructor(options: ActorSystemOptions = {}) {
     super();
@@ -262,6 +264,7 @@ class ActorSystem extends EventEmitter {
     /** How long a graceful actor stop may take before it is forced. */
     this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? (config.actor.shutdownTimeoutMs as number);
     this.maxPeers = options.maxPeers ?? 128;
+    this.tls = config.tls;
   }
 
   /**
@@ -363,7 +366,7 @@ class ActorSystem extends EventEmitter {
       ? require('../worker/worker-delegate.ts').defineWorkerActor(definition, options)
       : defineActor(definition);
     const id = options.id ? String(options.id) : `${defn.name}-${(this._seq += 1)}`;
-    if (this.cells.has(id)) throw new ActorStoppedError(`actor "${id}" already exists`);
+    if (this.cells.has(id)) throw new DefinitionError(`actor "${id}" already exists`);
 
     const cell = new ActorCell({
       system: this,
@@ -481,7 +484,7 @@ class ActorSystem extends EventEmitter {
     // gateway port it just bound.
     await this.init();
     if (this.server) return this.server.boundPort;
-    const server = createServerGateway(this, options);
+    const server = createServerGateway(this, { ...options, tls: options.tls ?? this.tls });
     server.on('tell_error', ((err: Error, target: string) => this._log('remote_tell_failed', { target, err: err.message })) as (...args: never[]) => void);
     try {
       await server.listen();
@@ -540,7 +543,7 @@ class ActorSystem extends EventEmitter {
       host: options.host,
       port: options.port,
       nodeId: options.nodeId,
-      tls: options.tls || config.tls,
+      tls: options.tls || this.tls,
     });
     // Learning the peer's id is best effort: a node may not answer yet.
     await peer.handshake(options.timeoutMs || 3000).catch(() => null);
@@ -779,7 +782,7 @@ class ActorSystem extends EventEmitter {
       deadLetters: this.deadLetters.length,
       scheduled: this.scheduler.pending,
       ticks: this.scheduler.ticks,
-      uptimeMs: Date.now() - this.startedAt,
+      uptimeMs: this.clock.now() - this.startedAt,
       rootSupervisor: this.rootSupervisor.info(),
       plugins: [...this.installed.keys()],
       peers: this.peers.size,

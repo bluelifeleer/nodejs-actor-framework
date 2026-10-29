@@ -16,6 +16,7 @@
 
 const { parentPort } = require('worker_threads');
 const { defineActor } = require('../actor/actor.ts');
+const Trace = require('../obs/trace.ts');
 
 /** 主线程侧发来的调用（spawn/tell/ask/…）的等待表。 */
 interface PendingCall {
@@ -43,6 +44,7 @@ interface WorkerMessage {
 
 let instance: WorkerInstance | null = null;
 let currentSender: { id: string | undefined; path: string; isLocal: boolean } | null = null;
+let handling = false;
 const pendingCalls = new Map<number, PendingCall>();
 let callSeq = 0;
 
@@ -102,7 +104,7 @@ const ctx = {
   },
 
   get handling(): boolean {
-    return currentSender !== undefined;
+    return handling;
   },
 
   get children(): never[] {
@@ -113,16 +115,21 @@ const ctx = {
     return callMain('spawn', { definition: toSpec(definition), options });
   },
 
-  tell(target: unknown, msg: unknown): Promise<unknown> {
-    return callMain('tell', { target: toSpec(target), msg, trace: ctx.trace });
+  tell(target: unknown, msg: unknown): boolean {
+    // 与内联 ctx.tell 同签名：返回“是否已交给传输层”；失败经 ctx.log 可见
+    void callMain('tell', { target: toSpec(target), msg, trace: ctx.trace }).catch((err: unknown) => {
+      ctx.log('tell_failed', { err: errorMessage(err) });
+    });
+    return true;
   },
 
   ask(target: unknown, msg: unknown, timeoutMs?: number): Promise<unknown> {
     return callMain('ask', { target: toSpec(target), msg, timeoutMs, trace: ctx.trace });
   },
 
-  span(): Promise<unknown> {
-    return callMain('span', { trace: ctx.trace });
+  span(): unknown {
+    // span 是纯本地计算（traceId/spanId），不需要回主线程；有 trace 上下文才创建
+    return ctx.trace ? Trace.child(ctx.trace) : null;
   },
 
   stop(target?: unknown): Promise<unknown> {
@@ -185,6 +192,7 @@ async function handleStart(msg: WorkerMessage): Promise<void> {
 }
 
 async function handleInvoke(msg: WorkerMessage): Promise<void> {
+  handling = true;
   currentSender = msg.senderPath
     ? { id: String(msg.senderPath).split('/').pop(), path: String(msg.senderPath), isLocal: true }
     : null;
@@ -199,6 +207,7 @@ async function handleInvoke(msg: WorkerMessage): Promise<void> {
   } catch (err) {
     send({ kind: 'result', seq: msg.seq, ok: false, error: errorMessage(err) });
   } finally {
+    handling = false;
     currentSender = null;
     ctx.trace = null;
   }

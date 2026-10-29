@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 /**
  * 构建后把**非 TS 资产**拷进 `dist/`。
  *
@@ -12,7 +13,7 @@
 import { cp, mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-const ROOT = path.dirname(new URL(import.meta.url).pathname);
+const ROOT = path.dirname(fileURLToPath(new URL(import.meta.url)));
 const PROJECT = path.resolve(ROOT, '..');
 const DIST = path.join(PROJECT, 'dist');
 

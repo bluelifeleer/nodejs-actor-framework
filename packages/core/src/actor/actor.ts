@@ -218,7 +218,28 @@ function defineActor(input: unknown, defaults: Record<string, unknown> = {}): Ac
   // A live actor instance.
   if (input instanceof Actor) {
     const name = input.constructor.name || 'Actor';
-    return new ActorDefinition({ name, kind: 'instance', create: () => input, options: defaults });
+    /**
+     * 同一个实例只能被**一个 cell** 使用；否则两个 Actor 会共享 `state`/`id`/`path`
+     * （第二个 spawn 会覆盖第一个的身份）。restart 仍复用同一个 cell，所以允许。
+     */
+    let owner: object | null = null;
+    const create = (cell?: unknown): Actor => {
+      if (cell === null || cell === undefined || typeof cell !== 'object') {
+        throw new DefinitionError(
+          `actor "${name}" was defined from a live instance and cannot be used without a cell; ` +
+            'pass a class or handler bag if you need to spawn it more than once',
+        );
+      }
+      if (owner === null) owner = cell as object;
+      else if (owner !== cell) {
+        throw new DefinitionError(
+          `actor "${name}" was defined from a live instance and is already bound to another cell; ` +
+            'spawn a class (or handler bag) instead so each actor gets its own state',
+        );
+      }
+      return input;
+    };
+    return new ActorDefinition({ name, kind: 'instance', create, options: defaults });
   }
 
   // A class (optionally extending Actor).
@@ -266,7 +287,7 @@ function defineActor(input: unknown, defaults: Record<string, unknown> = {}): Ac
 interface ActorDefinitionInit {
   name: string;
   kind: string;
-  create: () => Actor;
+  create: (cell?: unknown) => Actor;
   options?: Record<string, unknown>;
   unknownKeys?: string[];
   modulePath?: string | null;
@@ -276,7 +297,7 @@ interface ActorDefinitionInit {
 class ActorDefinition {
   readonly name: string;
   readonly kind: string;
-  create: () => Actor;
+  create: (cell?: unknown) => Actor;
   readonly options: Record<string, unknown>;
   readonly unknownKeys: string[];
   /** `kind: 'worker'` 时存在：Actor 代码所在的模块。 */

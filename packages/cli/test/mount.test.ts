@@ -180,7 +180,7 @@ test('mount: 不需要接线的 kind 会说明原因，迁移会新建并插入 
     assert.match(migration.stdout, /已新建 src\/migrations\.ts/);
     const barrel = read(project, 'src/migrations.ts');
     assert.ok(barrel.includes("import type { Migration } from '@actor/data';"), '新建的文件要能独立导入');
-    assert.match(barrel, /import createNotes from '\.\/migrations\/\d{4}-\d{2}-\d{2}[^']*-create-notes';/);
+    assert.match(barrel, /import createNotes from '\.\/migrations\/\d{4}-\d{2}-\d{2}[^']*-create-notes\.ts';/);
     assert.match(barrel, /createNotes,/);
     assert.match(barrel, /export default migrations;/);
 

@@ -789,3 +789,47 @@ test('persistence: 后端不支持批量能力时，内核退回逐条并记日�
     await system.stop();
   }
 });
+
+test('persistence=mailbox: 处理完成前必须等 append 拿到 __msgId 再 ack（回归：重复投递窗口）', async () => {
+  const msgs = new Map();
+  const acked = [];
+  let seq = 0;
+  const mailboxStore = {
+    async append(_id, msg) {
+      // 故意慢：让消息先被处理，复现“处理完了但还没有 __msgId”的窗口
+      await sleep(30);
+      seq += 1;
+      const __msgId = `m-${seq}`;
+      msgs.set(__msgId, msg);
+      return { __msgId };
+    },
+    async ack(_id, msgIds) {
+      const list = Array.isArray(msgIds) ? msgIds : [msgIds];
+      for (const id of list) acked.push(id);
+      return list.length;
+    },
+    async load() {
+      return [...msgs.values()];
+    },
+    async pendingCount() {
+      return msgs.size - acked.length;
+    },
+    async clear() {
+      msgs.clear();
+    },
+  };
+
+  const system = createSystem({ ...quiet, mailboxStore });
+  try {
+    const ref = await system.spawn(async () => 'handled', {
+      id: 'durable-ack-race',
+      persistence: { mode: 'mailbox' },
+    });
+    ref.tell('hello');
+    await waitFor(() => acked.length === 1, { message: 'ack after append', timeout: 2000 });
+    assert.strictEqual(acked[0], 'm-1', 'ack 必须带 append 返回的 __msgId');
+    assert.strictEqual(await mailboxStore.pendingCount(), 0);
+  } finally {
+    await system.stop();
+  }
+});

@@ -77,6 +77,8 @@ interface MetricsExporterOptions {
   storeBackend?: string;
   collectors?: Collector[];
   maxPerActorSeries?: number;
+  /** 非回环 + 无 TLS/鉴权时仍要监听的显式许可（默认拒绝）。 */
+  allowInsecureBinding?: boolean;
 }
 
 function escapeLabelValue(value: unknown): string {
@@ -128,6 +130,7 @@ class MetricsExporter {
   readonly collectors: Collector[];
   /** 每 actor 序列的基数上限（防止 Prometheus 基数爆炸）。 */
   readonly maxPerActorSeries: number;
+  readonly allowInsecureBinding: boolean;
   server: import('node:http').Server | null;
   /** 实际监听端口（`port: 0` 时由系统分配）。 */
   boundPort: number | null;
@@ -143,6 +146,7 @@ class MetricsExporter {
     this.framework = options.framework ?? null;
     this.collectors = options.collectors ?? [];
     this.maxPerActorSeries = options.maxPerActorSeries ?? 500;
+    this.allowInsecureBinding = options.allowInsecureBinding === true;
     this.server = null;
     this.boundPort = null;
     this.requests = 0;
@@ -152,12 +156,12 @@ class MetricsExporter {
 
   _actorFamilies(): Family[] {
     const snapshot = this.metrics.snapshot();
-    const families: { name: string; type: 'counter' | 'gauge'; help: string; field: string; scale?: number }[] = [
+    const families: { name: string; type: 'counter' | 'gauge'; help: string; field: string; fallback?: string; scale?: number }[] = [
       { name: 'actor_messages_received_total', type: 'counter', help: 'Messages accepted into an actor mailbox.', field: 'received' },
       { name: 'actor_messages_handled_total', type: 'counter', help: 'Messages handled successfully.', field: 'handled' },
       { name: 'actor_messages_failed_total', type: 'counter', help: 'Messages that exhausted their retries.', field: 'failed' },
       { name: 'actor_message_retries_total', type: 'counter', help: 'Message delivery retries.', field: 'retries' },
-      { name: 'actor_messages_dead_lettered_total', type: 'counter', help: 'Messages moved to the dead-letter queue.', field: 'dlq' },
+      { name: 'actor_messages_dead_lettered_total', type: 'counter', help: 'Messages moved to the dead-letter queue.', field: 'deadLettered', fallback: 'dlq' },
       { name: 'actor_messages_dropped_total', type: 'counter', help: 'Messages refused because the mailbox was full.', field: 'dropped' },
       { name: 'actor_messages_throttled_total', type: 'counter', help: 'Times an actor waited on its token bucket.', field: 'throttled' },
       { name: 'actor_messages_recovered_total', type: 'counter', help: 'Messages replayed from persistence after a restart.', field: 'recovered' },
@@ -173,7 +177,7 @@ class MetricsExporter {
       help: family.help,
       samples: Object.entries(snapshot).map(([actor, values]) => ({
         labels: { actor },
-        value: (values[family.field] ?? 0) * (family.scale ?? 1),
+        value: (values[family.field] ?? (family.fallback === undefined ? 0 : values[family.fallback]) ?? 0) * (family.scale ?? 1),
       })),
     }));
   }
@@ -373,9 +377,29 @@ class MetricsExporter {
     res.end(req.method === 'HEAD' ? undefined : body);
   }
 
+  /**
+   * 指标端点默认只绑回环。非回环地址意味着把 actor 路径、死信数、集群规模
+   * 暴露给整个网络；与 Gateway/WS/Console 同一套默认拒绝语义。
+   */
+  assertSafeBinding(): void {
+    const loopback = this.host === '127.0.0.1' || this.host === '::1' || this.host === 'localhost' || this.host.startsWith('127.');
+    if (!loopback && !this.allowInsecureBinding) {
+      throw new Error(
+        `refusing to bind the metrics endpoint on ${this.host} without an explicit allowInsecureBinding: ` +
+          'it would expose actor metadata to the network',
+      );
+    }
+  }
+
   /** 开始监听；返回实际端口（`port: 0` 时由系统分配）。 */
   listen(): Promise<number> {
     return new Promise<number>((resolve, reject) => {
+      try {
+        this.assertSafeBinding();
+      } catch (err) {
+        reject(err);
+        return;
+      }
       const server = http.createServer((req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => this._handle(req, res));
       this.server = server;
       server.on('error', (err: Error) => reject(err));

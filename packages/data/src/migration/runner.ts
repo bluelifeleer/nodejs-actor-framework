@@ -47,6 +47,19 @@ export interface MigrationStatus {
 const byVersion = (migrations: readonly Migration[]): Migration[] =>
   [...migrations].sort((a, b) => a.version - b.version);
 
+/** 同一进程内按 store 串行化 migrate/rollback（跨进程仍需数据库锁；至少不再丢版本记录）。 */
+const migrationLocks = new WeakMap<object, Promise<unknown>>();
+
+function withMigrationLock<T>(store: object, fn: () => Promise<T>): Promise<T> {
+  const previous = migrationLocks.get(store) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  migrationLocks.set(store, run.then(
+    () => undefined,
+    () => undefined,
+  ));
+  return run;
+}
+
 export function createMigrationRunner(options: MigrationRunnerOptions) {
   if (!options?.store || typeof options.store.read !== 'function') {
     throw new MigrationVersionError(['migrationRunner 需要 store（提供 read / write / remove）']);
@@ -117,6 +130,7 @@ export function createMigrationRunner(options: MigrationRunnerOptions) {
 
   /** 按版本升序执行未完成的迁移；每个迁移**先记 started、成功后记 completed**。 */
   async function migrate(): Promise<{ applied: Migration[]; status: MigrationStatus }> {
+    return withMigrationLock(store as object, async () => {
     const current = await status();
     if (current.unknown.length > 0) {
       throw new MigrationVersionError([
@@ -149,6 +163,7 @@ export function createMigrationRunner(options: MigrationRunnerOptions) {
       ran.push(migration);
     }
     return { applied: ran, status: await status() };
+    });
   }
 
   /** 回滚到 `to`（不含）：按版本**降序**执行 down()；缺 down 的迁移直接报错。 */

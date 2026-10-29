@@ -135,6 +135,8 @@ test('mongodb adapter: 事务走 session.withTransaction（与 SQL 侧同签名�
     });
     assert.strictEqual(result, 'ok');
     assert.strictEqual(driver.state.sessions, 1, '事务必须开一个 session');
+    const inTx = driver.state.operationOptions.filter((options) => options?.session === driver.state.lastSession);
+    assert.ok(inTx.length >= 1, '事务里的每个操作都必须带 session（不能只开一个空会话）');
     assert.strictEqual(await db.collection('events').countDocuments({ type: 'in-tx' }), 1);
   } finally {
     await resource.close();

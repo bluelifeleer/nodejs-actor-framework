@@ -1,6 +1,6 @@
 import { DbConnectionError, type PoolOptions } from '@actor/resource';
 
-import type { MongoDriverHandle, MongoNativeDb } from '../client.ts';
+import type { MongoDriverHandle, MongoNativeDb, MongoSessionLike } from '../client.ts';
 
 /**
  * **官方 `mongodb` 驱动**适配：把一个 `MongoClient` 包成 core 的 `MongoDriverHandle`。
@@ -12,9 +12,8 @@ import type { MongoDriverHandle, MongoNativeDb } from '../client.ts';
  *   - 事务：`startSession()` + `session.withTransaction()`，结束时 `endSession()`；
  *   - `stats` 如实：只报连接/拓扑状态，**不编造池数字**。
  */
-interface MongoSession {
-  withTransaction<T>(fn: () => Promise<T>): Promise<T>;
-  endSession(): Promise<void>;
+interface MongoSession extends MongoSessionLike {
+  withTransaction<T>(fn: (session: MongoSessionLike) => Promise<T>): Promise<T>;
 }
 
 interface MongoClientLike {
@@ -46,7 +45,6 @@ const FORWARDED_EVENTS = [
   'error',
   'timeout',
   'serverHeartbeatFailed',
-  'serverHeartbeatSucceeded',
   'topologyDescriptionChanged',
   'serverDescriptionChanged',
 ] as const;
@@ -84,10 +82,11 @@ export async function createMongoHandle(input: MongoConnectInput): Promise<Mongo
     name: 'mongodb',
     db,
     raw: client,
-    async transaction<T>(fn: (scoped: MongoNativeDb) => Promise<T>): Promise<T> {
+    async transaction<T>(fn: (scoped: MongoNativeDb, session: MongoSessionLike) => Promise<T>): Promise<T> {
       const session = client.startSession();
       try {
-        return await session.withTransaction(() => fn(db));
+        // 回调里的每个操作都必须拿到同一个 session，否则 `withTransaction` 只是开了个空会话。
+        return await session.withTransaction((active) => fn(db, active));
       } finally {
         await session.endSession().catch(() => undefined);
       }

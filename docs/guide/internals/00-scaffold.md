@@ -46,7 +46,7 @@ try {
   const flatDir = fs.mkdtempSync(path.join(process.cwd(), '.tmp-doc-scaffold-flat-'));
   try {
     const { stdout: flatOut } = await run(process.execPath, [cli, 'new', 'app', flatDir, '--layout', 'flat']);
-    assert.match(flatOut, /已生成 17 个文件/);
+    assert.match(flatOut, /已生成 18 个文件/);
     assert.ok(fs.existsSync(path.join(flatDir, 'src', 'app.ts')), 'flat 布局应当有 src/app.ts');
     assert.ok(!fs.existsSync(path.join(flatDir, 'server.ts')), 'flat 布局不该有 server.ts');
   } finally {

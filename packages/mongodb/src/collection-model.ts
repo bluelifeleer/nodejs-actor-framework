@@ -188,7 +188,12 @@ export interface CollectionInfo {
   readonly name: string;
   readonly exists: boolean;
   readonly validator: Record<string, unknown> | null;
-  readonly indexes: readonly { readonly name: string; readonly keys: Record<string, number> }[];
+  readonly indexes: readonly {
+    readonly name: string;
+    readonly keys: Record<string, number>;
+    readonly unique?: boolean;
+    readonly sparse?: boolean;
+  }[];
 }
 
 /** `sync` 需要的数据库能力（只用到这几个方法 → 假实现很好写，真实现就是官方驱动）。 */
@@ -242,7 +247,12 @@ export async function inspectCollection(db: MongoDatabaseLike, name: string): Pr
   const found = await db.listCollections({ name }).toArray();
   if (found.length === 0) return { name, exists: false, validator: null, indexes: [] };
   const raw = (found[0]?.options?.validator as Record<string, unknown> | undefined) ?? null;
-  const indexes = (await db.collection(name).listIndexes().toArray()).map((index) => ({ name: index.name, keys: index.key }));
+  const indexes = (await db.collection(name).listIndexes().toArray()).map((index) => ({
+    name: index.name,
+    keys: index.key,
+    unique: (index as { unique?: unknown }).unique === true,
+    sparse: (index as { sparse?: unknown }).sparse === true,
+  }));
   return { name, exists: true, validator: raw === null ? null : validatorOf(raw), indexes };
 }
 
@@ -252,12 +262,30 @@ export function checkCollectionDrift(model: CollectionModel, info: CollectionInf
   if (!info.exists) {
     return { ok: false, drift: [{ collection: model.name, kind: 'missing', detail: '集合不存在' }] };
   }
-  if (model.jsonSchema !== null && info.validator !== null && !sameJson(info.validator, { $jsonSchema: model.jsonSchema })) {
-    drift.push({ collection: model.name, kind: 'validator', detail: 'validator 与声明不一致' });
+  if (model.jsonSchema !== null) {
+    if (info.validator === null) {
+      // 没有 validator ≠ 一致：字段约束根本没在守，必须报出来（而不是 ok:true）
+      drift.push({ collection: model.name, kind: 'validator', detail: '集合没有 validator，字段约束未被校验' });
+    } else if (!sameJson(info.validator, { $jsonSchema: model.jsonSchema })) {
+      drift.push({ collection: model.name, kind: 'validator', detail: 'validator 与声明不一致' });
+    }
   }
-  const existing = new Set(info.indexes.map((index) => index.name));
+  const existing = new Map(info.indexes.map((index) => [index.name, index]));
   for (const index of model.indexes) {
-    if (!existing.has(index.name)) drift.push({ collection: model.name, kind: 'index', detail: `缺少索引 ${index.name}` });
+    const actual = existing.get(index.name);
+    if (actual === undefined) {
+      drift.push({ collection: model.name, kind: 'index', detail: `缺少索引 ${index.name}` });
+      continue;
+    }
+    if (!sameJson(actual.keys, index.keys)) {
+      drift.push({ collection: model.name, kind: 'index', detail: `索引 ${index.name} 的字段不一致` });
+    } else if ((actual.unique === true) !== index.unique || (actual.sparse === true) !== index.sparse) {
+      drift.push({
+        collection: model.name,
+        kind: 'index',
+        detail: `索引 ${index.name} 的 unique/sparse 与声明不一致（需要 drop 后重建）`,
+      });
+    }
   }
   return { ok: drift.length === 0, drift };
 }
@@ -298,9 +326,19 @@ export async function syncCollections(
     }
 
     // 索引：缺失就建（这是"补齐"而不是"改结构"，与 SQL 侧一致：建索引不需要 auto）
-    const existing = new Set(info.exists ? info.indexes.map((index) => index.name) : []);
+    const existing = new Map(info.exists ? info.indexes.map((index) => [index.name, index]) : []);
     for (const index of model.indexes) {
-      if (existing.has(index.name)) continue;
+      const actual = existing.get(index.name);
+      if (actual !== undefined) {
+        if (!sameJson(actual.keys, index.keys) || (actual.unique === true) !== index.unique || (actual.sparse === true) !== index.sparse) {
+          report.drift.push({
+            collection: model.name,
+            kind: 'index',
+            detail: `索引 ${index.name} 与声明不一致（需要 drop 后重建）`,
+          });
+        }
+        continue;
+      }
       await db.collection(model.name).createIndex(index.keys, {
         name: index.name,
         ...(index.unique ? { unique: true } : {}),

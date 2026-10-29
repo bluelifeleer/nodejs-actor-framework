@@ -56,7 +56,11 @@ export function createProbe(): Probe {
       if (typeof originalReceive !== 'function') {
         throw new TypeError('createProbe().wrap() 需要一个带 receive() 的 Actor 定义');
       }
-      const wrapped: Record<string, unknown> = { ...definition };
+      // 不能只 spread：class 的生命周期方法在 prototype 上，spread 会全部丢掉
+      const wrapped: Record<string, unknown> = Object.create(
+        Object.getPrototypeOf(definition),
+        Object.getOwnPropertyDescriptors(definition),
+      ) as Record<string, unknown>;
       wrapped.receive = async function receive(this: unknown, msg: unknown, ctx: { clock: { now(): number } }) {
         const index = calls.length + 1;
         const type = msg !== null && typeof msg === 'object' ? (msg as { type?: string }).type : undefined;

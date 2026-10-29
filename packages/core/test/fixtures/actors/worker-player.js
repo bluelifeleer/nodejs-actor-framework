@@ -40,6 +40,12 @@ module.exports = class WorkerPlayer extends Actor {
         return 'saved';
       case 'uncloneable':
         return () => 'a function cannot cross the thread boundary';
+      case 'ctx-info':
+        return {
+          handling: ctx.handling,
+          span: ctx.span(),
+          tell: typeof ctx.tell('nobody', { type: 'noop' }),
+        };
       default:
         return { ok: true, type: msg.type };
     }

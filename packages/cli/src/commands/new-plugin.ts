@@ -76,6 +76,10 @@ export async function newPlugin(
   if (options.dryRun !== true) {
     for (const file of templates) {
       const destination = path.join(dir, file.relative);
+      const stat = await fs.lstat(destination).catch(() => null);
+      if (stat?.isSymbolicLink()) {
+        throw new UsageError(`拒绝写入符号链接：${file.relative}`, '符号链接可能指向项目外；请先移除它');
+      }
       await fs.mkdir(path.dirname(destination), { recursive: true });
       await fs.writeFile(destination, file.content, 'utf8');
     }

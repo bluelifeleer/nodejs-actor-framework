@@ -27,6 +27,8 @@ import {
   type RepositoryPage,
   type RepositoryQuery,
 } from './types.ts';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { decodeCursor, encodeCursor, normalizeQuery } from './cursor.ts';
 
 type Entity = Record<string, unknown>;
@@ -106,8 +108,12 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
   }
 
   const { runner, table } = options;
-  /** 事务期间的 runner（真事务时必须让内部语句走到事务连接上）。 */
-  let activeRunner: SqlRunner = runner;
+  /**
+   * 事务期间的 runner 必须**跟着异步上下文走**，不能是实例字段：
+   * 实例字段会被事务外的并发调用看到，让它们跑进别人的事务、随回滚静默丢失。
+   */
+  const txContext = new AsyncLocalStorage<SqlRunner>();
+  const runnerNow = (): SqlRunner => txContext.getStore() ?? runner;
   const ph = options.placeholder ?? (() => '?');
   const columnOf = (field: string): string => {
     if (!fields.includes(field)) {
@@ -142,7 +148,7 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
   };
 
   async function selectById(id: string): Promise<Entity | null> {
-    const rows = await activeRunner.all(
+    const rows = await runnerNow().all(
       `SELECT ${selectColumns} FROM ${table} WHERE ${columnOf(idField)} = ${ph(1)}`,
       [id],
     );
@@ -202,7 +208,7 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
           direction === 'desc' ? 'DESC' : 'ASC'
         } LIMIT ${ph(params.length)}`;
 
-      const rows = await activeRunner.all(sql, params);
+      const rows = await runnerNow().all(sql, params);
       const hasMore = rows.length > limit;
       const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => clone(fromRow(row)) as T);
       const last = items[items.length - 1] as Entity | undefined;
@@ -229,12 +235,17 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
 
       const placeholders = fields.map((_, index) => ph(index + 1)).join(', ');
       try {
-        await activeRunner.run(
+        await runnerNow().run(
           `INSERT INTO ${table} (${fields.map((field) => columnOf(field)).join(', ')}) VALUES (${placeholders})`,
           fields.map((field) => row[field] ?? null),
         );
       } catch (err) {
-        if (options.isUniqueViolation?.(err)) throw new RepositoryDuplicateError(String(id));
+        const unique =
+          options.isUniqueViolation?.(err) ??
+          /23505|ER_DUP_ENTRY|SQLITE_CONSTRAINT|duplicate key|unique constraint/i.test(
+            `${(err as { code?: unknown })?.code ?? ''} ${(err as Error)?.message ?? ''}`,
+          );
+        if (unique) throw new RepositoryDuplicateError(String(id));
         throw err;
       }
       const stored = await selectById(String(id));
@@ -269,7 +280,7 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
         where.push(`${columnOf(versionField)} = ${ph(params.length)}`);
       }
 
-      const changes = await activeRunner.run(
+      const changes = await runnerNow().run(
         `UPDATE ${table} SET ${setClauses.join(', ')} WHERE ${where.join(' AND ')}`,
         params,
       );
@@ -286,7 +297,7 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
     },
 
     async delete(id) {
-      const changes = await activeRunner.run(
+      const changes = await runnerNow().run(
         `DELETE FROM ${table} WHERE ${columnOf(idField)} = ${ph(1)}`,
         [String(id)],
       );
@@ -297,15 +308,7 @@ export function createSqlRepository<T extends Entity = Entity>(options: SqlRepos
       return serialize(async () => {
         if (!runner.transaction) return fn(api);
         // 让事务内的语句走到事务连接上；结束（含抛错）后恢复原 runner
-        return runner.transaction(async (scoped) => {
-          const previous = activeRunner;
-          activeRunner = scoped;
-          try {
-            return await fn(api);
-          } finally {
-            activeRunner = previous;
-          }
-        });
+        return runner.transaction((scoped) => txContext.run(scoped, () => fn(api)));
       });
     },
   };

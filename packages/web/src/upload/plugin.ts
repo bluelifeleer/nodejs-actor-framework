@@ -25,7 +25,11 @@ function matcherFor(patterns: readonly string[]): StreamMatcher {
     );
     return regex;
   });
-  return (_method: string, path: string): boolean => compiled.some((regex) => regex.test(path));
+  return (_method: string, path: string): boolean => {
+    // 路由表会归一化尾斜杠；流式判定必须用同一口径，否则 `POST /uploads/` 先被路由匹配、却拿不到流
+    const normalized = path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+    return compiled.some((regex) => regex.test(normalized));
+  };
 }
 
 /** 把 push 型 sink 变成 pull 型 async iterable（`storage.put` 要吃流）。 */
@@ -101,6 +105,13 @@ export interface UploadPluginOptions {
   /** 过期会话清理间隔（默认 10 分钟；0 = 不自动清理）。 */
   purgeIntervalMs?: number;
   logger?: (event: string, meta?: Record<string, unknown>) => void;
+}
+
+/** RFC 6266：ASCII fallback + `filename*`（非 ASCII 文件名不能直接放进头部，否则 Node 会拒绝）。 */
+function contentDisposition(name: string): string {
+  const fallback = String(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
 /** 从文件名取扩展名（不带点，小写）。 */
@@ -205,7 +216,10 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
 
           const parse = parseMultipart(stream, {
             contentType,
-            limits,
+            limits: {
+              ...limits,
+              ...(options.maxUploadSize === undefined ? {} : { maxTotalBytes: options.maxUploadSize }),
+            },
             onFile: (part) => {
               const filename = part.filename ?? 'upload.bin';
               checkWhitelist(filename, part.mimeType);
@@ -253,12 +267,10 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
           const key = String(input.key);
           const read = await options.storage.get(key);
           if (read === null) throw new HttpError(404, `文件不存在：${key}`);
-          const parts: Uint8Array[] = [];
-          for await (const chunk of read.stream) parts.push(chunk);
-          return reply.buffer(Buffer.concat(parts), {
+          return reply.stream(read.stream, {
             contentType: read.file.mimeType,
             headers: {
-              'content-disposition': `attachment; filename="${read.file.name.replace(/["\\]/g, '_')}"`,
+              'content-disposition': contentDisposition(read.file.name),
               'x-content-sha256': read.file.checksum,
             },
           });
@@ -269,14 +281,20 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
     post(
       '/chunked/init',
       defineController({
-        body: ['filename', 'size', 'chunkSize', 'sha256'],
+        body: ['filename', 'size', 'chunkSize', 'sha256', 'mimeType'],
         input: {
           filename: { type: 'string', min: 1 },
           size: { type: 'number' },
           chunkSize: { type: 'number' },
           sha256: { type: 'string', min: 64, max: 64 },
+          mimeType: { type: 'string', default: 'application/octet-stream' },
         },
         async handle(input, ctx): Promise<unknown> {
+          // 分片路径与 multipart 共用同一套安全策略：扩展名/MIME 白名单在 init 就挡住，
+          // 而不是等到 complete 才校验（那时分片已经写进磁盘）。
+          const filename = String(input.filename);
+          const mimeType = input.mimeType === undefined ? 'application/octet-stream' : String(input.mimeType);
+          checkWhitelist(filename, mimeType);
           if (options.maxActiveSessions !== undefined) {
             const active = (await chunkStore.countActive?.()) ?? 0;
             if (active >= options.maxActiveSessions) {
@@ -286,7 +304,8 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
           }
           const subject = subjectOf(ctx);
           const session = await chunkStore.create({
-            filename: String(input.filename),
+            filename,
+            mimeType,
             size: Number(input.size),
             chunkSize: Number(input.chunkSize),
             sha256: String(input.sha256).toLowerCase(),
@@ -378,9 +397,12 @@ export function uploadPlugin(options: UploadPluginOptions): WebPluginSpec {
           const missing = chunkStore.missingChunks(session);
           if (missing.length > 0) throw new HttpError(400, `还有分片没收到：${missing.join(',')}`);
 
+          // 纵深防御：会话创建后白名单配置可能被热改，complete 再校验一次。
+          const mimeType = session.mimeType ?? 'application/octet-stream';
+          checkWhitelist(session.filename, mimeType);
           const file = await options.storage.put(chunkStore.readAll(uploadId), {
             name: session.filename,
-            mimeType: 'application/octet-stream',
+            mimeType,
             extension: extensionOf(session.filename),
           });
           if (file.checksum !== session.sha256) {

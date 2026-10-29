@@ -79,11 +79,17 @@ export function resourceAdapter<C = unknown, Conn extends BaseConnection = BaseC
 
     async onReady(app: AdapterPluginApp): Promise<void> {
       const url = readConfig<string>(app, `${configKey}.url`, '');
-      const connection =
-        options.connection ??
-        (adapter.connectionFromUrl !== undefined && url !== ''
-          ? adapter.connectionFromUrl(url)
-          : ({ url } as unknown as Conn));
+      // 适配器声明的每个配置键都必须真的被读取；否则 `prefix`/`driver`/`database` 这类
+      // 配置会“被 schema 接受、被实现忽略”（静默失效）。
+      const declared = adapter.config ?? { url: { type: 'string' as const, default: '' } };
+      const extra: Record<string, unknown> = {};
+      for (const key of Object.keys(declared)) {
+        if (key === 'url' || key === 'connectTimeoutMs') continue;
+        const value = readConfig<unknown>(app, `${configKey}.${key}`, undefined);
+        if (value !== undefined && value !== null && value !== '') extra[key] = value;
+      }
+      const base = adapter.connectionFromUrl !== undefined && url !== '' ? adapter.connectionFromUrl(url) : ({} as Conn);
+      const connection = options.connection ?? ({ ...base, ...extra } as Conn);
       const pool = options.pool ?? { connectionTimeoutMs: readConfig<number>(app, `${configKey}.connectTimeoutMs`, 10_000) };
 
       resource = supervise(adapter, {

@@ -11,7 +11,7 @@ import http from 'node:http';
 
 import type { Application, PluginSpec } from '@actor/app';
 
-import { dispatch } from './controller.ts';
+import { dispatch, makeRequestId } from './controller.ts';
 import type { Middleware } from './middleware.ts';
 import {
   duplicatePrefixOwners,
@@ -25,6 +25,19 @@ import { WEB_CONTEXT_HOOKS_SERVICE } from './plugins.ts';
 import { STREAM_ROUTES_SERVICE } from './upload/plugin.ts';
 import { buildRouteTable, type HttpMethod, type Route, reservedPrefixIssues } from './routes.ts';
 import { flattenRoutes } from './router.ts';
+
+/** 静态文件/SPA fallback 的服务名；`staticPlugin` 注册，`httpPlugin` 在 404 前调用它。 */
+export const HTTP_FALLBACK_SERVICE = '@actor/web:httpFallback';
+export type HttpFallback = (req: http.IncomingMessage, res: http.ServerResponse) => boolean | Promise<boolean>;
+
+function readHttpFallback(app: { get?<T>(name: string): T }): HttpFallback | null {
+  try {
+    const handler = app.get?.<HttpFallback | undefined>(HTTP_FALLBACK_SERVICE);
+    return typeof handler === 'function' ? handler : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface HttpPluginOptions {
   port?: number;
@@ -67,6 +80,11 @@ function readStreamMatcher(app: { get?<T>(name: string): T }): ((method: string,
 }
 
 /** 读插件注册的 context 钩子（没有就空数组；服务不存在不是错误）。 */
+/** 访问日志/事件里的 URL 不能带明文 token（debug 插件支持 `?token=`）。 */
+function redactUrl(url: string): string {
+  return url.replace(/([?&](?:token|access_token|refresh_token|api_key|apikey)=)[^&]*/gi, '$1[redacted]');
+}
+
 function readContextHooks(app: {
   get?<T>(name: string): T;
 }): readonly ((ctx: Record<string, unknown>) => Record<string, unknown> | undefined)[] {
@@ -179,6 +197,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               }
             }
 
+            const requestId = makeRequestId();
             const result = await dispatch({
               routes,
               middleware: app.middleware as readonly Middleware[],
@@ -187,6 +206,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
                 method: req.method ?? 'GET',
                 url: req.url ?? '/',
                 headers: req.headers as Record<string, HeaderValue>,
+                requestId,
                 ...(body === undefined ? {} : { body }),
               },
               actor: (name: string) => app.actor(name),
@@ -200,7 +220,7 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
                 pluginLogger ??
                   (app.logSink === null ? undefined : (event, meta) => app.logSink?.('http', `http:${event}`, meta)),
                 {
-                  requestId: String(req.headers['x-request-id'] ?? ''),
+                  requestId,
                   method: req.method ?? 'GET',
                   path: String(req.url ?? '/'),
                 },
@@ -217,6 +237,24 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               },
             });
 
+            // 路由未命中 → 静态文件 / SPA fallback。控制器永远优先；
+            // fallback 自己写响应，命中后不再走下面的 JSON/错误响应。
+            if (!result.matched && result.status === 404 && !isStreaming) {
+              const fallback = readHttpFallback(app);
+              if (fallback !== null) {
+                try {
+                  const handled = await fallback(req, res);
+                  if (handled) return;
+                } catch {
+                  if (!res.headersSent) {
+                    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ error: { status: 500, message: 'static fallback failed' } }));
+                  }
+                  return;
+                }
+              }
+            }
+
             const headers: Record<string, string> = { ...result.response.headers };
             headers['content-type'] = result.response.contentType;
             // 追踪 id 回写：客户端/网关可用它把一次请求与日志串起来
@@ -224,18 +262,24 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
             res.writeHead(result.response.status, headers);
             // HEAD：响应头照常，但不发送 body（标准行为）
             if (result.response.body === null || result.headOnly) res.end();
-            else res.end(result.response.body);
+            else if (typeof (result.response.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function') {
+              // 流式响应：边读边写，避免把大文件整份拼进内存
+              for await (const chunk of result.response.body as AsyncIterable<Uint8Array>) res.write(chunk);
+              res.end();
+            } else {
+              res.end(result.response.body as string | Uint8Array);
+            }
 
             // 事件总线：订阅者（如 requestLogPlugin）据此记录/转发，订阅者抛错不影响请求
             app.emit('http:request', {
               method: req.method ?? 'GET',
-              path: req.url ?? '/',
+              path: redactUrl(String(req.url ?? '/')),
               status: result.response.status,
               ms: Date.now() - startedAt,
               requestId: result.requestId,
               // 结构化字段：流式请求的 bytesIn 无从直接统计（没缓冲）→ 如实省略
               ...(isStreaming ? {} : { bytesIn: size }),
-              bytesOut: typeof result.response.body === 'string' ? Buffer.byteLength(result.response.body) : (result.response.body?.byteLength ?? 0),
+              bytesOut: typeof result.response.body === 'string' ? Buffer.byteLength(result.response.body) : result.response.body instanceof Uint8Array ? result.response.body.byteLength : 0,
               ...(result.userId === undefined ? {} : { userId: result.userId }),
             });
 
@@ -243,38 +287,90 @@ export function httpPlugin(options: HttpPluginOptions = {}): HttpPlugin {
               const elapsed = Date.now() - startedAt;
               const slow = elapsed >= slowMs ? ' SLOW' : '';
               const line =
-                `[http] ${req.method ?? 'GET'} ${req.url ?? '/'} ${String(result.response.status)} ` +
+                `[http] ${req.method ?? 'GET'} ${redactUrl(String(req.url ?? '/'))} ${String(result.response.status)} ` +
                 `${String(elapsed)}ms rid=${result.requestId}${slow}`;
               // 有统一出口就走它（结构化：event=http:request），否则保持原样打到 console
               // console-ok: 应用没配 logging.logger 时的兜底（配了就走 http:request）
               if (app.logSink === null) console.log(line);
               else {
-                app.logSink('http', 'http:request', {
-                  method: req.method ?? 'GET',
-                  path: req.url ?? '/',
-                  status: result.response.status,
-                  ms: elapsed,
-                  requestId: result.requestId,
-                  ...(result.userId === undefined ? {} : { userId: result.userId }),
-                  slow: elapsed >= slowMs,
-                });
+                try {
+                  app.logSink('http', 'http:request', {
+                    method: req.method ?? 'GET',
+                    path: req.url ?? '/',
+                    status: result.response.status,
+                    ms: elapsed,
+                    requestId: result.requestId,
+                    ...(result.userId === undefined ? {} : { userId: result.userId }),
+                    slow: elapsed >= slowMs,
+                  });
+                } catch (logError) {
+                  // 日志出口坏了不能反过来打死请求/进程：访问日志是观测，不是业务
+                  // console-ok: 日志出口自身故障，只能退回 console
+                  console.error('[http] access log failed:', logError);
+                }
               }
             }
           } catch (error) {
             // 500 必须留痕：响应里不含细节（安全），但服务端日志要能定位
             // console-ok: 兜底 —— 5xx 必须留痕，配了统一出口就走 http:handler_error
-            if (app.logSink === null) console.error('[http] handler error:', error);
-            else app.logSink('http', 'http:handler_error', { error: error instanceof Error ? error.message : String(error) });
-            res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: { status: 500, message: 'internal error' } }));
+            try {
+              // console-ok: 兜底 —— 5xx 必须留痕，配了统一出口就走 http:handler_error
+              if (app.logSink === null) console.error('[http] handler error:', error);
+              else app.logSink('http', 'http:handler_error', { error: error instanceof Error ? error.message : String(error) });
+            } catch (logError) {
+              // console-ok: 日志出口自身故障，只能退回 console
+              console.error('[http] error log failed:', logError);
+            }
+            /**
+             * 响应已经发出（例如 accessLog/logger 在 res.end() 之后抛错）时，
+             * 再 writeHead 会抛 ERR_HTTP_HEADERS_SENT，而这个异常会逃出 async IIFE
+             * → unhandled rejection → 进程退出。已发出的响应无法再改，只能记录。
+             */
+            if (!res.headersSent && !res.writableEnded) {
+              res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: { status: 500, message: 'internal error' } }));
+            } else if (!res.writableEnded) {
+              res.end();
+            }
             void error;
           } finally {
             finish();
           }
-        })();
+        })().catch((fatal: unknown) => {
+          // 最后一道防线：任何漏网错误都必须被记录，绝不允许变成进程级 unhandledRejection
+          // console-ok: 请求处理已失败，日志出口可能也不可用
+          console.error('[http] request pipeline failed:', fatal);
+          try {
+            if (!res.headersSent && !res.writableEnded) {
+              res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ error: { status: 500, message: 'internal error' } }));
+            } else if (!res.writableEnded) res.end();
+          } catch {
+            /* headers already sent / socket gone */
+          }
+        });
       });
 
-      await new Promise<void>((resolve) => server?.listen(port, host, () => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        /**
+         * 端口被占用时 `server.listen` 会发 'error' 事件；没有监听者时 Node 直接
+         * 以 uncaughtException 退出，且这个 Promise 永远不会结算。这里把它变成
+         * 一个可捕获的启动失败，让 `app.start()` 能如实拒绝并回滚。
+         */
+        const target = server;
+        if (!target) return reject(new Error('http server was not created'));
+        const onError = (err: Error): void => {
+          target.off('listening', onListening);
+          reject(err);
+        };
+        const onListening = (): void => {
+          target.off('error', onError);
+          resolve();
+        };
+        target.once('error', onError);
+        target.once('listening', onListening);
+        target.listen(port, host);
+      });
       // 注册 server 服务：wsPlugin 在“共享端口”模式下用它附加 upgrade（必须在 listen 之后，
       // 否则 provide 出去的是尚未创建的 null）
       app.provide('httpServer', server);

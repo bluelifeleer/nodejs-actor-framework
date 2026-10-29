@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
 
 import { DbConnectionError } from '../errors.ts';
@@ -57,7 +58,19 @@ export function createSqliteDriver(loadModule: () => SqliteModule = loadSqlite):
         /* 某些构建不支持也无所谓 */
       }
 
-      const api: Runner = {
+      /**
+       * SQLite 只有一条连接。`await fn(scoped)` 的每个 await 点都会让出事件循环，
+       * 如果不做隔离，**任何并发请求的写都会落进这个事务**，回滚时一起消失
+       * （调用方早已收到 affected=1）。这里做两件事：
+       *   1. `transactionTail`：事务之间串行，避免 "cannot start a transaction within a transaction"；
+       *   2. `activeTransaction` 门：事务进行期间，外部调用先等它结束；
+       *      事务回调里的调用通过 AsyncLocalStorage 识别，直接走同一条连接。
+       */
+      const txContext = new AsyncLocalStorage<Runner>();
+      let activeTransaction: Promise<void> | null = null;
+      let transactionTail: Promise<unknown> = Promise.resolve();
+
+      const rawRunner: Runner = {
         async all(sql, params = []) {
           return db.prepare(sql).all(...(params as unknown[])) as Row[];
         },
@@ -69,20 +82,82 @@ export function createSqliteDriver(loadModule: () => SqliteModule = loadSqlite):
           // SQLite 3.35+ 支持 RETURNING，node:sqlite 也一样（用 all() 取回结果行）
           return db.prepare(sql).all(...(params as unknown[])) as Row[];
         },
-        async transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
-          db.exec('BEGIN');
-          try {
-            const result = await fn(api);
-            db.exec('COMMIT');
-            return result;
-          } catch (err) {
-            try {
-              db.exec('ROLLBACK');
-            } catch {
-              /* 已经回滚 */
-            }
-            throw err;
+      };
+
+      const scopedRunner: Runner = { ...rawRunner };
+      /**
+       * 外部操作排队：事务期间进入时先等事务结束，事务结束后才能执行。
+       * 用 `opTail` 而不是"检查一次 activeTransaction"是为了避免唤醒后与下一个事务
+       * 抢跑（微任务顺序不确定，检查一次的写法仍有窗口）。
+       */
+      let opTail: Promise<unknown> = Promise.resolve();
+      const enqueueOp = <T>(fn: () => Promise<T>): Promise<T> => {
+        const run = opTail.then(async () => {
+          const active = activeTransaction;
+          if (active !== null) await active;
+          return fn();
+        });
+        opTail = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      };
+
+      const api: Runner = {
+        async all(sql, params = []) {
+          if (txContext.getStore() !== null && txContext.getStore() !== undefined) {
+            return rawRunner.all(sql, params);
           }
+          return enqueueOp(() => rawRunner.all(sql, params));
+        },
+        async run(sql, params = []) {
+          if (txContext.getStore() !== null && txContext.getStore() !== undefined) {
+            return rawRunner.run(sql, params);
+          }
+          return enqueueOp(() => rawRunner.run(sql, params));
+        },
+        async insertReturning(sql, params = []) {
+          if (txContext.getStore() !== null && txContext.getStore() !== undefined) {
+            return rawRunner.insertReturning?.(sql, params) ?? [];
+          }
+          return enqueueOp(async () => rawRunner.insertReturning?.(sql, params) ?? []);
+        },
+        transaction<R>(fn: (scoped: Runner) => Promise<R>): Promise<R> {
+          if (txContext.getStore() !== null && txContext.getStore() !== undefined) {
+            return Promise.reject(new Error('sqlite: nested transaction is not supported'));
+          }
+          const run = async (): Promise<R> => {
+            // 先把已经排队的外部操作做完，再 BEGIN；否则它们会撞进事务
+            await opTail;
+            let release!: () => void;
+            const done = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            activeTransaction = done;
+            db.exec('BEGIN');
+            try {
+              const result = await txContext.run(scopedRunner, () => fn(scopedRunner));
+              db.exec('COMMIT');
+              return result;
+            } catch (err) {
+              try {
+                db.exec('ROLLBACK');
+              } catch {
+                /* 已经回滚 */
+              }
+              throw err;
+            } finally {
+              activeTransaction = null;
+              release();
+            }
+          };
+          const next = transactionTail.then(run, run);
+          transactionTail = next.then(
+            () => undefined,
+            () => undefined,
+          );
+          return next;
         },
       };
 
@@ -96,6 +171,8 @@ export function createSqliteDriver(loadModule: () => SqliteModule = loadSqlite):
         async close() {
           if (closed) return;
           closed = true;
+          // 不要让 close 横切一个进行中的事务（否则 COMMIT 会打在已关闭的连接上）
+          await transactionTail.catch(() => undefined);
           db.close();
         },
         stats() {

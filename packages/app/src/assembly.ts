@@ -383,6 +383,8 @@ export class Application {
   private keepAlive: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private stopped = false;
+  /** 上一次 start() 的失败原因；非 null 时拒绝再次 start（避免“第二次静默成功”）。 */
+  private startFailure: Error | null = null;
 
   private readonly spec: AppSpec;
   private readonly options: CreateAppOptions;
@@ -424,13 +426,20 @@ export class Application {
    * （插件按声明顺序；Web 层再按 `phase` 稳定排序）。
    */
   get middleware(): readonly unknown[] {
-    const pluginMiddleware = (this.spec.plugins ?? []).flatMap((plugin) => plugin.middleware ?? []);
+    // 必须读 `pluginSpecs`（拓扑序，含 `defineModule({ plugins })` 声明的插件）。
+    // 只读顶层 `spec.plugins` 会静默丢掉模块级插件贡献的中间件 —— 声明式鉴权因此被绕过。
+    // start() 之前 `pluginSpecs` 还是空的（collect 在 start 里）；先给顶层插件一个可用的
+    // 视图，避免 `app.middleware` 在装配前读不到声明。
+    const source = this.pluginSpecs.length > 0 ? this.pluginSpecs : (this.spec.plugins ?? []);
+    const pluginMiddleware = source.flatMap((plugin) => plugin.middleware ?? []);
     return [...(this.spec.middleware ?? []), ...pluginMiddleware];
   }
 
   get routes(): readonly unknown[] {
-    // 插件路由追加在模块路由之后（模块路由还带自己的子树中间件，见 collect）
-    const pluginRoutes = (this.spec.plugins ?? []).flatMap((plugin) => plugin.routes ?? []);
+    // 插件路由追加在模块路由之后（模块路由还带自己的子树中间件，见 collect）。
+    // 同 middleware：模块级插件也必须生效。
+    const source = this.pluginSpecs.length > 0 ? this.pluginSpecs : (this.spec.plugins ?? []);
+    const pluginRoutes = source.flatMap((plugin) => plugin.routes ?? []);
     return [...this.routeSpecs, ...pluginRoutes];
   }
 
@@ -638,8 +647,56 @@ export class Application {
 
   async start(): Promise<this> {
     if (this.started) return this;
-    this.started = true;
+    if (this.startFailure !== null) {
+      throw new AssemblyError([
+        { message: `上一次 start() 已失败（${this.startFailure.message}）；请创建新的 Application 后重试` },
+      ]);
+    }
+    try {
+      await this._start();
+      this.started = true;
+      return this;
+    } catch (err) {
+      this.startFailure = err instanceof Error ? err : new Error(String(err));
+      await this._rollbackStart();
+      throw err;
+    }
+  }
 
+  /** 启动失败时逆序回收已建立的资源，避免“第一次失败、第二次静默成功”。 */
+  private async _rollbackStart(): Promise<void> {
+    for (const plugin of [...this.pluginSpecs].reverse()) {
+      try {
+        await plugin.onStopping?.(this);
+      } catch {
+        /* 回收失败不掩盖原始启动错误 */
+      }
+    }
+    if (this.system) {
+      try {
+        await (this.system as { stop(options?: { timeoutMs?: number }): Promise<void> }).stop({ timeoutMs: 5000 });
+      } catch {
+        /* 原始错误优先 */
+      }
+    }
+    for (const plugin of [...this.pluginSpecs].reverse()) {
+      try {
+        await plugin.teardown?.(this);
+      } catch {
+        /* 同上 */
+      }
+    }
+    this.bridgeDispose?.();
+    this.bridgeDispose = null;
+    this.httpErrorOff?.();
+    this.httpErrorOff = null;
+    if (this.keepAlive) {
+      clearInterval(this.keepAlive);
+      this.keepAlive = null;
+    }
+  }
+
+  private async _start(): Promise<void> {
     // 1) 收集模块与插件 —— 必须先做：插件的配置 schema 要参与第 2 步的配置合并
     const issues: AssemblyIssue[] = [];
     this.collect(this.spec.modules, issues);
@@ -746,6 +803,9 @@ export class Application {
     for (const [name, actorSpec] of this.actorSpecs) {
       this.handles.set(name, await this.spawnActor(system, name, actorSpec));
     }
+    // 第一次 spawn 会触发 system.init()（插件 setup 完成）；这时 `ownership` 才存在。
+    // 再装一次 recreate，避免只有 `'listening'` 时才装（cluster + autoListen:false 会漏掉）。
+    installRecreate();
 
     // 6) 模块 onStart（按声明顺序）
     for (const mod of this.modules_) await mod.onStart?.(this);
@@ -762,7 +822,6 @@ export class Application {
 
     // 8) 保持进程存活：start() 之后应用一直运行，直到 stop()
     this.keepAlive = setInterval(() => {}, 2 ** 31 - 1);
-    return this;
   }
 
   async stop(options: { timeoutMs?: number } = {}): Promise<void> {

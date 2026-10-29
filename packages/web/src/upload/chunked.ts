@@ -3,7 +3,16 @@ import { once } from 'node:events';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { test } from 'node:test';
+import { createRequire } from 'node:module';
+
+// 契约套件是**测试工具**：`node:test` 必须等到真正调用 run*Contract 时才加载，
+// 否则生产入口 import 一个常量就会把测试运行器带进进程/打包产物。
+const require = createRequire(import.meta.url);
+let nodeTest: typeof import('node:test') | null = null;
+const test: typeof import('node:test').test = ((...args: unknown[]) => {
+  nodeTest ??= require('node:test') as typeof import('node:test');
+  return (nodeTest.test as unknown as (...values: unknown[]) => unknown)(...args);
+}) as unknown as typeof import('node:test').test;
 import assert from 'node:assert';
 
 import { DbConfigError } from '@actor/resource';
@@ -25,6 +34,8 @@ import type { UploadedFile } from './storage.ts';
 export interface ChunkSession {
   readonly uploadId: string;
   readonly filename: string;
+  /** 客户端声明的 MIME（可选；分片协议本身不携带，允许白名单据此校验）。 */
+  readonly mimeType?: string;
   readonly size: number;
   readonly chunkSize: number;
   /** 客户端声明的整文件 sha256（十六进制小写）。 */
@@ -49,7 +60,7 @@ export interface ChunkSession {
 
 export interface ChunkSessionStore {
   /** `subject` 有值表示"这个会话有主"（见 `ChunkSession.subject`）。 */
-  create(input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string }): Promise<ChunkSession>;
+  create(input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string; mimeType?: string }): Promise<ChunkSession>;
   get(uploadId: string): Promise<ChunkSession | null>;
   /** 写入/覆盖一个分片；给 `expectedSha256` 时逐片校验（不符 → 400 且不记录）。 */
   putChunk(
@@ -129,7 +140,7 @@ function expired(session: ChunkSession, now = Date.now()): boolean {
 }
 
 function validateInit(
-  input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string },
+  input: { filename: string; size: number; chunkSize: number; sha256: string; subject?: string; mimeType?: string },
   limits: Limits,
 ): ChunkSession {
   if (typeof input.filename !== 'string' || input.filename.trim() === '') throw new HttpError(400, 'init: filename 必填');
@@ -159,11 +170,14 @@ function validateInit(
     expiresAt: new Date(Math.min(now + limits.ttlMs, now + limits.hardTtlMs)).toISOString(),
     hardExpiresAt: new Date(now + limits.hardTtlMs).toISOString(),
     ...(input.subject === undefined ? {} : { subject: input.subject }),
+    ...(input.mimeType === undefined ? {} : { mimeType: input.mimeType }),
   };
 }
 
 function expectedChunkSize(session: ChunkSession, index: number): number {
   const total = Math.max(1, Math.ceil(session.size / session.chunkSize));
+  // NaN 与任何数比较都是 false，会绕过下面的范围检查并留下永不回收的 .NaN.part
+  if (!Number.isInteger(index)) throw new HttpError(400, `分片下标必须是整数（拿到 ${String(index)}）`);
   if (index < 0 || index >= total) throw new HttpError(400, `分片下标越界：${index}（共 ${total} 片）`);
   if (index === total - 1) return session.size - index * session.chunkSize;
   return session.chunkSize;

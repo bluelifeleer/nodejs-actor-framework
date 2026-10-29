@@ -115,3 +115,58 @@ test('http: 优雅停止——在途请求先完成，之后不再接受新连�
 
   await assert.rejects(() => fetch(`${base}/slow/1`), '停止后不应再接受新请求');
 });
+
+test('http: 访问日志出口抛错不会二次 writeHead / 打崩进程（回归）', async () => {
+  const plugin = httpPlugin({ port: 0, shutdownTimeoutMs: 3000 });
+  const app = createApp(
+    defineApp({
+      modules: [defineModule({ name: 'api', routes: defineRoutes([get('/ok', () => ({ ok: true }))]) })],
+      plugins: [plugin],
+    }),
+    {
+      configDir: tempConfigDir(),
+      env: {},
+      logging: {
+        logger: (_family: string, event: string) => {
+          if (event === 'http:request') throw new Error('logger down');
+        },
+      },
+    },
+  );
+
+  await app.start();
+  const address = plugin.address();
+  assert.ok(address && address.port > 0);
+  const res = await fetch(`http://127.0.0.1:${String(address.port)}/ok`);
+  assert.strictEqual(res.status, 200, '日志失败不应改变已经成功的响应');
+  assert.deepStrictEqual(await res.json(), { ok: true });
+
+  // 进程仍在：还能继续服务下一次请求
+  const again = await fetch(`http://127.0.0.1:${String(address.port)}/ok`);
+  assert.strictEqual(again.status, 200);
+  await app.stop();
+});
+
+test('http: 端口被占用时 start() 必须拒绝，而不是让进程崩溃（回归）', async () => {
+  const net = await import('node:net');
+  const blocker = net.createServer();
+  await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', () => resolve()));
+  const occupied = (blocker.address() as { port: number }).port;
+
+  const plugin = httpPlugin({ port: occupied, shutdownTimeoutMs: 1000 });
+  const app = createApp(
+    defineApp({
+      modules: [defineModule({ name: 'api', routes: defineRoutes([get('/ok', () => ({ ok: true }))]) })],
+      plugins: [plugin],
+    }),
+    { configDir: tempConfigDir(), env: {} },
+  );
+
+  await assert.rejects(
+    () => app.start(),
+    (err: unknown) => err instanceof Error && /EADDRINUSE/.test(err.message),
+    'start() 应把监听失败如实抛出',
+  );
+  await app.stop().catch(() => undefined);
+  await new Promise<void>((resolve) => blocker.close(() => resolve()));
+});

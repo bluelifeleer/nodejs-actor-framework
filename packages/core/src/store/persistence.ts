@@ -270,13 +270,25 @@ class FilePersistence extends PersistenceAdapter {
 
   /** 解析 jsonl：遇到第一条读不通的行就停（崩溃留下的撕裂尾巴，与 loadEvents 同规则）。 */
   _parseLog(raw: string): unknown[] {
+    const lines = raw.split('\n');
     const records: unknown[] = [];
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
+    for (let index = 0; index < lines.length; index += 1) {
+      const trimmed = (lines[index] ?? '').trim();
       if (!trimmed) continue;
       try {
         records.push(JSON.parse(trimmed));
-      } catch {
+      } catch (err) {
+        /**
+         * 只有**最后一条**非空行允许读不通（崩溃留下的撕裂尾部）。
+         * 中间行的损坏意味着后面还有数据 —— 静默丢弃它们会表现为“最近的命令没发生”，
+         * 这比明确失败危险得多。
+         */
+        const hasMore = lines.slice(index + 1).some((line) => line.trim() !== '');
+        if (hasMore) {
+          throw new PersistenceError(
+            `event log is corrupt at line ${index + 1}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
         break;
       }
     }

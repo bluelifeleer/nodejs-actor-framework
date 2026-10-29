@@ -309,12 +309,15 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
       const id =
         existingId === undefined || existingId === null ? `id-${globalThis.crypto.randomUUID()}` : existingId;
       const key = String(id);
-      if ((await readEntity(key)) !== null) throw new RepositoryDuplicateError(key);
-      row[idField] = id;
-      row[versionField] = 1;
-      await writeEntity(key, row);
-      await appendIndex(key, false);
-      return structuredClone(row) as T;
+      // 查重 + 写入必须在同一把 per-id 锁里：否则两个并发 insert 都会通过检查
+      return serializeById(key, async () => {
+        if ((await readEntity(key)) !== null) throw new RepositoryDuplicateError(key);
+        row[idField] = id;
+        row[versionField] = 1;
+        await writeEntity(key, row);
+        await appendIndex(key, false);
+        return structuredClone(row) as T;
+      });
     },
 
     async update(id, patch, updateOptions = {}) {
@@ -340,10 +343,19 @@ export function createFileRepository<T extends Entity = Entity>(options: FileRep
 
     async delete(id) {
       const key = String(id);
-      if ((await readEntity(key)) === null) return false;
-      await fsp.unlink(entityPath(key));
-      await appendIndex(key, true);
-      return true;
+      // 与 update 共用 per-id 锁：否则 update 可能在 unlink 之后写回（实体复活），
+      // 或两个 delete 同时 unlink（裸 ENOENT）。
+      return serializeById(key, async () => {
+        if ((await readEntity(key)) === null) return false;
+        try {
+          await fsp.unlink(entityPath(key));
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw err;
+        }
+        await appendIndex(key, true);
+        return true;
+      });
     },
 
     transaction<R>(fn: (tx: Repository<T>) => Promise<R>): Promise<R> {

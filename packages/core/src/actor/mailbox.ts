@@ -79,9 +79,14 @@ class Mailbox {
     }
     switch (this.overflow) {
       case OVERFLOW.DROP_OLDEST: {
-        const evicted = this.queue.shift() || this.system.shift();
+        // 只逐出用户消息：系统消息（停机/重启通知）绝不能为了腾位置被丢掉
+        const evicted = this.queue.shift();
+        if (evicted === undefined) {
+          this.rejected += 1;
+          return false;
+        }
         this.dropped += 1;
-        if (evicted && typeof evicted.onDropped === 'function') evicted.onDropped();
+        if (typeof evicted.onDropped === 'function') evicted.onDropped();
         this.queue.push(envelope);
         return true;
       }

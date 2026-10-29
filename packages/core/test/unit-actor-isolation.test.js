@@ -276,3 +276,16 @@ test('worker isolation: inline and worker actors share one supervision model', a
     await system.stop();
   }
 });
+
+test('worker isolation: ctx.handling/ctx.span/ctx.tell 与内联语义一致（回归）', async () => {
+  const system = createSystem({ logger: false });
+  try {
+    const ref = await system.spawn(PLAYER, { id: 'ctx-info', isolation: 'worker' });
+    const info = await ref.ask({ type: 'ctx-info' });
+    assert.strictEqual(info.handling, true, '正在 receive 里，handling 应为 true');
+    assert.strictEqual(info.span, null, '没装 tracing 插件时 span() 返回 null（与内联一致）');
+    assert.strictEqual(info.tell, 'boolean', 'ctx.tell 必须返回 boolean（与内联一致）');
+  } finally {
+    await system.stop();
+  }
+});

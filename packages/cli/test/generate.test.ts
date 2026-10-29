@@ -186,7 +186,7 @@ test('generate: migration —— 版本号自动接续，且文件是合法的 M
     const second = await run(process.execPath, [CLI, 'generate', 'migration', 'add-tags'], { cwd: project, env: childEnv() });
     assert.match(second.stdout, /import v2 from/, `片段里的 import 名要带对版本号（v2）：\n${second.stdout}`);
     // 片段里的文件名/版本与真实产物对得上
-    assert.match(second.stdout, /import v2 from '\.\/migrations\/\d{4}-\d{2}-\d{2}-[^']*-add-tags'/);
+    assert.match(second.stdout, /import v2 from '\.\/migrations\/\d{4}-\d{2}-\d{2}-[^']*-add-tags\.ts'/);
     assert.match(second.stdout, /export default \[/);
 
     const dir = path.join(project, 'src', 'migrations');

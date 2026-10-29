@@ -138,3 +138,13 @@ test('gossip: the default codec is protobuf and is configurable', async () => {
     await g.stop();
   }
 });
+
+test('gossip: 非回环 + 无 TLS 必须拒绝启动（与 Gateway 同一套守卫，回归）', async () => {
+  const guarded = new Gossip('node-a', 0, { host: '0.0.0.0', intervalMs: 1000 });
+  await assert.rejects(() => guarded.start(), /refusing to bind gossip on 0\.0\.0\.0 without TLS/);
+
+  const allowed = new Gossip('node-b', 0, { host: '0.0.0.0', intervalMs: 1000, allowInsecureBinding: true });
+  await allowed.start();
+  assert.ok(allowed.boundPort > 0);
+  await allowed.stop();
+});

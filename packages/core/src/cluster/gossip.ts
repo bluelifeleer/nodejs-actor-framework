@@ -74,6 +74,10 @@ interface GossipOptions {
   maxPeers?: number;
   /** 允许的时钟偏移（默认 60s）：ts 超前本机超过它就拒绝（否则未来时间戳可以永久压住 LWW）。 */
   maxClockSkewMs?: number;
+  /** 非回环 + 无 TLS 仍要监听的显式许可（与 Gateway 同一套安全默认）。 */
+  allowInsecureBinding?: boolean;
+  /** 成员视图（nodeLastSeen）上限，默认 4096：不能让它随伪造 sender 无界增长。 */
+  maxNodes?: number;
 }
 
 class Gossip extends EventEmitter {
@@ -83,6 +87,8 @@ class Gossip extends EventEmitter {
   readonly maxPeers: number;
   /** 允许的时钟偏移（审计 S2）。 */
   readonly maxClockSkewMs: number;
+  readonly allowInsecureBinding: boolean;
+  readonly maxNodes: number;
 
   /**
    * @param nodeId 本节点 id
@@ -111,6 +117,8 @@ class Gossip extends EventEmitter {
     this.maxRegistryEntries = opts.maxRegistryEntries ?? 10000;
     this.maxPeers = opts.maxPeers ?? 256;
     this.maxClockSkewMs = opts.maxClockSkewMs ?? 60_000;
+    this.allowInsecureBinding = opts.allowInsecureBinding === true;
+    this.maxNodes = opts.maxNodes ?? 4096;
 
     /** key -> 记录（含墓碑）。 */
     this.localRegistry = new Map<string, RegistryEntry>();
@@ -126,6 +134,18 @@ class Gossip extends EventEmitter {
     this.stopped = false;
 
     for (const seed of opts.seeds || config.gossip.seeds) this.addSeed(seed);
+  }
+
+  /** 记录一个成员的最后出现时间；超过上限时拒绝新成员（可见事件，不静默增长）。 */
+  _touchNode(nodeId: string): boolean {
+    const id = String(nodeId);
+    if (id === '') return false;
+    if (!this.nodeLastSeen.has(id) && this.nodeLastSeen.size >= this.maxNodes) {
+      this.emit('node_limit_reached', { limit: this.maxNodes, nodeId: id });
+      return false;
+    }
+    this.nodeLastSeen.set(id, Date.now());
+    return true;
   }
 
   addSeed(seed: string | { host: string; port: number }): boolean {
@@ -229,14 +249,38 @@ class Gossip extends EventEmitter {
       if (incoming.deleted) this.emit('registry_delete', key, incoming);
       else this.emit('registry_update', key, incoming.value, incoming);
     }
-    if (senderNodeId) this.nodeLastSeen.set(senderNodeId, Date.now());
+    if (senderNodeId) this._touchNode(senderNodeId);
     return applied;
   }
 
   // --- networking ---------------------------------------------------------
 
+  /** gossip 也会主动拨号并接收注册表，不能比网关宽松：非回环无 TLS 默认拒绝。 */
+  assertSafeBinding(): void {
+    const loopback = this.host === '127.0.0.1' || this.host === '::1' || this.host === 'localhost' || this.host.startsWith('127.');
+    const tlsEnabled = tlsUtil.isEnabled(this.tls);
+    if (!loopback && !tlsEnabled && !this.allowInsecureBinding) {
+      throw new Error(
+        `refusing to bind gossip on ${this.host} without TLS: any peer on that network could inject ` +
+          'the registry (actor locations, subscriptions) and make this node dial arbitrary addresses. ' +
+          'Enable TLS (ACTOR_TLS_ENABLED=1) or pass allowInsecureBinding: true if you really mean it.',
+      );
+    }
+    if (tlsEnabled && (this.tls as { requestCert?: unknown }).requestCert === false && (this.tls as { verifyNodeId?: unknown }).verifyNodeId === false) {
+      throw new Error(
+        'refusing to start gossip: TLS with requestCert=false AND verifyNodeId=false accepts any client without a certificate',
+      );
+    }
+  }
+
   start(): Promise<{ port: number }> {
     return new Promise((resolve, reject) => {
+      try {
+        this.assertSafeBinding();
+      } catch (err) {
+        reject(err);
+        return;
+      }
       const server = tlsUtil.createServer(this.tls, (socket: import('node:net').Socket) => this._handleInbound(socket));
       this.server = server;
       server.on('error', (err: Error) => {
@@ -328,7 +372,7 @@ class Gossip extends EventEmitter {
     if (sender === this.nodeId) return;
     if (!this._verifySender(socket, sender)) return;
     if (socket.remoteAddress) {
-      this.nodeLastSeen.set(sender, Date.now());
+      this._touchNode(sender);
       // Learn the sender as a dialable peer.
       this.addSeed({ host: advertiseHost || socket.remoteAddress.replace(/^::ffff:/, ''), port: senderPort });
     }
@@ -417,7 +461,7 @@ class Gossip extends EventEmitter {
         }
         for (const payload of frames) {
           this._onGossipPayload(payload, socket);
-          if (payload && payload.sender) this.nodeLastSeen.set(payload.sender, Date.now());
+          if (payload && payload.sender) this._touchNode(String(payload.sender));
         }
         if (frames.length > 0) finish(true);
       });
@@ -444,6 +488,20 @@ class Gossip extends EventEmitter {
       if (peer.failures >= 3 && now - peer.lastSeen > this.peerTimeoutMs) {
         this.peers.delete(addr);
         this.emit('peer_dropped', addr);
+      }
+    }
+    /**
+     * 只经第三方传播、从未直接 gossip 过的节点不在 `nodeLastSeen` 里，原逻辑永远不会
+     * 清理它的注册表条目。这里按"条目自己的写入时间"兜底：超过 3 个 peerTimeout 仍没有
+     * 直接/间接刷新，就当作死节点移除（传播不会刷新 entry.ts，因此不会永远续命）。
+     */
+    for (const [key, entry] of [...this.localRegistry]) {
+      if (entry.deleted) continue;
+      if (this.nodeLastSeen.has(entry.nodeId)) continue;
+      if (now - entry.ts > this.peerTimeoutMs * 3) {
+        this.localRegistry.delete(key);
+        removed.push(key);
+        this.emit('registry_delete', key, { ...entry, deleted: true, reason: 'stale_node' });
       }
     }
     this._gcTombstones(now);

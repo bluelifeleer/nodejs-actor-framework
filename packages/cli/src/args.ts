@@ -51,7 +51,7 @@ const REPEATABLE_FLAGS = new Set(['field']);
 const KNOWN_FLAGS = new Set([
   'force', 'install', 'debug', 'json', 'help', 'version', 'dir', 'data', 'to', 'port', 'layout', 'web-plugins',
   'with', 'dry-run', 'web-plugin', 'kind', 'repo', 'field', 'no-test', 'optimistic-lock', 'migration-version',
-  'mount',
+  'mount', 'no-install',
 ]);
 
 /**
@@ -106,6 +106,9 @@ export function parseArgs(argv: readonly string[], options: { commands: Record<s
       continue;
     }
     const next = argv[index + 1];
+    if (VALUE_FLAGS.has(name) && (next === undefined || next.startsWith('--'))) {
+      throw new UsageError(`选项 '--${name}' 需要一个值`, '例如：--dir src / --with redis / --migration-version 3');
+    }
     const known = next === undefined ? true : next.startsWith('--') || (KNOWN_FLAGS.has(next) && !VALUE_FLAGS.has(name));
     if (next !== undefined && !known) {
       // `--dir src` / `--web-plugin debug`：带值选项总是吃掉下一个词（即使它看起来像开关名）

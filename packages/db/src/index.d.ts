@@ -7,7 +7,7 @@
 
 // --- 方言 -------------------------------------------------------------------
 
-export type Dialect = 'pgsql' | 'mysql' | 'sqlite';
+export type Dialect = 'pgsql' | 'mysql' | 'sqlite' | 'mssql';
 
 export type LogicalType =
   | 'uuid'
@@ -98,6 +98,8 @@ export interface DialectSpec {
   readonly indexIfNotExists: boolean;
   isDuplicateIndexError(error: unknown): boolean;
   readonly comments: 'statements' | 'inline' | 'none';
+  createTable(model: RenderableModel, columns: string, options: { withComments: boolean }): string;
+  alterAddColumn(table: string, column: string): string;
 
   introspection: {
     tableExists(table: string): { sql: string; params: readonly unknown[] };
@@ -266,7 +268,6 @@ export declare function createPgDriver(loadModule?: (resolve?: DriverResolver) =
 export declare function createMssqlDriver(
   loadModule?: (resolve?: DriverResolver) => Promise<unknown>,
 ): DriverFactory;
-export declare function buildMssqlPool(pool: unknown): DriverPool;
 
 export declare function createMysqlDriver(loadModule?: (resolve?: DriverResolver) => Promise<unknown>): DriverFactory;
 
@@ -285,6 +286,11 @@ export interface FieldSpec extends FieldHooks {
   length?: number;
   /** 列名（默认与字段名相同）。 */
   column?: string;
+  /** `decimal` 的精度/标度。 */
+  precision?: number;
+  scale?: number;
+  /** 列注释（方言支持时写进 DDL）。 */
+  comment?: string;
   notNull?: boolean;
   primaryKey?: boolean;
   unique?: boolean;
@@ -308,6 +314,9 @@ export interface Field {
   column: string;
   type: LogicalType;
   length?: number;
+  precision?: number;
+  scale?: number;
+  comment?: string;
   notNull: boolean;
   primaryKey: boolean;
   unique: boolean;
@@ -349,6 +358,8 @@ export interface ModelSpec {
   name: string;
   /** 表名（默认 = name）。 */
   table?: string;
+  /** 表注释（方言支持时写进 DDL）。 */
+  comment?: string;
   fields: Record<string, FieldSpec>;
   indexes?: readonly IndexSpec[];
   /** 关联声明（hasMany / belongsTo）。 */
@@ -362,6 +373,7 @@ export interface ModelSpec {
 export interface Model {
   readonly name: string;
   readonly table: string;
+  readonly comment?: string;
   readonly fields: readonly Field[];
   readonly indexes: readonly Index[];
   readonly relations: readonly Relation[];
@@ -373,6 +385,7 @@ export interface Model {
   fieldByColumn(column: string): Field | undefined;
   /** 建表语句；`options.comments === false` 时不写内联注释。 */
   createTableSql(dialect: Dialect, options?: { comments?: boolean }): string;
+  commentSql(dialect: Dialect): string[];
   createIndexSql(dialect: Dialect, index: Index): string;
   addColumnSql(dialect: Dialect, field: Field): string;
 }

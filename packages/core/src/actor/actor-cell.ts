@@ -67,6 +67,7 @@ interface ActorCounters {
   restarted: number;
   recovered: number;
   throttled: number;
+  dropped: number;
   batches: number;
   totalLatencyMs: number;
   maxLatencyMs: number;
@@ -78,6 +79,8 @@ interface CellEnvelope {
   payload?: unknown;
   /** 持久化邮箱里的消息 id（durable ack 用）。 */
   __msgId?: string | undefined;
+  /** 入队 append 的在途 promise：处理完成前必须等它，否则 ack 会因“还没有 id”被跳过。 */
+  __durable?: Promise<unknown> | undefined;
   reply?: { resolve(value: unknown): void; reject(err: Error): void } | null;
   sender?: { path?: string } | null;
   retryCount?: number;
@@ -128,7 +131,7 @@ interface CellDefinition {
   readonly unknownKeys?: string[];
   readonly modulePath?: string | null;
   readonly exportName?: string;
-  create(): unknown;
+  create(cell?: unknown): unknown;
 }
 
 class ActorCell {
@@ -363,6 +366,7 @@ class ActorCell {
       restarted: 0,
       recovered: 0,
       throttled: 0,
+      dropped: 0,
       batches: 0,
       totalLatencyMs: 0,
       maxLatencyMs: 0,
@@ -396,7 +400,7 @@ class ActorCell {
     this.context.restored = false;
     if (this.isolation === 'worker') return this._initWorker();
 
-    this.instance = this.definition.create() as ActorCell['instance'];
+    this.instance = this.definition.create(this) as ActorCell['instance'];
     if (this.instance === null || typeof this.instance.receive !== 'function') {
       throw new DefinitionError(`definition "${this.definition.name}" did not produce an actor with receive()`);
     }
@@ -621,9 +625,13 @@ class ActorCell {
   }
 
   _enqueue(envelope: CellEnvelope): boolean {
+    const droppedBefore = this.mailbox.dropped;
+    const rejectedBefore = this.mailbox.rejected;
     const accepted = this.mailbox.push(envelope);
+    // 背压丢弃也要进 per-actor 指标（否则 Prometheus 里的 dropped 恒 0）
+    this.counters.dropped += this.mailbox.dropped - droppedBefore;
+    this.counters.dropped += this.mailbox.rejected - rejectedBefore;
     if (!accepted) {
-      this.counters.failed += 0; // backpressure is reported through the return value / rejection
       this.system._onMailboxRejected?.(this, envelope);
       return false;
     }
@@ -632,14 +640,20 @@ class ActorCell {
       // a rejection rather than losing the message silently.
       const append = this.persistence.mailboxStore?.append;
       if (typeof append === 'function') {
-        append
+        /**
+         * append 是异步的，而消息可能先被处理。`_acknowledge` 会先等这个 promise，
+         * 否则会出现“处理完了但还没有 __msgId → ack 被跳过 → 崩溃后重复投递”。
+         */
+        envelope.__durable = append
           .call(this.persistence.mailboxStore, this.path, { payload: envelope.payload })
           .then((record: { __msgId?: string }) => {
             envelope.__msgId = record.__msgId;
+            return record;
           })
-          .catch((err: unknown) =>
-            this.system._log('durable_enqueue_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) }),
-          );
+          .catch((err: unknown) => {
+            this.system._log('durable_enqueue_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
+            return null;
+          });
       }
     }
     this.system.scheduler.schedule(this);
@@ -712,9 +726,14 @@ class ActorCell {
     let spanStatus = 'ok';
     let spanError = null;
     try {
+      const instance = this.instance;
+      if (!this.delegate && !instance) {
+        // 半初始化/已销毁的 cell 不能假装处理成功（`undefined` 会让 ask 误以为有回复）
+        throw new ActorStoppedError(`actor ${this.path} has no live incarnation`);
+      }
       const result = this.delegate
         ? await this.delegate.invoke(envelope.payload, envelope.sender ? (envelope.sender.path ?? null) : null, envelope.trace)
-        : await this.instance?.receive(envelope.payload, this.context);
+        : await instance!.receive(envelope.payload, this.context);
       this.counters.handled += 1;
       await this._acknowledge(envelope);
       if (envelope.reply) envelope.reply.resolve(result);
@@ -737,6 +756,10 @@ class ActorCell {
 
   async _acknowledge(envelope: CellEnvelope): Promise<void> {
     if (this.persistence.mode !== 'mailbox' || !this.persistence.mailboxStore) return;
+    if (envelope.__durable) {
+      // 先等入队落盘拿到 __msgId；失败也会 resolve（catch 在上游），此时没有可 ack 的记录
+      await envelope.__durable.catch(() => null);
+    }
     if (!envelope.__msgId) return;
     const ack = this.persistence.mailboxStore?.ack;
     if (typeof ack !== 'function') return;
@@ -864,7 +887,11 @@ class ActorCell {
     const bounded = Number(timeoutMs) > 0 ? Number(timeoutMs) : 0;
     if (bounded === 0) return this._stopPromise;
 
-    const timer = this.system.clock.setTimeout(async () => {
+    /**
+     * 强制停机预算必须走**真实时间**：它是"停机不能永远挂着"的安全边界，
+     * 与调度器 `drain()` 同一边界。走可注入时钟时，测试不推进虚拟时间就永远等不到。
+     */
+    const timer = setTimeout(async () => {
       if (this.stopped) return;
       this.system._log('actor_stop_timeout', {
         path: this.path,
@@ -877,9 +904,10 @@ class ActorCell {
         this.system._log('actor_terminate_failed', { path: this.path, err: err instanceof Error ? err.message : String(err) });
       }
       resolveStop();
-    }, bounded, { unref: true });
+    }, bounded);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref(): void }).unref();
 
-    return this._stopPromise.finally(() => this.system.clock.clearTimeout(timer));
+    return this._stopPromise.finally(() => clearTimeout(timer));
   }
 
   /** Stop without running the graceful path (parent already gone, or forced). */
@@ -984,7 +1012,19 @@ class ActorCell {
           this.system._log('actor_init_retry_failed', { path: target.path, err: retryErr instanceof Error ? retryErr.message : String(retryErr) });
         }
       }
-      if (!child.started) throw err;
+      if (!child.started) {
+        /**
+         * 初始化失败的子 Actor 不能留在注册表/父 children 里：否则它是个"幽灵"——
+         * `resolve()` 找得到、`ask()` 能投递，但 `instance` 为 null，最终返回 undefined；
+         * 而且同一个 id 永远无法再次 spawn。与 `system.spawn` 的 `_abandon` 对齐。
+         */
+        this.children.delete(id);
+        this.childSupervisor.remove(id);
+        child.instance = null;
+        child.stopped = true;
+        this.system._unregister(child);
+        throw err;
+      }
     }
     return child.ref;
   }

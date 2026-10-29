@@ -43,6 +43,8 @@ class InlineScheduler {
   readonly ready: Set<SchedulableCell>;
   _scheduled: boolean;
   _inflight: Promise<unknown>;
+  /** 所有仍在执行的 turn（跨 tick），`drain()` 必须等它们，而不是只看最近一批。 */
+  readonly _pendingTurns: Set<Promise<void>>;
   _stopped: boolean;
   ticks: number;
   turns: number;
@@ -54,6 +56,7 @@ class InlineScheduler {
     this.ready = new Set();
     this._scheduled = false;
     this._inflight = Promise.resolve();
+    this._pendingTurns = new Set();
     this._stopped = false;
     this.ticks = 0;
     this.turns = 0;
@@ -94,11 +97,16 @@ class InlineScheduler {
       this.ready.delete(cell);
       if (cell.stopped) continue;
       this.turns += 1;
-      running.push(
-        cell._runTurn(this.messagesPerTurn).catch((err: Error) => {
+      let tracked!: Promise<void>;
+      tracked = cell._runTurn(this.messagesPerTurn)
+        .catch((err: Error) => {
           if (this.onError) this.onError(err, cell);
-        }),
-      );
+        })
+        .finally(() => {
+          this._pendingTurns.delete(tracked);
+        });
+      this._pendingTurns.add(tracked);
+      running.push(tracked);
     }
     this._inflight = Promise.allSettled(running);
 
@@ -129,7 +137,11 @@ class InlineScheduler {
       ]);
     };
 
-    while (this.ready.size > 0 || this._scheduled) {
+    while (this.ready.size > 0 || this._scheduled || this._pendingTurns.size > 0) {
+      const inFlight = [...this._pendingTurns];
+      if (inFlight.length > 0 && (await bounded(Promise.allSettled(inFlight))) === 'timeout') {
+        return { drained: false, timedOut: true };
+      }
       if ((await bounded(this._inflight)) === 'timeout') return { drained: false, timedOut: true };
       if (!this._scheduled && this.ready.size > 0) this._schedule();
       await new Promise((resolve) => setImmediate(resolve));

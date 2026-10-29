@@ -145,13 +145,13 @@ export const mssql: DialectSpec = {
 
   introspection: {
     tableExists: (table) => ({
-      sql: 'SELECT 1 AS found FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @p1',
+      sql: 'SELECT 1 AS found FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @p1 AND TABLE_SCHEMA = SCHEMA_NAME()',
       params: [table],
     }),
     columns: (table) => ({
       sql:
         'SELECT COLUMN_NAME, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, DATETIME_PRECISION, COLUMN_DEFAULT ' +
-        'FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @p1 ORDER BY ORDINAL_POSITION',
+        'FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = @p1 AND TABLE_SCHEMA = SCHEMA_NAME() ORDER BY ORDINAL_POSITION',
       params: [table],
     }),
     toColumn: (row) => {
