@@ -102,6 +102,7 @@ export class OpsAgent {
         connections,
         actors: summarizeActors(framework.actors),
         ...(framework.deadLetters === undefined ? {} : { deadLetters: framework.deadLetters }),
+        ...(framework.deadLetterEntries === undefined ? {} : { deadLetterEntries: framework.deadLetterEntries }),
       },
     ]);
     const logs = this.#logs.splice(0, 100);

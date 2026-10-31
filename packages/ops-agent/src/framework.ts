@@ -1,6 +1,11 @@
 import type { ActorStatus } from './protocol.ts';
 
-export interface FrameworkSnapshot { readonly actors: ActorStatus[]; readonly deadLetters?: number; }
+export interface DeadLetterEntry {
+  readonly ts?: number; readonly actorId: string; readonly reason?: string;
+  readonly retryCount?: number; readonly preview?: string;
+}
+
+export interface FrameworkSnapshot { readonly actors: ActorStatus[]; readonly deadLetters?: number; readonly deadLetterEntries?: DeadLetterEntry[]; }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -43,7 +48,28 @@ export function collectFrameworkSnapshot(system: unknown): FrameworkSnapshot {
       if (isRecord(value)) deadLetters = Number(value['deadLettered'] ?? value['deadLetters'] ?? 0);
     }
   } catch { /* ignore */ }
-  return { actors, ...(deadLetters === undefined ? {} : { deadLetters }) };
+  let deadLetterEntries: DeadLetterEntry[] | undefined;
+  try {
+    const raw = system['deadLetters'];
+    if (Array.isArray(raw)) {
+      deadLetterEntries = raw.slice(-50).map((item) => {
+        const entry = isRecord(item) ? item : {};
+        const payload = entry['payload'];
+        const preview = typeof payload === 'string'
+          ? payload.slice(0, 512)
+          : payload === undefined ? undefined : JSON.stringify(payload).slice(0, 512);
+        return {
+          ...(typeof entry['ts'] === 'number' ? { ts: entry['ts'] } : {}),
+          actorId: String(entry['path'] ?? entry['actorId'] ?? 'unknown'),
+          ...(typeof entry['error'] === 'string' ? { reason: entry['error'] } : typeof entry['reason'] === 'string' ? { reason: entry['reason'] } : {}),
+          ...(typeof entry['retryCount'] === 'number' ? { retryCount: entry['retryCount'] } : {}),
+          ...(preview === undefined ? {} : { preview }),
+        };
+      });
+      deadLetters = deadLetterEntries.length;
+    }
+  } catch { /* never break the app */ }
+  return { actors, ...(deadLetters === undefined ? {} : { deadLetters }), ...(deadLetterEntries === undefined ? {} : { deadLetterEntries }) };
 }
 
 export function summarizeActors(actors: readonly ActorStatus[]): { total: number; running: number; failed: number; byState: Record<string, number>; top: ActorStatus[] } {
