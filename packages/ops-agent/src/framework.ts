@@ -16,10 +16,15 @@ export function collectFrameworkSnapshot(system: unknown): FrameworkSnapshot {
         if (!isRecord(raw)) continue;
         const counters = isRecord(raw['counters']) ? raw['counters'] : {};
         const mailbox = isRecord(raw['mailbox']) ? Number(raw['mailbox']['size'] ?? 0) : 0;
+        const parent = isRecord(raw['parent']) ? raw['parent'] : null;
+        const definition = isRecord(raw['definition']) ? raw['definition'] : null;
         actors.push({
           id: String(raw['path'] ?? id),
+          ...(parent !== null && typeof parent['path'] === 'string' ? { parentId: parent.path } : {}),
+          ...(definition !== null && typeof definition['kind'] === 'string' ? { kind: definition.kind } : {}),
           ...(typeof raw['state'] === 'string' ? { state: raw['state'] } : {}),
           ...(typeof raw['isolation'] === 'string' ? { isolation: raw['isolation'] } : {}),
+          ...(typeof raw['lastError'] === 'string' ? { lastError: raw['lastError'] } : {}),
           mailbox,
           ...(typeof counters['received'] === 'number' ? { received: counters['received'] } : {}),
           ...(typeof counters['handled'] === 'number' ? { handled: counters['handled'] } : {}),

@@ -3,6 +3,7 @@ export type ActorStatus = {
   readonly id: string; readonly state?: string; readonly isolation?: string; readonly mailbox?: number;
   readonly received?: number; readonly handled?: number; readonly failed?: number; readonly restarted?: number;
   readonly deadLettered?: number; readonly recovered?: number; readonly lastError?: string;
+  readonly parentId?: string; readonly kind?: string; readonly restartReason?: string;
 };
 export type LogEntry = {
   readonly ts: number; readonly level: LogLevel; readonly source?: string; readonly event?: string;
