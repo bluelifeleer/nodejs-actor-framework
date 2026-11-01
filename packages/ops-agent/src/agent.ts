@@ -32,6 +32,7 @@ export class OpsAgent {
   readonly #logs: LogEntry[] = [];
   #timer: NodeJS.Timeout | undefined;
   #replayTimer: NodeJS.Timeout | undefined;
+  #controlTimer: NodeJS.Timeout | undefined;
   #cpu = process.cpuUsage();
   #cpuAt = Date.now();
   #originalSink: unknown;
@@ -57,6 +58,8 @@ export class OpsAgent {
     this.#timer.unref?.();
     this.#replayTimer = setInterval(() => void this.#pollReplays(), 2000);
     this.#replayTimer.unref?.();
+    this.#controlTimer = setInterval(() => void this.#pollControl(), 2000);
+    this.#controlTimer.unref?.();
     void this.tick();
     void this.#pollReplays();
   }
@@ -66,6 +69,8 @@ export class OpsAgent {
     this.#timer = undefined;
     if (this.#replayTimer !== undefined) clearInterval(this.#replayTimer);
     this.#replayTimer = undefined;
+    if (this.#controlTimer !== undefined) clearInterval(this.#controlTimer);
+    this.#controlTimer = undefined;
     this.#histogram.disable();
     this.#detachLogs();
   }
@@ -114,6 +119,38 @@ export class OpsAgent {
     ]);
     const logs = this.#logs.splice(0, 100);
     if (logs.length > 0) await this.#send([{ type: 'logs', id: this.#options.id, entries: logs }]);
+  }
+
+  async #pollControl(): Promise<void> {
+    try {
+      const response = await fetch(`${this.#options.platformUrl}/v1/agent-commands?agentId=${encodeURIComponent(this.#options.id)}`, {
+        headers: { authorization: `Bearer ${this.#options.token}` }, signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as { commands?: Array<{ id: string; type: string; args: Record<string, unknown> }> };
+      for (const command of body.commands ?? []) {
+        let ok = true;
+        let result: unknown;
+        let error: string | undefined;
+        try {
+          const system = this.#options.system;
+          if (!isRecord(system)) throw new Error('actor system is not available');
+          if (command.type === 'cluster_disconnect') {
+            if (typeof system['disconnectPeer'] !== 'function') throw new Error('cluster control is not available');
+            const nodeId = String(command.args['nodeId'] ?? '');
+            if (nodeId === '') throw new Error('nodeId is required');
+            result = { disconnected: await (system['disconnectPeer'] as (target: string) => Promise<boolean>).call(system, nodeId) };
+          } else { ok = false; error = `unsupported control command: ${command.type}`; }
+        } catch (err) { ok = false; error = err instanceof Error ? err.message : String(err); }
+        try {
+          await fetch(`${this.#options.platformUrl}/v1/agent-command-result`, {
+            method: 'POST', headers: { authorization: `Bearer ${this.#options.token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ id: command.id, agentId: this.#options.id, ok, ...(result === undefined ? {} : { result }), ...(error === undefined ? {} : { error }) }),
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch { /* remain running */ }
+      }
+    } catch { /* platform offline */ }
   }
 
   async #pollReplays(): Promise<void> {
