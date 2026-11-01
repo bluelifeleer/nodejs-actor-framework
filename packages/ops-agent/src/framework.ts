@@ -5,7 +5,7 @@ export interface DeadLetterEntry {
   readonly retryCount?: number; readonly preview?: string;
 }
 
-export interface FrameworkSnapshot { readonly actors: ActorStatus[]; readonly deadLetters?: number; readonly deadLetterEntries?: DeadLetterEntry[]; }
+export interface FrameworkSnapshot { readonly actors: ActorStatus[]; readonly deadLetters?: number; readonly deadLetterEntries?: DeadLetterEntry[]; readonly peers?: Array<{ key: string; nodeId: string }>; }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -30,6 +30,7 @@ export function collectFrameworkSnapshot(system: unknown): FrameworkSnapshot {
           ...(typeof raw['state'] === 'string' ? { state: raw['state'] } : {}),
           ...(typeof raw['isolation'] === 'string' ? { isolation: raw['isolation'] } : {}),
           ...(typeof raw['lastError'] === 'string' ? { lastError: raw['lastError'] } : {}),
+          ...(typeof raw['lastRestartReason'] === 'string' ? { restartReason: raw['lastRestartReason'] } : {}),
           mailbox,
           ...(typeof counters['received'] === 'number' ? { received: counters['received'] } : {}),
           ...(typeof counters['handled'] === 'number' ? { handled: counters['handled'] } : {}),
@@ -69,7 +70,15 @@ export function collectFrameworkSnapshot(system: unknown): FrameworkSnapshot {
       deadLetters = deadLetterEntries.length;
     }
   } catch { /* never break the app */ }
-  return { actors, ...(deadLetters === undefined ? {} : { deadLetters }), ...(deadLetterEntries === undefined ? {} : { deadLetterEntries }) };
+  let peers: Array<{ key: string; nodeId: string }> | undefined;
+  try {
+    const list = system['listPeers'];
+    if (typeof list === 'function') {
+      const value = (list as () => unknown).call(system);
+      if (Array.isArray(value)) peers = value.filter(isRecord).map((item) => ({ key: String(item['key'] ?? ''), nodeId: String(item['nodeId'] ?? '') }));
+    }
+  } catch { /* ignore */ }
+  return { actors, ...(deadLetters === undefined ? {} : { deadLetters }), ...(deadLetterEntries === undefined ? {} : { deadLetterEntries }), ...(peers === undefined ? {} : { peers }) };
 }
 
 export function summarizeActors(actors: readonly ActorStatus[]): { total: number; running: number; failed: number; byState: Record<string, number>; top: ActorStatus[] } {

@@ -103,6 +103,7 @@ export class OpsAgent {
         actors: summarizeActors(framework.actors),
         ...(framework.deadLetters === undefined ? {} : { deadLetters: framework.deadLetters }),
         ...(framework.deadLetterEntries === undefined ? {} : { deadLetterEntries: framework.deadLetterEntries }),
+        ...(framework.peers === undefined ? {} : { cluster: { node: this.#options.id, peers: framework.peers } }),
       },
     ]);
     const logs = this.#logs.splice(0, 100);
