@@ -227,6 +227,7 @@ class ActorCell {
   running: boolean;
   currentSender: { path?: string } | null;
   restarts: number;
+  lastRestartReason: string | null;
   readonly counters: ActorCounters;
   readonly ref: InstanceType<typeof ActorRef>;
   supervision?: unknown;
@@ -356,6 +357,7 @@ class ActorCell {
     this.running = false;
     this.currentSender = null;
     this.restarts = 0;
+    this.lastRestartReason = null;
     this.counters = {
       received: 0,
       handled: 0,
@@ -829,6 +831,7 @@ class ActorCell {
   /** Bring a crashed (or whole-group-restarted) actor back up. */
   async _restart(reason: unknown): Promise<void> {
     this.restarts += 1;
+    this.lastRestartReason = reason instanceof Error ? reason.message : reason === undefined ? 'unknown' : String(reason);
     this.counters.restarted += 1;
     await this._teardown(reason === undefined ? null : reason, undefined);
     await this._stopChildren();
