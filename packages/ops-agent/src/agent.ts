@@ -31,6 +31,7 @@ export class OpsAgent {
   readonly #histogram = monitorEventLoopDelay({ resolution: 20 });
   readonly #logs: LogEntry[] = [];
   #timer: NodeJS.Timeout | undefined;
+  #replayTimer: NodeJS.Timeout | undefined;
   #cpu = process.cpuUsage();
   #cpuAt = Date.now();
   #originalSink: unknown;
@@ -54,12 +55,17 @@ export class OpsAgent {
     }]);
     this.#timer = setInterval(() => void this.tick(), this.#intervalMs);
     this.#timer.unref?.();
+    this.#replayTimer = setInterval(() => void this.#pollReplays(), 2000);
+    this.#replayTimer.unref?.();
     void this.tick();
+    void this.#pollReplays();
   }
 
   stop(): void {
     if (this.#timer !== undefined) clearInterval(this.#timer);
     this.#timer = undefined;
+    if (this.#replayTimer !== undefined) clearInterval(this.#replayTimer);
+    this.#replayTimer = undefined;
     this.#histogram.disable();
     this.#detachLogs();
   }
@@ -108,6 +114,35 @@ export class OpsAgent {
     ]);
     const logs = this.#logs.splice(0, 100);
     if (logs.length > 0) await this.#send([{ type: 'logs', id: this.#options.id, entries: logs }]);
+  }
+
+  async #pollReplays(): Promise<void> {
+    try {
+      const response = await fetch(`${this.#options.platformUrl}/v1/agent-replays?agentId=${encodeURIComponent(this.#options.id)}`, {
+        headers: { authorization: `Bearer ${this.#options.token}` }, signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) return;
+      const body = (await response.json()) as { replays?: Array<{ id: string; actorId: string; payload: unknown }> };
+      for (const replay of body.replays ?? []) {
+        let ok = true;
+        let error: string | undefined;
+        try {
+          const system = this.#options.system;
+          if (!isRecord(system) || typeof system['ref'] !== 'function') throw new Error('actor system is not available');
+          const ref = (system['ref'] as (path: string) => unknown).call(system, replay.actorId);
+          if (!isRecord(ref) || typeof ref['tell'] !== 'function') throw new Error(`actor ${replay.actorId} not found`);
+          const accepted = (ref['tell'] as (payload: unknown) => boolean).call(ref, replay.payload);
+          if (accepted === false) throw new Error('actor rejected the replayed message');
+        } catch (err) { ok = false; error = err instanceof Error ? err.message : String(err); }
+        try {
+          await fetch(`${this.#options.platformUrl}/v1/agent-replay-result`, {
+            method: 'POST', headers: { authorization: `Bearer ${this.#options.token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ id: replay.id, agentId: this.#options.id, ok, ...(error === undefined ? {} : { error }) }),
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch { /* retry history remains running; operator can inspect */ }
+      }
+    } catch { /* platform offline */ }
   }
 
   async #connections(): Promise<{ httpActive?: number; wsActive?: number }> {

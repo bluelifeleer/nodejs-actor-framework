@@ -2,7 +2,7 @@ import type { ActorStatus } from './protocol.ts';
 
 export interface DeadLetterEntry {
   readonly ts?: number; readonly actorId: string; readonly reason?: string;
-  readonly retryCount?: number; readonly preview?: string;
+  readonly retryCount?: number; readonly preview?: string; readonly payload?: unknown;
 }
 
 export interface FrameworkSnapshot { readonly actors: ActorStatus[]; readonly deadLetters?: number; readonly deadLetterEntries?: DeadLetterEntry[]; readonly peers?: Array<{ key: string; nodeId: string }>; }
@@ -59,12 +59,17 @@ export function collectFrameworkSnapshot(system: unknown): FrameworkSnapshot {
         const preview = typeof payload === 'string'
           ? payload.slice(0, 512)
           : payload === undefined ? undefined : JSON.stringify(payload).slice(0, 512);
+        let safePayload: unknown;
+        try {
+          if (payload !== undefined && JSON.stringify(payload).length <= 64 * 1024) safePayload = payload;
+        } catch { /* non-serialisable payload cannot be replayed */ }
         return {
           ...(typeof entry['ts'] === 'number' ? { ts: entry['ts'] } : {}),
           actorId: String(entry['path'] ?? entry['actorId'] ?? 'unknown'),
           ...(typeof entry['error'] === 'string' ? { reason: entry['error'] } : typeof entry['reason'] === 'string' ? { reason: entry['reason'] } : {}),
           ...(typeof entry['retryCount'] === 'number' ? { retryCount: entry['retryCount'] } : {}),
           ...(preview === undefined ? {} : { preview }),
+          ...(safePayload === undefined ? {} : { payload: safePayload }),
         };
       });
       deadLetters = deadLetterEntries.length;
