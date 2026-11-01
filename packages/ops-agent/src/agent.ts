@@ -46,6 +46,7 @@ export class OpsAgent {
   #cpuAt = Date.now();
   #originalSink: unknown;
   #wrapped = false;
+  #helloAt = 0;
 
   constructor(options: OpsAgentOptions) {
     this.#options = options;
@@ -55,16 +56,7 @@ export class OpsAgent {
   start(): void {
     this.#histogram.enable();
     this.#attachLogs();
-    void this.#send([{
-      type: 'hello', protocol: 1, role: 'agent', id: this.#options.id,
-      ...(this.#options.app === undefined ? {} : { app: this.#options.app }),
-      ...(this.#options.env === undefined ? {} : { env: this.#options.env }),
-      ...(this.#options.version === undefined ? {} : { version: this.#options.version }),
-      pid: process.pid,
-      runtime: { node: process.version, platform: process.platform, arch: process.arch },
-      network: { interfaces: readInterfaces() },
-      capabilities: { metrics: true, logs: true, actors: true, connections: true },
-    }]);
+    void this.#hello();
     this.#timer = setInterval(() => void this.tick(), this.#intervalMs);
     this.#timer.unref?.();
     this.#replayTimer = setInterval(() => void this.#pollReplays(), 2000);
@@ -92,6 +84,7 @@ export class OpsAgent {
   }
 
   async tick(): Promise<void> {
+    if (Date.now() - this.#helloAt > 30_000) await this.#hello();
     const ts = Date.now();
     const memory = process.memoryUsage();
     const cpu = process.cpuUsage();
@@ -130,6 +123,20 @@ export class OpsAgent {
     ]);
     const logs = this.#logs.splice(0, 100);
     if (logs.length > 0) await this.#send([{ type: 'logs', id: this.#options.id, entries: logs }]);
+  }
+
+  async #hello(): Promise<void> {
+    this.#helloAt = Date.now();
+    await this.#send([{
+      type: 'hello', protocol: 1, role: 'agent', id: this.#options.id,
+      ...(this.#options.app === undefined ? {} : { app: this.#options.app }),
+      ...(this.#options.env === undefined ? {} : { env: this.#options.env }),
+      ...(this.#options.version === undefined ? {} : { version: this.#options.version }),
+      pid: process.pid,
+      runtime: { node: process.version, platform: process.platform, arch: process.arch },
+      network: { interfaces: readInterfaces() },
+      capabilities: { metrics: true, logs: true, actors: true, connections: true },
+    }]);
   }
 
   async #pollControl(): Promise<void> {
