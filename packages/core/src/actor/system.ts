@@ -574,6 +574,17 @@ class ActorSystem extends EventEmitter {
     return peer.ref(path);
   }
 
+  /** Close and remove a connected peer by key or nodeId. */
+  async disconnectPeer(target: string): Promise<boolean> {
+    const entry = [...this.peers.entries()].find(([key, peer]) => key === target || peer.nodeId === target);
+    if (entry === undefined) return false;
+    const [key, peer] = entry;
+    this.peers.delete(key);
+    await peer.close().catch(() => undefined);
+    this.emit('peer_disconnected', key, peer.nodeId);
+    return true;
+  }
+
   /** Connected peers, for introspection. */
   listPeers(): { key: string; nodeId: string }[] {
     return [...this.peers.values()].map((peer) => ({ key: `${peer.host}:${peer.port}`, nodeId: peer.nodeId }));

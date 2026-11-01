@@ -423,6 +423,7 @@ export class ActorSystem {
   /** `remote('path@host:port')`, or a bare path when exactly one peer is connected. */
   remote<M = unknown, R = unknown>(spec: string): RemoteRef<M, R>;
   listPeers(): PeerSummary[];
+  disconnectPeer(target: string): Promise<boolean>;
 
   stats(): SystemStats;
   /**
