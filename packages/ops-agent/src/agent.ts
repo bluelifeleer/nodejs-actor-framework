@@ -140,6 +140,15 @@ export class OpsAgent {
             const nodeId = String(command.args['nodeId'] ?? '');
             if (nodeId === '') throw new Error('nodeId is required');
             result = { disconnected: await (system['disconnectPeer'] as (target: string) => Promise<boolean>).call(system, nodeId) };
+          } else if (command.type === 'cluster_connect') {
+            if (typeof system['connect'] !== 'function') throw new Error('cluster connect is not available');
+            const host = String(command.args['host'] ?? '');
+            const port = Number(command.args['port'] ?? 0);
+            if (host === '' || !Number.isFinite(port) || port <= 0) throw new Error('host/port are required');
+            await (system['connect'] as (options: Record<string, unknown>) => Promise<unknown>).call(system, {
+              host, port, ...(String(command.args['nodeId'] ?? '') === '' ? {} : { nodeId: String(command.args['nodeId']) }),
+            });
+            result = { connected: true };
           } else { ok = false; error = `unsupported control command: ${command.type}`; }
         } catch (err) { ok = false; error = err instanceof Error ? err.message : String(err); }
         try {
