@@ -1,4 +1,5 @@
 import { statfs } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import { collectFrameworkSnapshot, summarizeActors } from './framework.ts';
@@ -19,6 +20,14 @@ export interface OpsAgentOptions {
   readonly application?: unknown;
   readonly supervisorId?: string;
   readonly unit?: string;
+}
+
+function readInterfaces(): Array<{ name: string; address: string; family: string; mac: string; internal: boolean }> {
+  const result: Array<{ name: string; address: string; family: string; mac: string; internal: boolean }> = [];
+  try {
+    for (const [name, list] of Object.entries(networkInterfaces())) for (const item of list ?? []) result.push({ name, address: item.address, family: String(item.family), mac: item.mac, internal: item.internal });
+  } catch { /* ignore */ }
+  return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -52,6 +61,8 @@ export class OpsAgent {
       ...(this.#options.env === undefined ? {} : { env: this.#options.env }),
       ...(this.#options.version === undefined ? {} : { version: this.#options.version }),
       pid: process.pid,
+      runtime: { node: process.version, platform: process.platform, arch: process.arch },
+      network: { interfaces: readInterfaces() },
       capabilities: { metrics: true, logs: true, actors: true, connections: true },
     }]);
     this.#timer = setInterval(() => void this.tick(), this.#intervalMs);
