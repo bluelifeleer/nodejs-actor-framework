@@ -29,7 +29,7 @@ export interface OpsAgentOptions {
 async function readNetworkBytes(pid: number): Promise<{ rx?: number; tx?: number }> {
   try {
     if (process.platform === 'darwin') {
-      const { stdout } = await execFileAsync('nettop', ['-P', '-L', '1', '-J', 'bytes_in,bytes_out'], { timeout: 2500 });
+      const { stdout } = await execFileAsync('nettop', ['-P', '-L', '1', '-J', 'bytes_in,bytes_out'], { timeout: 7000 });
       for (const line of stdout.split('\n')) {
         const fields = line.trim().split(',');
         if (fields.length < 3) continue;
