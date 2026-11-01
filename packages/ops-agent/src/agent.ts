@@ -1,5 +1,9 @@
-import { statfs } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { statfs, readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { networkInterfaces } from 'node:os';
+
+const execFileAsync = promisify(execFile);
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 import { collectFrameworkSnapshot, summarizeActors } from './framework.ts';
@@ -20,6 +24,30 @@ export interface OpsAgentOptions {
   readonly application?: unknown;
   readonly supervisorId?: string;
   readonly unit?: string;
+}
+
+async function readNetworkBytes(pid: number): Promise<{ rx?: number; tx?: number }> {
+  try {
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('nettop', ['-P', '-L', '1', '-J', 'bytes_in,bytes_out'], { timeout: 2500 });
+      for (const line of stdout.split('\n')) {
+        const fields = line.trim().split(',');
+        if (fields.length < 3) continue;
+        if (!fields[0]?.endsWith(`.${String(pid)}`)) continue;
+        return { rx: Number(fields[1]), tx: Number(fields[2]) };
+      }
+    } else if (process.platform === 'linux') {
+      const text = await readFile(`/proc/${String(pid)}/net/dev`, 'utf8');
+      let rx = 0; let tx = 0;
+      for (const line of text.split('\n').slice(2)) {
+        const fields = line.trim().split(/\s+/);
+        if (fields.length < 10) continue;
+        rx += Number(fields[1]); tx += Number(fields[9]);
+      }
+      return { rx, tx };
+    }
+  } catch { /* unavailable */ }
+  return {};
 }
 
 function readInterfaces(): Array<{ name: string; address: string; family: string; mac: string; internal: boolean }> {
@@ -103,6 +131,7 @@ export class OpsAgent {
     }
     const framework = collectFrameworkSnapshot(this.#options.system);
     const connections = await this.#connections();
+    const network = await readNetworkBytes(process.pid);
     await this.#send([
       { type: 'heartbeat', id: this.#options.id, ts, status: 'online' },
       {
@@ -111,6 +140,8 @@ export class OpsAgent {
           ts, cpuPct, rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal,
           externalBytes: memory.external, eventLoopP99Ms: this.#histogram.percentile(99) / 1e6,
           uptimeSec: process.uptime(),
+          ...(network.rx === undefined ? {} : { netRxBytes: network.rx }),
+          ...(network.tx === undefined ? {} : { netTxBytes: network.tx }),
           ...(diskFree === undefined ? {} : { diskFreeBytes: diskFree }),
           ...(diskTotal === undefined ? {} : { diskTotalBytes: diskTotal }),
         },
